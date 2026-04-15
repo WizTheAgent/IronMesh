@@ -1,0 +1,60 @@
+# IronMesh — docker compose deployment
+#
+# Quick start:
+#   1. Create a .env file with IRONMESH_PASSPHRASE=<your-strong-passphrase>
+#   2. docker compose up -d
+#   3. Dashboard: http://localhost:8766  (token printed in logs)
+#
+# Or run a pair of peers for local testing:
+#   docker compose --profile pair up
+
+services:
+  ironmesh:
+    build: .
+    image: ironmesh:0.7.0
+    container_name: ironmesh
+    restart: unless-stopped
+    ports:
+      - "8765:8765"     # bridge WebSocket (peer connections)
+      - "127.0.0.1:8766:8766"  # dashboard (bind to localhost on host)
+    environment:
+      IRONMESH_NAME: ${IRONMESH_NAME:-ironmesh-docker}
+      IRONMESH_PORT: "8765"
+      IRONMESH_PASSPHRASE: ${IRONMESH_PASSPHRASE:?set IRONMESH_PASSPHRASE in .env}
+    volumes:
+      - ironmesh-data:/data/ironmesh
+      - ironmesh-keys:/data/kingpi-secure
+      - ironmesh-rns:/data/reticulum
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import socket; s=socket.socket(); s.settimeout(2); s.connect((\"127.0.0.1\",8765)); s.close()'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Optional second peer for testing — enable with: docker compose --profile pair up
+  ironmesh-peer:
+    profiles: ["pair"]
+    build: .
+    image: ironmesh:0.7.0
+    container_name: ironmesh-peer
+    restart: unless-stopped
+    ports:
+      - "8767:8765"
+      - "127.0.0.1:8768:8766"
+    environment:
+      IRONMESH_NAME: peer
+      IRONMESH_PORT: "8765"
+      IRONMESH_PASSPHRASE: ${IRONMESH_PASSPHRASE:?set IRONMESH_PASSPHRASE in .env}
+    volumes:
+      - ironmesh-peer-data:/data/ironmesh
+      - ironmesh-peer-keys:/data/kingpi-secure
+      - ironmesh-peer-rns:/data/reticulum
+
+volumes:
+  ironmesh-data:
+  ironmesh-keys:
+  ironmesh-rns:
+  ironmesh-peer-data:
+  ironmesh-peer-keys:
+  ironmesh-peer-rns:

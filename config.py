@@ -1,0 +1,153 @@
+"""IronMesh configuration — centralized defaults and config loading."""
+
+import json
+import os
+from dataclasses import dataclass, field
+from typing import Optional
+
+DEFAULT_CONFIG_PATH = "~/.ironmesh/config.json"
+
+
+@dataclass
+class IronMeshConfig:
+    """Centralized configuration for IronMesh."""
+    # Identity
+    agent_name: str = "agent"
+    keys_path: str = "~/.kingpi-secure/ironmesh/keys.json"
+    keys_passphrase: Optional[str] = None
+
+    # Networking
+    port: int = 8765
+    tls_cert: Optional[str] = None
+    tls_key: Optional[str] = None
+    max_message_size: int = 1_048_576  # 1 MB
+
+    # Auth
+    passphrase: Optional[str] = None
+    passphrase_file: Optional[str] = None
+
+    # Storage
+    db_path: str = "~/.ironmesh/data.db"
+    trust_path: str = "~/.ironmesh/known_peers.json"
+
+    # Rate limiting
+    msg_rate_sustained: float = 20.0
+    msg_rate_burst: int = 100
+    conn_rate_per_minute: int = 10
+
+    # Logging
+    log_level: str = "INFO"
+    log_file: Optional[str] = None
+
+    # Replay protection
+    replay_max_age: float = 30.0
+    replay_window_size: int = 1024
+
+    # Maintenance
+    heartbeat_interval: int = 30
+    cleanup_interval: int = 3600
+    reconnect_interval: int = 15
+    queue_flush_interval: int = 5
+    prune_days: int = 30
+
+    # v0.4: mesh routing
+    mesh_routing: str = "relay"  # "off" | "passive" | "relay"
+    max_hops: int = 5
+    route_announce_interval: float = 30.0
+    route_ttl: float = 90.0
+    routes_path: str = "~/.ironmesh/routes.json"
+
+    # v0.4: dedup cache (per-source sharded)
+    dedup_sources_max: int = 128
+    dedup_per_source_max: int = 1024
+    dedup_cache_ttl: float = 300.0
+
+    # v0.4: capabilities (declared by this node)
+    capabilities: list = field(default_factory=list)
+    capabilities_path: str = "~/.ironmesh/capabilities.json"
+    capability_announce_interval: float = 60.0
+
+    # v0.4: audit log rotation
+    audit_log_max_bytes: int = 10_485_760  # 10 MB
+
+    # v0.4: observability
+    metrics_format: str = "prometheus"  # "prometheus" | "json"
+    log_format: str = "text"  # "text" | "json"
+
+    # v0.5: Reticulum (LoRa) transport
+    rns_enabled: bool = False
+    rns_configdir: Optional[str] = None
+    rns_announce_interval: float = 300.0
+
+    def __post_init__(self):
+        # Clamp announce interval to a sane minimum to prevent flooding
+        if self.route_announce_interval < 1.0:
+            self.route_announce_interval = 1.0
+        if self.mesh_routing not in ("off", "passive", "relay"):
+            self.mesh_routing = "relay"
+
+    @classmethod
+    def from_file(cls, path: str = DEFAULT_CONFIG_PATH) -> "IronMeshConfig":
+        """Load config from JSON file, falling back to defaults.
+
+        Audit L-07: malformed JSON must not crash the caller — log and
+        return defaults so the daemon can still boot.
+        """
+        path = os.path.expanduser(path)
+        config = cls()
+        if not os.path.exists(path):
+            return config
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            import logging
+            logging.getLogger("ironmesh.config").warning(
+                "Config file %s malformed or unreadable (%s); using defaults",
+                path, e,
+            )
+            return config
+        if not isinstance(data, dict):
+            return config
+        for key, value in data.items():
+            if hasattr(config, key):
+                setattr(config, key, value)
+        return config
+
+    @classmethod
+    def from_env(cls) -> "IronMeshConfig":
+        """Load config from environment variables."""
+        config = cls()
+        env_map = {
+            "IRONMESH_NAME": "agent_name",
+            "IRONMESH_PORT": ("port", int),
+            "IRONMESH_PASSPHRASE": "passphrase",
+            "IRONMESH_KEYS_PATH": "keys_path",
+            "IRONMESH_DB_PATH": "db_path",
+            "IRONMESH_LOG_LEVEL": "log_level",
+            "IRONMESH_LOG_FILE": "log_file",
+            "IRONMESH_TLS_CERT": "tls_cert",
+            "IRONMESH_TLS_KEY": "tls_key",
+            "IRONMESH_PASSPHRASE_FILE": "passphrase_file",
+            "IRONMESH_RNS_ENABLED": ("rns_enabled", lambda v: v.lower() in ("1", "true", "yes")),
+            "IRONMESH_RNS_CONFIGDIR": "rns_configdir",
+        }
+        for env_var, target in env_map.items():
+            val = os.environ.get(env_var)
+            if val is not None:
+                if isinstance(target, tuple):
+                    attr, conv = target
+                    setattr(config, attr, conv(val))
+                else:
+                    setattr(config, target, val)
+        return config
+
+    def save(self, path: str = DEFAULT_CONFIG_PATH):
+        """Save current config to JSON file."""
+        path = os.path.expanduser(path)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        # Don't save sensitive fields
+        data = {k: v for k, v in self.__dict__.items()
+                if k not in ("passphrase", "keys_passphrase")}
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
