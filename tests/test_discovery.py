@@ -123,9 +123,9 @@ class TestRegisterService:
             disco_mod.register_service(
                 agent_name="test",
                 port=8765,
-                bind_address="192.168.1.17",
+                bind_address="192.168.1.10",
             )
-        assert captured_interfaces["interfaces"] == ["192.168.1.17"]
+        assert captured_interfaces["interfaces"] == ["192.168.1.10"]
 
     def test_zero_bind_uses_default_zeroconf(self):
         """0.0.0.0 or unset bind → Zeroconf with no interface restriction."""

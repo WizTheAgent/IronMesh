@@ -23,7 +23,7 @@ def _local_ip() -> str:
     gateway) over ``getaddrinfo(hostname)``. On multi-NIC systems (dev
     boxes with VirtualBox Host-Only adapters, WSL, Docker bridges, VPN
     interfaces, etc.), ``getaddrinfo`` often returns the wrong adapter —
-    e.g. 192.168.56.1 (VBox) ahead of 192.168.1.17 (real WiFi). Remote
+    e.g. 192.168.56.1 (VBox) ahead of the real LAN IP. Remote
     peers then try to dial an unroutable address and see timeouts.
 
     Strategies in order:
