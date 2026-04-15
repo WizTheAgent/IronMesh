@@ -10,7 +10,7 @@ import asyncio
 import logging
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger("ironmesh.hooks")
 

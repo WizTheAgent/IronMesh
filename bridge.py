@@ -15,18 +15,17 @@ import os
 import signal
 import ssl
 import time
-
-import nacl.exceptions as nacl_exceptions
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import nacl.exceptions as nacl_exceptions
 import websockets
 
 # v0.5: Optional Reticulum transport (only loaded when --reticulum flag is passed)
 try:
-    from ironmesh.reticulum_transport import ReticulumTransport, RNSLinkAdapter, _HAS_RNS
+    from ironmesh.reticulum_transport import _HAS_RNS, ReticulumTransport, RNSLinkAdapter
 except ImportError:
     _HAS_RNS = False
     ReticulumTransport = None  # type: ignore[assignment,misc]
@@ -36,7 +35,17 @@ from ironmesh import crypto as ew_crypto
 from ironmesh import discovery as ew_discovery
 from ironmesh import keys as ew_keys
 from ironmesh import protocol as ew_protocol
-from ironmesh.audit import AuditLog, EVENT_STARTUP, EVENT_SHUTDOWN, EVENT_PEER_CONNECT, EVENT_TOFU_MISMATCH, EVENT_AUTH_FAILURE, EVENT_AUTH_BLOCKED, EVENT_KEY_ROTATION, EVENT_TOFU_NEW, EVENT_CAPABILITY_LEARNED, EVENT_PEER_DROPPED_LONG
+from ironmesh.audit import (
+    EVENT_AUTH_BLOCKED,
+    EVENT_AUTH_FAILURE,
+    EVENT_CAPABILITY_LEARNED,
+    EVENT_PEER_CONNECT,
+    EVENT_PEER_DROPPED_LONG,
+    EVENT_STARTUP,
+    EVENT_TOFU_MISMATCH,
+    EVENT_TOFU_NEW,
+    AuditLog,
+)
 from ironmesh.capabilities import CapabilityRegistry
 from ironmesh.mesh import MeshRouter
 from ironmesh.store import MessageStore
@@ -1192,7 +1201,7 @@ class BridgeDaemon:
                     logger.warning("Malformed message from %s: %s", peer_id, e)
                 except nacl_exceptions.CryptoError as e:
                     logger.warning("Crypto error from %s: %s", peer_id, e)
-                except Exception as e:
+                except Exception:
                     logger.exception("Unexpected error from %s", peer_id)
 
         except websockets.ConnectionClosed:
@@ -1603,7 +1612,6 @@ class BridgeDaemon:
         """Handle a legacy JSON message (backward compat)."""
         # Parse the incoming message
         msg = json.loads(raw)
-        msg_type = msg.get("type")
         msg_id = msg.get("msg_id", str(uuid.uuid4()))
 
         # Decrypt payload — plaintext is NEVER accepted after handshake
@@ -3411,7 +3419,6 @@ class BridgeDaemon:
                 # #16: Parse first line for method + path
                 request_line = raw_request.split(b"\r\n")[0].decode("ascii", errors="replace")
                 parts = request_line.split()
-                method = parts[0] if len(parts) >= 1 else "GET"
                 path = parts[1] if len(parts) >= 2 else "/"
                 clean_path = path.split("?")[0] if "?" in path else path
 
@@ -3450,7 +3457,10 @@ class BridgeDaemon:
                 writer.close()
 
             metrics_port = self.port + 1
-            server = await asyncio.start_server(handle_metrics, "127.0.0.1", metrics_port)
+            # Server is kept alive by the asyncio task that handles it; we
+            # don't need to hold a reference for lifecycle purposes (shutdown
+            # is handled by cancelling the enclosing loop).
+            await asyncio.start_server(handle_metrics, "127.0.0.1", metrics_port)
             logger.info("Metrics endpoint at http://127.0.0.1:%d/metrics", metrics_port)
         except Exception as e:
             logger.debug("Metrics server failed to start: %s", e)

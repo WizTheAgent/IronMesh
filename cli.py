@@ -6,7 +6,6 @@ Supports bridge daemon, key management, trust management, and metrics.
 
 import argparse
 import getpass
-import json
 import logging
 import os
 import sys
@@ -297,8 +296,9 @@ def cmd_run(args):
 
     # Handle key rotation
     if getattr(args, "rotate_keys", False):
-        from ironmesh.bridge import rotate_keys
         import asyncio
+
+        from ironmesh.bridge import rotate_keys
         log.info("Key rotation requested...")
         asyncio.run(rotate_keys(args.keys_path))
         log.info("Key rotation complete. Starting with new keys.")
@@ -374,8 +374,8 @@ def cmd_run(args):
 
 def cmd_trust(args):
     """Manage peer trust."""
-    from ironmesh.trust import TrustStore
     from ironmesh import keys as ew_keys
+    from ironmesh.trust import TrustStore
     # Audit C-03: TrustStore is bound to the agent identity. Load keys
     # to derive the MAC key. Require a passphrase to decrypt them.
     keys_path = getattr(args, "keys_path", "~/.kingpi-secure/ironmesh/keys.json")

@@ -5,8 +5,6 @@ Replaces the old database.py (sync) and MessageStore embedded in bridge.py.
 """
 
 import asyncio
-import base64
-import hashlib
 import logging
 import os
 import time

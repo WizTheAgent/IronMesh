@@ -11,9 +11,8 @@ import json
 import logging
 import os
 import time
-import uuid
-import nacl.utils
 
+import nacl.utils
 
 # Audit L-03: known-good protocol version strings. An implementation
 # MAY warn on unknown versions but SHOULD still attempt negotiation via
@@ -35,7 +34,7 @@ def is_known_protocol_version(v: str) -> bool:
 from collections import OrderedDict
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger("ironmesh.protocol")
 
@@ -438,8 +437,11 @@ class Frame:
 
         flags = data[3]
         sequence = int.from_bytes(data[4:12], "big")
-        timestamp_ms = int.from_bytes(data[12:20], "big")
-        msg_id_hash = data[20:28]
+        # timestamp_ms and msg_id_hash are decoded inside encrypted payload;
+        # here we just skip those header bytes. Underscore-prefixed so ruff
+        # knows the read is intentional.
+        _timestamp_ms = int.from_bytes(data[12:20], "big")
+        _msg_id_hash = data[20:28]
         encrypted_length = int.from_bytes(data[28:32], "big")
         encrypted_data = data[32:32 + encrypted_length]
 

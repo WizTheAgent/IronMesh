@@ -13,11 +13,9 @@ import base64
 import json
 import logging
 
-from nacl.public import PrivateKey, PublicKey, Box
+from nacl.public import Box, PrivateKey, PublicKey
 from nacl.secret import SecretBox
 from nacl.signing import SigningKey, VerifyKey
-from nacl.utils import random as nacl_random
-from nacl.exceptions import CryptoError, BadSignatureError
 
 logger = logging.getLogger("ironmesh.crypto")
 

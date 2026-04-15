@@ -54,7 +54,6 @@ from typing import Any, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ironmesh.bridge import BridgeDaemon  # noqa: E402
-from ironmesh.store import MessageStore  # noqa: E402
 
 log = logging.getLogger("ironmesh.mcp")
 

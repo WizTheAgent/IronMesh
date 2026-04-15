@@ -11,15 +11,14 @@ import base64
 import hashlib
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
-import nacl.signing
 import nacl.bindings
-from nacl.public import PrivateKey as X25519PrivateKey, PublicKey as X25519PublicKey
-from nacl.signing import SigningKey, VerifyKey
+import nacl.signing
+from nacl.public import PrivateKey as X25519PrivateKey
 from nacl.pwhash import argon2id
-
+from nacl.signing import SigningKey, VerifyKey
 
 # Audit L-05: shared constant for 128-bit fingerprints (first 32 hex
 # chars of SHA-256). Use this everywhere a fingerprint is computed.
@@ -188,8 +187,9 @@ def load_keys(path: str, passphrase: Optional[str] = None) -> AgentKeys:
     with open(path) as f:
         data = json.load(f)
 
-    # Validate key format
-    version = data.get("version", 1)
+    # Key-file schema version — read for forward-compat diagnostics but
+    # parsing is identical across versions 1 and 2 today.
+    _version = data.get("version", 1)
 
     # Audit M-03: bound base64 input before decoding. An Ed25519 key
     # encodes to 44 chars; 100 is generous headroom for whitespace.
@@ -211,8 +211,8 @@ def load_keys(path: str, passphrase: Optional[str] = None) -> AgentKeys:
             opslimit=argon2id.OPSLIMIT_MODERATE,
             memlimit=argon2id.MEMLIMIT_MODERATE,
         )
-        from nacl.secret import SecretBox
         from nacl.exceptions import CryptoError
+        from nacl.secret import SecretBox
         box = SecretBox(derived)
         try:
             encrypted_secret = base64.b64decode(data["ed25519_secret_encrypted"])
