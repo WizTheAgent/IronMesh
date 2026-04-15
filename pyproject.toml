@@ -10,7 +10,7 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
 authors = [
-    { name = "KingPi Empire" },
+    { name = "IronMesh", email = "info@ironmesh.org" },
 ]
 keywords = ["a2a", "agent", "protocol", "p2p", "encryption", "local-first", "websocket", "mdns", "lora", "reticulum"]
 classifiers = [
@@ -50,10 +50,11 @@ dev = [
 ironmesh = "ironmesh.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/WizTheAgent/ironmesh"
-Documentation = "https://github.com/WizTheAgent/ironmesh/tree/main/docs"
-Repository = "https://github.com/WizTheAgent/ironmesh"
-Issues = "https://github.com/WizTheAgent/ironmesh/issues"
+Homepage = "https://ironmesh.org"
+Documentation = "https://github.com/WizTheAgent/IronMesh/tree/main/docs"
+Repository = "https://github.com/WizTheAgent/IronMesh"
+Issues = "https://github.com/WizTheAgent/IronMesh/issues"
+Changelog = "https://github.com/WizTheAgent/IronMesh/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
 packages = ["ironmesh"]

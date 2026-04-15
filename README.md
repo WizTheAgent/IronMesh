@@ -1,7 +1,10 @@
 # IronMesh
 
-> **⚠️ v0.7.2-beta — stable protocol, pre-1.0 release.** 456 tests passing, hardening
-> complete, live-validated on a 3-node mesh with a real Android client (Sideband).
+**Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
+
+> **⚠️ v0.7.2-beta — stable protocol, pre-1.0 release.** 472 tests passing, hardening
+> complete, live-validated on a 3-node mesh with a real Android client (Sideband) and
+> a single-hop LoRa link at SF8/BW125.
 > See [Known limitations](#known-limitations) before deploying in production.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -417,6 +420,13 @@ IronMesh exists because we believe:
 3. **Self-hosted means self-hosted.** Not "self-hosted but calls home for auth." Not "self-hosted but requires a cloud API key." Actually self-hosted.
 4. **Simple beats complex.** Zero-config mDNS discovery, one shared passphrase, and your agents are talking. No certificate authorities, no DID documents, no OAuth flows.
 5. **Prepare for the worst.** Networks go down. Internet gets shut off. Censorship happens. Your local AI mesh should keep working regardless.
+
+## Contact
+
+- **Website** — [ironmesh.org](https://ironmesh.org)
+- **General / operator questions** — [info@ironmesh.org](mailto:info@ironmesh.org)
+- **Security issues** — [info@ironmesh.org](mailto:info@ironmesh.org) — please **don't** open a public issue first. See [SECURITY.md](SECURITY.md) for disclosure policy.
+- **Bugs / feature requests** — [GitHub Issues](https://github.com/WizTheAgent/IronMesh/issues) (use the templates)
 
 ## License
 
