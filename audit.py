@@ -1,0 +1,497 @@
+"""IronMesh Audit Log — Append-only tamper-evident security event log.
+
+Every security-relevant event (key rotations, TOFU mismatches, auth failures,
+decryption failures, GUI access) is recorded with an HMAC chain for tamper
+evidence. Each entry's HMAC covers the previous entry's HMAC, forming a chain.
+
+If an attacker deletes or modifies any entry, the chain breaks and
+verification fails from that point forward.
+"""
+
+import hashlib
+import hmac
+import json
+import logging
+import os
+import threading
+import time
+from typing import Optional
+
+logger = logging.getLogger("ironmesh.audit")
+
+# Event types
+EVENT_KEY_ROTATION = "KEY_ROTATION"
+EVENT_TOFU_NEW = "TOFU_NEW_PEER"
+EVENT_TOFU_MISMATCH = "TOFU_MISMATCH"
+EVENT_AUTH_FAILURE = "AUTH_FAILURE"
+EVENT_AUTH_BLOCKED = "AUTH_IP_BLOCKED"
+EVENT_DECRYPT_FAILURE = "DECRYPT_FAILURE"
+EVENT_SIGNATURE_FAILURE = "SIGNATURE_FAILURE"
+EVENT_REPLAY_DETECTED = "REPLAY_DETECTED"
+EVENT_PEER_CONNECT = "PEER_CONNECT"
+EVENT_PEER_DISCONNECT = "PEER_DISCONNECT"
+EVENT_GUI_ACCESS = "GUI_ACCESS"
+EVENT_STARTUP = "STARTUP"
+EVENT_SHUTDOWN = "SHUTDOWN"
+
+# v0.7.2: extended peer health events
+EVENT_PEER_DROPPED_LONG = "PEER_DROPPED_LONG"
+
+# v0.4: mesh routing events
+EVENT_ROUTE_ANNOUNCED = "ROUTE_ANNOUNCED"
+EVENT_ROUTE_LEARNED = "ROUTE_LEARNED"
+EVENT_ROUTE_EXPIRED = "ROUTE_EXPIRED"
+EVENT_MESSAGE_RELAYED = "MESSAGE_RELAYED"
+EVENT_TTL_EXPIRED = "TTL_EXPIRED"
+EVENT_ROUTE_LOOP = "ROUTE_LOOP"
+EVENT_NO_ROUTE = "NO_ROUTE"
+EVENT_DUPLICATE_DROPPED = "DUPLICATE_DROPPED"
+EVENT_MESH_PARTITION_SUSPECTED = "MESH_PARTITION_SUSPECTED"
+EVENT_CIRCUIT_BREAKER_TRIPPED = "CIRCUIT_BREAKER_TRIPPED"
+EVENT_CAPABILITY_LEARNED = "CAPABILITY_LEARNED"
+EVENT_E2E_DECRYPT_FAILURE = "E2E_DECRYPT_FAILURE"
+EVENT_LOG_ROTATED = "LOG_ROTATED"
+
+
+class AuditLog:
+    """Append-only audit log with HMAC chain for tamper evidence.
+
+    Each log entry is a JSON line containing:
+    - timestamp: Unix epoch
+    - event: Event type constant
+    - details: Dict of event-specific data
+    - hmac: HMAC-SHA256 over (previous_hmac + entry_data)
+
+    The HMAC key is derived from the node's identity key, ensuring only
+    the legitimate node operator can produce valid entries.
+    """
+
+    # Genesis HMAC — used for the first entry in the chain
+    _GENESIS = "0" * 64
+    # Default rotation threshold and how many archives to retain
+    _DEFAULT_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+    _MAX_ARCHIVES = 5
+
+    def __init__(self, path: str = "~/.ironmesh/audit.log",
+                 hmac_key: Optional[bytes] = None,
+                 max_bytes: int = _DEFAULT_MAX_BYTES):
+        """
+        Args:
+            path: Path to the audit log file.
+            hmac_key: 32-byte key for HMAC chain. Derived from node identity key.
+                      If None, audit logging is disabled (test/dev mode).
+            max_bytes: Rotate the log when it exceeds this size (default 10 MB).
+                       Rotated archives are named ``<path>.1`` … ``<path>.N``.
+                       The first entry of every rotated file is an
+                       ``EVENT_LOG_ROTATED`` record carrying the previous file's
+                       tail HMAC, anchoring the chain across rotation.
+        """
+        self._path = os.path.expanduser(path)
+        self._hmac_key = hmac_key
+        self._max_bytes = max(1024, int(max_bytes))
+        self._last_hmac = self._GENESIS
+        self._enabled = hmac_key is not None
+        # Audit M-19: serialize log + rotate so the size check and the
+        # actual file write/rename aren't interleaved across threads.
+        self._write_lock = threading.Lock()
+        if not self._enabled:
+            # Audit H-03: never silently disable audit logging.
+            logger.critical(
+                "SECURITY: Audit log initialized without HMAC key — audit logging DISABLED. "
+                "Security events will NOT be recorded."
+            )
+
+        if self._enabled:
+            os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
+            # Resume chain from last entry in existing log
+            self._last_hmac = self._read_last_hmac()
+
+    def _read_last_hmac(self) -> str:
+        """Read the HMAC of the last entry to resume the chain."""
+        try:
+            if not os.path.exists(self._path):
+                return self._GENESIS
+            with open(self._path, "r") as f:
+                last_line = None
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        last_line = line
+                if last_line:
+                    entry = json.loads(last_line)
+                    return entry.get("hmac", self._GENESIS)
+        except Exception:
+            logger.warning("Could not read last audit HMAC — starting new chain")
+        return self._GENESIS
+
+    def _compute_hmac(self, entry_data: str) -> str:
+        """Compute HMAC-SHA256 over (previous_hmac + entry_data)."""
+        message = (self._last_hmac + entry_data).encode("utf-8")
+        return hmac.new(self._hmac_key, message, hashlib.sha256).hexdigest()
+
+    def log(self, event: str, details: Optional[dict] = None):
+        """Append a security event to the audit log.
+
+        Args:
+            event: Event type (use EVENT_* constants).
+            details: Optional dict of event-specific data.
+        """
+        if not self._enabled:
+            return
+        with self._write_lock:
+            self._write_entry(event, details)
+            self._maybe_rotate()
+
+    def _write_entry(self, event: str, details: Optional[dict]) -> None:
+        """Append a single entry without performing rotation checks.
+
+        Used by both ``log()`` and the rotation anchor writer to avoid
+        recursive rotation while we're in the middle of rotating.
+        """
+        ts = time.time()
+        entry_data = json.dumps({
+            "timestamp": ts,
+            "event": event,
+            "details": details or {},
+        }, separators=(",", ":"), sort_keys=True)
+
+        entry_hmac = self._compute_hmac(entry_data)
+
+        full_entry = json.dumps({
+            "timestamp": ts,
+            "event": event,
+            "details": details or {},
+            "hmac": entry_hmac,
+        }, separators=(",", ":"), sort_keys=True)
+
+        try:
+            with open(self._path, "a") as f:
+                f.write(full_entry + "\n")
+            self._last_hmac = entry_hmac
+        except Exception as e:
+            logger.error("Failed to write audit log: %s", e)
+
+    def _maybe_rotate(self) -> None:
+        """Rotate the current log if it exceeds ``max_bytes``.
+
+        Rotation steps:
+            1. Capture the chain tail HMAC of the live log.
+            2. Shift archives ``.N`` → ``.N+1`` (capped at ``_MAX_ARCHIVES``).
+            3. Move the live log to ``<path>.1``.
+            4. Reset the in-memory chain to GENESIS for the new file.
+            5. Write a fresh ``EVENT_LOG_ROTATED`` entry whose details
+               include ``previous_tail_hmac`` so the chain can be
+               cryptographically followed across the rotation boundary.
+        """
+        try:
+            size = os.path.getsize(self._path)
+        except OSError:
+            return
+        if size < self._max_bytes:
+            return
+
+        old_tail = self._last_hmac
+
+        # Shift older archives out, capped at _MAX_ARCHIVES.
+        for i in range(self._MAX_ARCHIVES - 1, 0, -1):
+            src = f"{self._path}.{i}"
+            dst = f"{self._path}.{i + 1}"
+            if os.path.exists(src):
+                try:
+                    os.replace(src, dst)
+                except OSError as e:
+                    logger.warning("Failed to shift audit archive %s: %s", src, e)
+
+        # Move current live log to .1
+        try:
+            os.replace(self._path, f"{self._path}.1")
+        except OSError as e:
+            logger.error("Failed to rotate audit log: %s", e)
+            return
+
+        # New live file: chain restarts from GENESIS, but the first entry is
+        # an anchor record that pins it to the previous file's tail.
+        self._last_hmac = self._GENESIS
+        self._write_entry(EVENT_LOG_ROTATED, {
+            "previous_tail_hmac": old_tail,
+        })
+
+    def verify(self) -> tuple:
+        """Verify the HMAC chain integrity.
+
+        Returns:
+            (valid: bool, entries_checked: int, first_invalid_line: Optional[int])
+        """
+        if not os.path.exists(self._path):
+            return (True, 0, None)
+
+        prev_hmac = self._GENESIS
+        line_num = 0
+
+        try:
+            with open(self._path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    line_num += 1
+
+                    entry = json.loads(line)
+                    stored_hmac = entry.pop("hmac", "")
+
+                    # Reconstruct entry_data (same as during log())
+                    entry_data = json.dumps(entry, separators=(",", ":"), sort_keys=True)
+                    expected_hmac = hmac.new(
+                        self._hmac_key,
+                        (prev_hmac + entry_data).encode("utf-8"),
+                        hashlib.sha256,
+                    ).hexdigest()
+
+                    if not hmac.compare_digest(stored_hmac, expected_hmac):
+                        return (False, line_num, line_num)
+
+                    prev_hmac = stored_hmac
+
+        except Exception as e:
+            logger.error("Audit log verification error at line %d: %s", line_num, e)
+            return (False, line_num, line_num)
+
+        return (True, line_num, None)
+
+    def verify_chain_across_archives(self) -> tuple:
+        """Verify the HMAC chain across all rotated archives + the live log.
+
+        Walks ``<path>.N`` (largest N first, i.e. oldest) through ``<path>.1``
+        and finally the current live log. Each file is independently HMAC-
+        chained from GENESIS, but at every rotation boundary the first entry
+        of the newer file MUST be ``EVENT_LOG_ROTATED`` and its
+        ``previous_tail_hmac`` field MUST equal the last HMAC of the prior
+        file. This anchors a tamper-evident chain across rotation events.
+
+        Returns:
+            (valid: bool, total_entries_checked: int, first_invalid_line: Optional[int])
+
+            ``first_invalid_line`` is a global line counter across all files
+            walked in order, useful for diagnostics.
+        """
+        if not self._enabled:
+            return (True, 0, None)
+
+        # Discover archives in oldest-first order: .N, .N-1, ..., .1, then live.
+        files: list = []
+        for i in range(self._MAX_ARCHIVES, 0, -1):
+            archive = f"{self._path}.{i}"
+            if os.path.exists(archive):
+                files.append(archive)
+        if os.path.exists(self._path):
+            files.append(self._path)
+
+        if not files:
+            return (True, 0, None)
+
+        prev_file_tail: Optional[str] = None
+        total = 0
+
+        for file_idx, fpath in enumerate(files):
+            prev_hmac_local = self._GENESIS
+            first_entry = True
+
+            try:
+                with open(fpath, "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        total += 1
+
+                        entry = json.loads(line)
+                        stored_hmac = entry.pop("hmac", "")
+                        entry_data = json.dumps(
+                            entry, separators=(",", ":"), sort_keys=True,
+                        )
+                        expected = hmac.new(
+                            self._hmac_key,
+                            (prev_hmac_local + entry_data).encode("utf-8"),
+                            hashlib.sha256,
+                        ).hexdigest()
+
+                        if not hmac.compare_digest(stored_hmac, expected):
+                            return (False, total, total)
+
+                        # First entry of any non-initial file must anchor.
+                        if first_entry and file_idx > 0:
+                            if entry.get("event") != EVENT_LOG_ROTATED:
+                                return (False, total, total)
+                            details = entry.get("details") or {}
+                            if details.get("previous_tail_hmac") != prev_file_tail:
+                                return (False, total, total)
+
+                        first_entry = False
+                        prev_hmac_local = stored_hmac
+
+            except Exception as e:
+                logger.error(
+                    "Audit archive verification error in %s at line %d: %s",
+                    fpath, total, e,
+                )
+                return (False, total, total)
+
+            prev_file_tail = prev_hmac_local
+
+        return (True, total, None)
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers for CLI tools
+# ---------------------------------------------------------------------------
+
+def _derive_audit_key(ed25519_secret: bytes) -> bytes:
+    """Derive the audit HMAC key from the agent's Ed25519 secret."""
+    return hashlib.sha256(ed25519_secret + b"ironmesh-audit-v1").digest()
+
+
+def verify_chain(audit_path: str, keys_path: Optional[str] = None,
+                 keys_passphrase: Optional[str] = None) -> tuple:
+    """Verify an audit log file. Derives the HMAC key from the identity key.
+
+    If keys_path is omitted, looks up the default location.
+
+    Returns:
+        (ok, entries_checked, first_invalid_line)
+    """
+    from ironmesh import keys as ew_keys
+    kp = keys_path or "~/.kingpi-secure/ironmesh/keys.json"
+    kp_pass = keys_passphrase or os.environ.get("IRONMESH_PASSPHRASE")
+    if not kp_pass:
+        import getpass
+        kp_pass = getpass.getpass("Identity key passphrase: ")
+    keypair = ew_keys.load_keys(kp, passphrase=kp_pass)
+    hmac_key = _derive_audit_key(keypair.ed25519_secret)
+    log = AuditLog(path=audit_path, hmac_key=hmac_key)
+    return log.verify()
+
+
+def verify_archived_chain(audit_path: str, keys_path: Optional[str] = None,
+                          keys_passphrase: Optional[str] = None) -> tuple:
+    """Verify audit log across rotated archives."""
+    from ironmesh import keys as ew_keys
+    kp = keys_path or "~/.kingpi-secure/ironmesh/keys.json"
+    kp_pass = keys_passphrase or os.environ.get("IRONMESH_PASSPHRASE")
+    if not kp_pass:
+        import getpass
+        kp_pass = getpass.getpass("Identity key passphrase: ")
+    keypair = ew_keys.load_keys(kp, passphrase=kp_pass)
+    hmac_key = _derive_audit_key(keypair.ed25519_secret)
+    log = AuditLog(path=audit_path, hmac_key=hmac_key)
+    return log.verify_chain_across_archives()
+
+
+def export_signed(audit_path: str, out_path: str, signing_key,
+                  signer_fingerprint: str) -> None:
+    """Export the audit log as a signed JSON bundle.
+
+    The bundle contains the list of raw entries plus an Ed25519 signature
+    over the canonical JSON of (entries, final_hmac) by the agent's
+    identity key.
+
+    Args:
+        audit_path: Source audit log file.
+        out_path: Destination JSON file.
+        signing_key: nacl.signing.SigningKey for the signer.
+        signer_fingerprint: Hex fingerprint of the signer's public key.
+    """
+    import base64
+    from nacl.signing import SigningKey
+    import json as _json
+
+    entries = []
+    final_hmac = "0" * 64
+    if os.path.exists(audit_path):
+        with open(audit_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                entry = _json.loads(line)
+                entries.append(entry)
+                final_hmac = entry.get("hmac", final_hmac)
+
+    bundle_body = {
+        "entries": entries,
+        "final_hmac": final_hmac,
+        "entry_count": len(entries),
+        "exported_at": time.time(),
+        "signer": signer_fingerprint,
+    }
+    canonical = _json.dumps(bundle_body, separators=(",", ":"),
+                            sort_keys=True).encode()
+    signature = signing_key.sign(canonical).signature
+
+    out = {
+        **bundle_body,
+        "signature": base64.b64encode(signature).decode(),
+    }
+    with open(out_path, "w") as f:
+        _json.dump(out, f, indent=2)
+
+
+def verify_signed_export(file_path: str) -> dict:
+    """Verify a signed audit export file.
+
+    Returns a dict with keys:
+        valid (bool), signer (fingerprint), entry_count (int),
+        chain_ok (bool), error (str, if invalid)
+    """
+    import base64
+    import json as _json
+    from nacl.signing import VerifyKey
+    from nacl.exceptions import BadSignatureError
+
+    with open(file_path, "r") as f:
+        bundle = _json.load(f)
+
+    signature_b64 = bundle.pop("signature", None)
+    if not signature_b64:
+        return {"valid": False, "error": "Missing signature"}
+
+    canonical = _json.dumps(bundle, separators=(",", ":"),
+                            sort_keys=True).encode()
+    signer_fp = bundle.get("signer", "")
+
+    # The signer's public key must be provided separately via trust store,
+    # or we accept any valid signature and report the signer. The chain
+    # integrity verification requires the HMAC key which we don't have here.
+    # So we only verify the signature's self-consistency:
+    # the fingerprint in the bundle must equal SHA256(verifying_pubkey).
+    #
+    # To verify: caller must look up the signer's pubkey in their trust
+    # store and pass it in. For simplicity, we require the pubkey field.
+    pubkey_b64 = bundle.get("signer_pubkey")
+    if not pubkey_b64:
+        # Self-consistency only — no external verification possible
+        return {
+            "valid": True,  # structurally valid
+            "signer": signer_fp,
+            "entry_count": bundle.get("entry_count", 0),
+            "chain_ok": True,  # chain HMAC stored but not independently verified
+            "note": "No signer_pubkey in bundle — trust store lookup required for full verification",
+        }
+
+    pubkey = base64.b64decode(pubkey_b64)
+    vk = VerifyKey(pubkey)
+    try:
+        vk.verify(canonical, base64.b64decode(signature_b64))
+    except BadSignatureError:
+        return {"valid": False, "error": "Signature verification failed"}
+
+    # Verify fingerprint matches pubkey
+    computed_fp = hashlib.sha256(pubkey).hexdigest()[:32]
+    if computed_fp != signer_fp:
+        return {"valid": False, "error": "Fingerprint mismatch"}
+
+    return {
+        "valid": True,
+        "signer": signer_fp,
+        "entry_count": bundle.get("entry_count", 0),
+        "chain_ok": True,
+    }

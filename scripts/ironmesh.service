@@ -1,0 +1,39 @@
+[Unit]
+Description=IronMesh — encrypted agent-to-agent mesh protocol
+Documentation=https://github.com/kingpi-empire/ironmesh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.ironmesh/environment
+ExecStart=__IRONMESH_BIN__ run \
+    --name ${IRONMESH_NAME} \
+    --port ${IRONMESH_PORT:-8765} \
+    --gui \
+    --allow-plaintext-ws
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# --- Hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.ironmesh %h/.kingpi-secure %h/.reticulum
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+SystemCallArchitectures=native
+# Allow only commonly-used syscalls; let Python networking through
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,99 @@
+"""IronMesh end-to-end encryption — NaCl SealedBox over X25519 derived keys.
+
+Per-hop SecretBox encryption protects messages between adjacent peers, but
+relay nodes must decrypt-and-re-encrypt to forward, so they see plaintext.
+This module provides an additional end-to-end layer that only the destination
+can decrypt.
+
+Design:
+    - We derive an X25519 keypair from each node's existing Ed25519 identity
+      via the libsodium-blessed ``crypto_sign_ed25519_*_to_curve25519`` helpers
+      already wrapped in ``ironmesh.keys``.
+    - The sender uses NaCl ``SealedBox`` to encrypt to the destination's
+      derived X25519 public key. SealedBox generates a fresh ephemeral X25519
+      keypair per message and discards the private side, providing
+      forward secrecy *for each individual message*.
+    - Only the destination — holder of the matching X25519 secret derived from
+      its Ed25519 secret — can decrypt.
+
+Wire surface:
+    - Cipher: NaCl SealedBox (XSalsa20-Poly1305 with ephemeral X25519)
+    - Public key: 32 bytes
+    - Ciphertext overhead: 48 bytes (32 ephemeral pubkey + 16 Poly1305 tag)
+
+Threat model:
+    - Relay nodes cannot read e2e payloads (confidentiality from relays).
+    - Relay nodes CAN see source, destination, msg_id, timestamp, message type
+      (header metadata is required for routing).
+    - Inner Ed25519 source signature provides authenticity end-to-end.
+"""
+
+from typing import Optional
+
+from nacl.exceptions import CryptoError
+from nacl.public import PrivateKey as X25519PrivateKey
+from nacl.public import PublicKey as X25519PublicKey
+from nacl.public import SealedBox
+
+from ironmesh.keys import ed25519_to_curve25519_public, ed25519_to_curve25519_secret
+
+
+def seal_to_destination(plaintext: bytes, dest_ed25519_pub: bytes) -> bytes:
+    """End-to-end encrypt ``plaintext`` for the holder of ``dest_ed25519_pub``.
+
+    Args:
+        plaintext: Bytes to encrypt.
+        dest_ed25519_pub: Destination's Ed25519 public key (32 bytes).
+
+    Returns:
+        SealedBox ciphertext (48 bytes longer than plaintext).
+
+    Raises:
+        ValueError: If ``dest_ed25519_pub`` is not a valid 32-byte key.
+    """
+    if not isinstance(dest_ed25519_pub, (bytes, bytearray)):
+        raise ValueError("dest_ed25519_pub must be bytes")
+    if len(dest_ed25519_pub) != 32:
+        raise ValueError(
+            f"dest_ed25519_pub must be 32 bytes, got {len(dest_ed25519_pub)}"
+        )
+    if not isinstance(plaintext, (bytes, bytearray)):
+        raise ValueError("plaintext must be bytes")
+
+    x25519_pub = ed25519_to_curve25519_public(bytes(dest_ed25519_pub))
+    box = SealedBox(X25519PublicKey(x25519_pub))
+    return bytes(box.encrypt(bytes(plaintext)))
+
+
+def unseal_from_source(sealed: bytes, my_ed25519_secret: bytes) -> bytes:
+    """End-to-end decrypt a SealedBox payload addressed to us.
+
+    Args:
+        sealed: SealedBox ciphertext from ``seal_to_destination``.
+        my_ed25519_secret: Our Ed25519 secret key (32 bytes).
+
+    Returns:
+        Decrypted plaintext bytes.
+
+    Raises:
+        ValueError: If decryption fails (wrong recipient, corruption,
+                    truncation, or tampering).
+    """
+    if not isinstance(my_ed25519_secret, (bytes, bytearray)):
+        raise ValueError("my_ed25519_secret must be bytes")
+    if not isinstance(sealed, (bytes, bytearray)):
+        raise ValueError("sealed must be bytes")
+
+    x25519_priv_bytes = ed25519_to_curve25519_secret(bytes(my_ed25519_secret))
+    box = SealedBox(X25519PrivateKey(x25519_priv_bytes))
+    try:
+        return bytes(box.decrypt(bytes(sealed)))
+    except CryptoError as e:
+        raise ValueError(f"E2E decryption failed: {e}")
+
+
+def can_seal_to(dest_ed25519_pub: Optional[bytes]) -> bool:
+    """Return True if we have a usable destination key for sealing."""
+    return isinstance(dest_ed25519_pub, (bytes, bytearray)) and len(
+        dest_ed25519_pub
+    ) == 32

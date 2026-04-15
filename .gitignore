@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing
+.pytest_cache/
+.hypothesis/
+.coverage
+htmlcov/
+coverage.xml
+.ruff_cache/
+.mypy_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+temp.log
+temp2.log
+logs/
+
+# Keys (NEVER commit secrets)
+keys.json
+*.pem
+*.key
+passphrase
+.ironmesh/
+.kingpi-secure/
+.reticulum/
+
+# SQLite
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+
+# Benchmark output
+tests/harness/*.csv
+tests/harness/bench_results*.csv
+tests/harness/baseline*.csv
+tests/harness/chaos*.csv
+tests/harness/smoke_results.csv
+tests/harness/v072_baseline.csv
+tests/harness/final_chaos*.csv
+
+# Backup archives
+*.tar.gz
+*.bak
+*.bak-*
+*.broken
+
+# Claude-specific workspace artifacts
+.claude/
+
+# Internal / work-in-progress artifacts (audit prompts, deployment notes,
+# agent prompt fragments) — never ship in public releases
+.internal/
