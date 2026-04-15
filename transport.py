@@ -12,8 +12,6 @@ from typing import AsyncIterator, Optional
 
 import websockets
 
-from ironmesh.protocol import Frame
-
 logger = logging.getLogger("ironmesh.transport")
 
 

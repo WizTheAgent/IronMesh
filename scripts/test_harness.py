@@ -27,7 +27,7 @@ import statistics
 import sys
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
 
 try:

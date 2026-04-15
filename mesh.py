@@ -23,7 +23,6 @@ Persistence:
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import hmac
 import json
@@ -32,14 +31,11 @@ import os
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from ironmesh.audit import (
-    EVENT_CAPABILITY_LEARNED,
     EVENT_CIRCUIT_BREAKER_TRIPPED,
     EVENT_DUPLICATE_DROPPED,
-    EVENT_E2E_DECRYPT_FAILURE,
-    EVENT_LOG_ROTATED,
     EVENT_MESH_PARTITION_SUSPECTED,
     EVENT_MESSAGE_RELAYED,
     EVENT_NO_ROUTE,

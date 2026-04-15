@@ -70,9 +70,27 @@ addopts = "-v --tb=short"
 [tool.ruff]
 target-version = "py39"
 line-length = 100
+extend-exclude = [
+    "tests",
+    "examples",
+    "ironmesh_mcp/__pycache__",
+    "scripts/test_harness.py",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
+# E501 (line-too-long) — many docstrings and URLs legitimately wrap long.
+#   Enforcing it at 100 columns adds churn without catching bugs.
+# E402 (module-import-not-at-top) — IronMesh has several modules with
+#   conditional/lazy imports inside docstrings or behind try blocks; the
+#   rule fires on legitimate patterns.
+# F401 in package __init__.py — re-exporting for the public API is
+#   the intended use of imports there.
+ignore = ["E501", "E402"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"ironmesh_mcp/__init__.py" = ["F401"]
 
 [tool.mypy]
 python_version = "3.9"

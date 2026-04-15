@@ -401,8 +401,8 @@ def export_signed(audit_path: str, out_path: str, signing_key,
         signer_fingerprint: Hex fingerprint of the signer's public key.
     """
     import base64
-    from nacl.signing import SigningKey
     import json as _json
+
 
     entries = []
     final_hmac = "0" * 64
@@ -444,8 +444,9 @@ def verify_signed_export(file_path: str) -> dict:
     """
     import base64
     import json as _json
-    from nacl.signing import VerifyKey
+
     from nacl.exceptions import BadSignatureError
+    from nacl.signing import VerifyKey
 
     with open(file_path, "r") as f:
         bundle = _json.load(f)

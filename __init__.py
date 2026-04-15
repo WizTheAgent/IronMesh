@@ -7,24 +7,24 @@ the v0.3 WebSocket + mDNS + per-hop NaCl SecretBox foundation.
 
 __version__ = "0.7.2"
 
-from ironmesh.protocol import MessageType, MessagePriority, Frame, PeerState, MessageBus
+from ironmesh.capabilities import CapabilityRegistry
 from ironmesh.crypto import (
-    encrypt_message,
     decrypt_message,
     ecdh_exchange,
+    encrypt_message,
     generate_ephemeral_keypair,
     sign_message,
     verify_signature,
 )
-from ironmesh.keys import AgentKeys, generate_keypair, generate_ephemeral
+from ironmesh.keys import AgentKeys, generate_ephemeral, generate_keypair
 from ironmesh.mesh import (
+    CircuitBreaker,
+    DedupCache,
     MeshRouter,
     RoutingTable,
-    DedupCache,
-    CircuitBreaker,
 )
 from ironmesh.mesh_crypto import seal_to_destination, unseal_from_source
-from ironmesh.capabilities import CapabilityRegistry
+from ironmesh.protocol import Frame, MessageBus, MessagePriority, MessageType, PeerState
 
 __all__ = [
     "__version__",
