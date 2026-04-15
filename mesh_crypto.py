@@ -31,9 +31,7 @@ Threat model:
 from typing import Optional
 
 from nacl.exceptions import CryptoError
-from nacl.public import PrivateKey as X25519PrivateKey
-from nacl.public import PublicKey as X25519PublicKey
-from nacl.public import SealedBox
+from nacl.public import PrivateKey as X25519PrivateKey, PublicKey as X25519PublicKey, SealedBox
 
 from ironmesh.keys import ed25519_to_curve25519_public, ed25519_to_curve25519_secret
 

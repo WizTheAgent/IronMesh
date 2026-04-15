@@ -31,10 +31,12 @@ except ImportError:
     ReticulumTransport = None  # type: ignore[assignment,misc]
     RNSLinkAdapter = None  # type: ignore[assignment,misc]
 
-from ironmesh import crypto as ew_crypto
-from ironmesh import discovery as ew_discovery
-from ironmesh import keys as ew_keys
-from ironmesh import protocol as ew_protocol
+from ironmesh import (
+    crypto as ew_crypto,
+    discovery as ew_discovery,
+    keys as ew_keys,
+    protocol as ew_protocol,
+)
 from ironmesh.audit import (
     EVENT_AUTH_BLOCKED,
     EVENT_AUTH_FAILURE,
