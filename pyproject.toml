@@ -92,6 +92,13 @@ ignore = ["E501", "E402"]
 "__init__.py" = ["F401"]
 "ironmesh_mcp/__init__.py" = ["F401"]
 
+[tool.ruff.lint.isort]
+# Pin first-party package detection so CI and local agree on import groups.
+# Without this, ruff's heuristic can vary by environment (editable install,
+# venv layout, etc.) and I001 fires on CI but not locally.
+known-first-party = ["ironmesh", "ironmesh_mcp"]
+combine-as-imports = true
+
 [tool.mypy]
 python_version = "3.9"
 warn_return_any = true
