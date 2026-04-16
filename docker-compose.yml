@@ -11,7 +11,7 @@
 services:
   ironmesh:
     build: .
-    image: ironmesh:0.7.0
+    image: ironmesh:0.8.0
     container_name: ironmesh
     restart: unless-stopped
     ports:
@@ -23,7 +23,6 @@ services:
       IRONMESH_PASSPHRASE: ${IRONMESH_PASSPHRASE:?set IRONMESH_PASSPHRASE in .env}
     volumes:
       - ironmesh-data:/data/ironmesh
-      - ironmesh-keys:/data/kingpi-secure
       - ironmesh-rns:/data/reticulum
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import socket; s=socket.socket(); s.settimeout(2); s.connect((\"127.0.0.1\",8765)); s.close()'"]
@@ -36,7 +35,7 @@ services:
   ironmesh-peer:
     profiles: ["pair"]
     build: .
-    image: ironmesh:0.7.0
+    image: ironmesh:0.8.0
     container_name: ironmesh-peer
     restart: unless-stopped
     ports:
@@ -48,13 +47,10 @@ services:
       IRONMESH_PASSPHRASE: ${IRONMESH_PASSPHRASE:?set IRONMESH_PASSPHRASE in .env}
     volumes:
       - ironmesh-peer-data:/data/ironmesh
-      - ironmesh-peer-keys:/data/kingpi-secure
       - ironmesh-peer-rns:/data/reticulum
 
 volumes:
   ironmesh-data:
-  ironmesh-keys:
   ironmesh-rns:
   ironmesh-peer-data:
-  ironmesh-peer-keys:
   ironmesh-peer-rns:

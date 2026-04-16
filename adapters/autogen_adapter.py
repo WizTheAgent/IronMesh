@@ -24,7 +24,7 @@ import json
 import threading
 import time
 from collections import deque
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List
 
 from ironmesh.agent import Agent
 

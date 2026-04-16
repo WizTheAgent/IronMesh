@@ -15,7 +15,7 @@ For the cryptographic primitives and wire-level detail, see
 
 | # | Asset | Sensitivity | Location |
 |---|-------|-------------|----------|
-| A1 | Ed25519 identity private key | **Critical** | `~/.kingpi-secure/ironmesh/keys.json` (Argon2id + SecretBox) |
+| A1 | Ed25519 identity private key | **Critical** | `~/.ironmesh/keys.json` (Argon2id + SecretBox) |
 | A2 | Ephemeral X25519 session private key | High (in-memory only, wiped after ECDH) | RAM, never written |
 | A3 | Session key (shared secret) | High | `PeerState.session_key` in RAM |
 | A4 | Passphrase (for keys + mutual auth) | High | RAM, file, or env var |

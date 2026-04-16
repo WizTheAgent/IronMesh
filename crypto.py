@@ -170,8 +170,8 @@ def secure_wipe(obj):
             if isinstance(raw, bytearray):
                 _zero(raw)
                 return
-        except Exception:
-            pass
+        except (AttributeError, TypeError) as e:
+            logger.debug("secure_wipe: cannot access nacl private key: %s", e)
         # Fall through: best-effort. Immutable bytes path has no
         # reliable wipe in pure Python; log and continue.
         logger.debug("secure_wipe: nacl object holds immutable bytes — cannot wipe")

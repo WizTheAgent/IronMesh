@@ -140,7 +140,7 @@ All from **PyNaCl** (libsodium bindings). No custom crypto.
 ## Key Management
 
 ### Identity Keys (Ed25519)
-- Generated once per agent, persisted to `~/.kingpi-secure/ironmesh/keys.json`
+- Generated once per agent, persisted to `~/.ironmesh/keys.json`
 - Used for identity verification and message signing
 - Can be passphrase-protected with Argon2id (recommended for sensitive deployments)
 - Key rotation triggers re-handshake with all connected peers

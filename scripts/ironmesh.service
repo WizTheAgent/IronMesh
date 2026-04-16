@@ -1,6 +1,6 @@
 [Unit]
 Description=IronMesh — encrypted agent-to-agent mesh protocol
-Documentation=https://github.com/kingpi-empire/ironmesh
+Documentation=https://github.com/WizTheAgent/IronMesh
 After=network-online.target
 Wants=network-online.target
 
@@ -22,7 +22,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.ironmesh %h/.kingpi-secure %h/.reticulum
+ReadWritePaths=%h/.ironmesh %h/.reticulum
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
