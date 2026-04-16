@@ -53,8 +53,9 @@ import urllib.request
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ironmesh.agent import Agent
-from ironmesh.roles import get_role_prompt, list_roles
 from ironmesh.conversation import (
+    END_BUDGET_EXCEEDED,
+    END_GOAL_ACHIEVED,
     END_TURN_LIMIT,
     KIND_END,
     KIND_ERROR,
@@ -62,6 +63,12 @@ from ironmesh.conversation import (
     ConvEnvelope,
     make_reply,
 )
+from ironmesh.roles import get_role_prompt, list_roles
+
+# When the model thinks the conversation goal is met it prefixes its
+# reply with this marker; the bridge turns that into a graceful
+# [END] end_reason=goal-achieved frame so the other side stops.
+DONE_PREFIX = "[DONE]"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -164,6 +171,16 @@ def main():
         role_name = "assistant"
         system_prompt = get_role_prompt("assistant") or ""
 
+    # Append the graceful-termination addendum so the model knows how
+    # to end a conversation cleanly. Tiny cost per prompt; big win in
+    # avoiding unproductive turns.
+    system_prompt = system_prompt.rstrip() + (
+        "\n\nIf the conversation's goal has been met or there's nothing "
+        "useful to add, start your reply with the literal token "
+        "[DONE] followed by a one-sentence reason. A downstream "
+        "relay will stop the exchange when it sees that."
+    )
+
     caps = [f"llm:{args.model}"]
     if role_name:
         caps.append(f"role:{role_name}")
@@ -187,10 +204,13 @@ def main():
     )
 
     stats = {"received": 0, "replied": 0, "errors": 0, "ended": 0,
-             "cooldown_drops": 0, "conv_frames": 0, "legacy_prefix": 0}
+             "cooldown_drops": 0, "conv_frames": 0, "legacy_prefix": 0,
+             "done_signals": 0, "budget_hits": 0}
     # conv_id -> last timestamp we processed it. Small bounded dict
     # (capped by _trim_conv_seen) so we don't leak memory on long runs.
     conv_seen: dict[str, float] = {}
+    # conv_id -> cumulative response bytes + start wall-clock for budget enforcement
+    conv_budget_state: dict[str, dict] = {}
 
     def _trim_conv_seen(max_entries: int = 1024) -> None:
         if len(conv_seen) > max_entries:
@@ -198,6 +218,7 @@ def main():
             cutoff = sorted(conv_seen.values())[len(conv_seen) // 2]
             for k in [k for k, v in conv_seen.items() if v < cutoff]:
                 conv_seen.pop(k, None)
+                conv_budget_state.pop(k, None)
 
     def _dispatch_prompt(peer_id: str, prompt: str,
                          parent_env: ConvEnvelope | None,
@@ -242,6 +263,43 @@ def main():
             conv_seen[conv_id] = now
             _trim_conv_seen()
 
+            # Budget pre-check: if the incoming envelope declared a
+            # wall-clock budget and we've already spent it for this
+            # conv_id, end early without touching the model.
+            budget = parent_env.budget
+            if budget is not None:
+                state = conv_budget_state.setdefault(
+                    conv_id, {"bytes": 0, "start": now},
+                )
+                if budget.max_seconds is not None and (now - state["start"]) >= budget.max_seconds:
+                    stats["budget_hits"] += 1
+                    stats["ended"] += 1
+                    log.info("[%s] conv %s time budget exhausted (%.1fs)",
+                             peer_id[:8], conv_id, now - state["start"])
+                    if is_conv_frame:
+                        end_env = make_reply(parent_env, "time budget exhausted",
+                                             kind=KIND_END,
+                                             end_reason=END_BUDGET_EXCEEDED)
+                        asyncio.run_coroutine_threadsafe(
+                            agent.send(peer_id, end_env.encode(), msg_type="CONV"),
+                            agent._loop,
+                        )
+                    return
+                if budget.max_bytes is not None and state["bytes"] >= budget.max_bytes:
+                    stats["budget_hits"] += 1
+                    stats["ended"] += 1
+                    log.info("[%s] conv %s byte budget exhausted (%d/%d)",
+                             peer_id[:8], conv_id, state["bytes"], budget.max_bytes)
+                    if is_conv_frame:
+                        end_env = make_reply(parent_env, "byte budget exhausted",
+                                             kind=KIND_END,
+                                             end_reason=END_BUDGET_EXCEEDED)
+                        asyncio.run_coroutine_threadsafe(
+                            agent.send(peer_id, end_env.encode(), msg_type="CONV"),
+                            agent._loop,
+                        )
+                    return
+
         stats["received"] += 1
         tag = ""
         if parent_env is not None:
@@ -269,6 +327,38 @@ def main():
                     await agent.send(peer_id, response.encode())
                 return
             stats["replied"] += 1
+            # Book-keeping: accumulate response bytes for the conv so
+            # we can budget-cap later turns.
+            if parent_env is not None:
+                state = conv_budget_state.setdefault(
+                    parent_env.conv_id,
+                    {"bytes": 0, "start": time.monotonic()},
+                )
+                state["bytes"] += len(response.encode("utf-8"))
+
+            # [DONE] signal: the model marked the conversation complete.
+            # Strip the token and emit an end frame (CONV) or end marker
+            # (legacy) so the orchestrator halts cleanly.
+            done = False
+            if response.lstrip().startswith(DONE_PREFIX):
+                done = True
+                stats["done_signals"] += 1
+                # Keep the rest of the line as the reason text.
+                tail = response.lstrip()[len(DONE_PREFIX):].strip()
+                if is_conv_frame and parent_env is not None:
+                    end_env = make_reply(parent_env, tail or "goal achieved",
+                                         kind=KIND_END,
+                                         end_reason=END_GOAL_ACHIEVED)
+                    await agent.send(peer_id, end_env.encode(), msg_type="CONV")
+                else:
+                    await agent.send(peer_id, END_PREFIX + (tail or b"goal achieved".decode()).encode())
+                log.info("[%s] conv %s done: %s",
+                         peer_id[:8],
+                         parent_env.conv_id if parent_env else "-",
+                         tail[:60])
+                return
+            _ = done  # (kept for readability; the return above handles it)
+
             if is_conv_frame and parent_env is not None:
                 reply_env = make_reply(parent_env, response,
                                        kind=KIND_RESPONSE,
@@ -351,9 +441,11 @@ def main():
     try:
         while True:
             time.sleep(30)
-            log.info("Stats: received=%d replied=%d ended=%d cooldown=%d errors=%d peers=%d",
-                     stats["received"], stats["replied"], stats["ended"],
-                     stats["cooldown_drops"], stats["errors"],
+            log.info("Stats: received=%d replied=%d done=%d budget=%d ended=%d cooldown=%d conv=%d errors=%d peers=%d",
+                     stats["received"], stats["replied"],
+                     stats["done_signals"], stats["budget_hits"],
+                     stats["ended"], stats["cooldown_drops"],
+                     stats["conv_frames"], stats["errors"],
                      len(agent.peers))
     except KeyboardInterrupt:
         pass
