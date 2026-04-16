@@ -784,14 +784,13 @@ def cmd_demo(args):
                   flush=True)
             return 0
         finally:
-            # Silence the Windows proactor-loop shutdown race that fires a
-            # harmless AssertionError when sockets close during server
-            # teardown; it's noise, not a real failure.
-            logging.getLogger("asyncio").setLevel(logging.CRITICAL + 1)
+            # KeyboardInterrupt during the 5s stop-timeout is fine to
+            # swallow; the BridgeDaemon's loop-exception handler takes
+            # care of the Windows proactor shutdown race.
             for stop_fn in (alice.stop, bob.stop):
                 try:
                     stop_fn()
-                except (KeyboardInterrupt, Exception):
+                except KeyboardInterrupt:
                     pass
 
 
