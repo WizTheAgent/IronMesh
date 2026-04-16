@@ -10,6 +10,32 @@ characters). The passphrase must match across every peer in the mesh.
 export IRONMESH_PASSPHRASE='any-strong-passphrase-12-plus'
 ```
 
+## ai_to_ai_dialogue.py — two AI agents holding a bounded conversation
+
+Demonstrates the "AI agents talk to each other without the user babysitting,
+and without looping forever" pattern. Connects to the mesh, picks two
+peers that advertise `llm:*`, seeds a prompt, and relays replies back
+and forth until a configured turn cap is reached. Three loop-prevention
+layers in effect:
+
+1. Responses carry an `[LLM] ` prefix so a reply landing in another
+   LLM bridge's inbox never re-triggers generation.
+2. Every relayed message has a `[CONV:<id>:<turn>/<max>]` header
+   that `llm_bridge.py` reads to enforce the cap.
+3. `llm_bridge.py`'s per-conversation cooldown drops accidental
+   self-replay.
+
+```bash
+export IRONMESH_PASSPHRASE='your-shared-passphrase-12-plus'
+python examples/ai_to_ai_dialogue.py \
+    --peer-a gatekeeper --peer-b kingpi \
+    --seed "Debate whether a Raspberry Pi is a good home server." \
+    --turns 4
+```
+
+Leave out `--peer-a` / `--peer-b` and the script auto-discovers the
+first two peers that advertise any `llm:*` capability.
+
 ## ollama_swarm.py — two Ollama agents talking over IronMesh
 
 The flagship demo. One node runs a local Ollama model and answers
