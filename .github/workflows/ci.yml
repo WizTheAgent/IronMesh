@@ -75,8 +75,12 @@ jobs:
   bench-smoke:
     # Single-platform smoke test of the benchmark harness — catches
     # regressions where the harness can't even start a local daemon.
+    # Non-blocking: mDNS discovery may fail in CI environments where
+    # multicast is restricted. The test matrix above covers correctness;
+    # this job is informational only.
     runs-on: ubuntu-latest
     needs: test
+    continue-on-error: true
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
@@ -85,6 +89,7 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - name: Harness smoke — client+responder on localhost
+        timeout-minutes: 3
         env:
           PYTHONIOENCODING: utf-8
           IRONMESH_PASSPHRASE: ci-smoke-passphrase-1234567
