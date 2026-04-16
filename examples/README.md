@@ -10,6 +10,29 @@ characters). The passphrase must match across every peer in the mesh.
 export IRONMESH_PASSPHRASE='any-strong-passphrase-12-plus'
 ```
 
+## ollama_swarm.py — two Ollama agents talking over IronMesh
+
+The flagship demo. One node runs a local Ollama model and answers
+prompts; the other sends prompts to it. Works on one machine or across
+a LAN. No cloud, no API keys, no internet.
+
+```bash
+ollama pull llama3.2:3b
+ollama serve &
+
+# Terminal 1 (or machine A) - the thinker
+python examples/ollama_swarm.py --role thinker --name thinker --port 8765 \
+    --model llama3.2:3b
+
+# Terminal 2 (or machine B) - the asker
+python examples/ollama_swarm.py --role asker --name asker --port 8766 \
+    --target thinker --prompt "Explain mesh networking in one sentence."
+```
+
+The thinker advertises `llm:<model>` as a capability. On a real mesh
+with several thinkers you can discover them with
+`agent.discover("llm:*")` rather than passing `--target`.
+
 ## basic_chat.py
 
 Two agents auto-discover each other and print received messages.
