@@ -5,8 +5,9 @@ capability discovery, Prometheus metrics, and audit log rotation on top of
 the v0.3 WebSocket + mDNS + per-hop NaCl SecretBox foundation.
 """
 
-__version__ = "0.7.2"
+__version__ = "0.8.0-dev"
 
+from ironmesh.agent import Agent
 from ironmesh.capabilities import CapabilityRegistry
 from ironmesh.crypto import (
     decrypt_message,
@@ -28,6 +29,8 @@ from ironmesh.protocol import Frame, MessageBus, MessagePriority, MessageType, P
 
 __all__ = [
     "__version__",
+    # v0.8: high-level SDK
+    "Agent",
     "MessageType",
     "MessagePriority",
     "Frame",
