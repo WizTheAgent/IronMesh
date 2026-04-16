@@ -1,7 +1,13 @@
-# NAT Traversal Design — IronMesh v0.8.5
+# NAT Traversal Design — IronMesh (deferred)
 
-**Status:** *Proposal / pre-implementation.* This document is the design
-checkpoint; no NAT code has been written yet.
+**Status:** *Accepted design, implementation deferred.* Dated
+2026-04-16. This document is a finished design proposal; it's on the
+roadmap under "Later" ([docs/ROADMAP.md](ROADMAP.md)) but is not
+currently being built. Priority shifted to polish + audit work for
+the v0.8.x line before adding WAN support.
+
+When implementation resumes, no re-design is expected — this doc is
+the starting point.
 
 **Goal:** let two IronMesh agents on different LANs — behind consumer
 routers, carrier-grade NAT, or corporate firewalls — talk to each other
