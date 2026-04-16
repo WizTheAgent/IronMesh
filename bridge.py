@@ -362,6 +362,13 @@ tr:hover td{background:#1c2128}
 <input type="text" id="send-payload" placeholder="Type a message..." autofocus>
 <button id="send-btn">Send</button>
 </div>
+<div class="send-form" style="border-top:1px dashed #30363d">
+<select id="dialog-a"><option value="">AI peer A...</option></select>
+<select id="dialog-b"><option value="">AI peer B...</option></select>
+<input type="number" id="dialog-turns" value="4" min="1" max="20" style="max-width:70px" title="max turns">
+<input type="text" id="dialog-seed" placeholder="Seed prompt for AI-to-AI dialogue...">
+<button id="dialog-btn" style="background:#8957e5;border-color:#8957e5">Start A2A</button>
+</div>
 </div>
 </div>
 </div>
@@ -392,6 +399,17 @@ function handle(msg){
   addFeedItem({peer_id:'self',msg_type:'ACK',direction:'out',payload:'Sent: '+msg.msg_id,timestamp:Date.now()/1000});
  }else if(msg.type==='send_error'){
   addFeedItem({peer_id:'self',msg_type:'ERROR',direction:'sys',payload:msg.error,timestamp:Date.now()/1000});
+ }else if(msg.type==='dialogue_event'){
+  const ev=msg.event||'?';
+  let line='';
+  if(ev==='started'){line='[dialogue '+msg.conv_id+'] '+(msg.peer_a||'').slice(0,12)+' <-> '+(msg.peer_b||'').slice(0,12)+'  max_turns='+msg.max_turns}
+  else if(ev==='turn'){line='Turn '+msg.turn+' ('+(msg.speaker||'?')+'): '+(msg.body||'').slice(0,300)}
+  else if(ev==='end'||ev==='error'){line='['+ev.toUpperCase()+'] '+(msg.speaker||'?')+': '+(msg.reason||'')}
+  else if(ev==='timeout'){line='[TIMEOUT] waiting on '+(msg.waiting_on||'?')+' ('+msg.timeout+'s)'}
+  else if(ev==='turn_cap_reached'){line='[CAP] '+msg.cap+' turns reached'}
+  else if(ev==='finished'){line='[FINISHED]'}
+  else{line='['+ev+'] '+JSON.stringify(msg)}
+  addFeedItem({peer_id:'a2a',msg_type:'DIALOG',direction:ev==='turn'?'in':'sys',payload:line,timestamp:Date.now()/1000});
  }
 }
 function fmtBytes(b){if(b<1024)return b+'B';if(b<1048576)return(b/1024).toFixed(1)+'KB';return(b/1048576).toFixed(1)+'MB'}
@@ -429,6 +447,21 @@ function updateUI(){
   sel.appendChild(opt);
  });
  if(prev)sel.value=prev;
+ // Populate the AI-to-AI dropdowns with peers that advertise an llm:* capability.
+ const caps=state.capabilities||{};
+ const llmNodes=new Set();
+ Object.keys(caps).forEach(c=>{if(c.indexOf('llm:')===0){(caps[c]||[]).forEach(n=>llmNodes.add(n))}});
+ ['dialog-a','dialog-b'].forEach(id=>{
+  const d=$(id);if(!d)return;
+  const prevVal=d.value;
+  d.innerHTML='<option value="">'+(id==='dialog-a'?'AI peer A...':'AI peer B...')+'</option>';
+  peers.forEach(p=>{
+   if(!llmNodes.has(p.node_id))return;
+   const o=document.createElement('option');o.value=p.node_id;o.textContent=(p.name||p.node_id.slice(0,12))+' ('+p.status+')';
+   d.appendChild(o);
+  });
+  if(prevVal)d.value=prevVal;
+ });
  // seed feed from history
  if(state.history&&state.history.length&&!window._seeded){
   window._seeded=true;
@@ -467,6 +500,14 @@ function sendMessage(){
 }
 $('send-btn').addEventListener('click',sendMessage);
 $('send-payload').addEventListener('keydown',e=>{if(e.key==='Enter')sendMessage()});
+function startDialogue(){
+ const a=$('dialog-a').value,b=$('dialog-b').value,seed=$('dialog-seed').value,turns=parseInt($('dialog-turns').value||'4',10);
+ if(!a||!b||!seed){addFeedItem({peer_id:'a2a',msg_type:'DIALOG',direction:'sys',payload:'Pick two AI peers and a seed prompt.',timestamp:Date.now()/1000});return}
+ if(a===b){addFeedItem({peer_id:'a2a',msg_type:'DIALOG',direction:'sys',payload:'Peer A and B must differ.',timestamp:Date.now()/1000});return}
+ ws.send(JSON.stringify({action:'start_dialogue',peer_a:a,peer_b:b,seed:seed,max_turns:turns}));
+ $('dialog-seed').value='';
+}
+$('dialog-btn').addEventListener('click',startDialogue);
 connect();
 })();
 </script></body></html>"""
@@ -3440,10 +3481,159 @@ class BridgeDaemon:
                     "type": "send_error", "error": f"Rekey failed: {e}",
                 }))
 
+        elif action == "start_dialogue":
+            # v0.8.2: in-process orchestrator for AI-to-AI dialogue.
+            # Accepts {peer_a, peer_b, seed, max_turns?, budget_seconds?,
+            # budget_bytes?} where peer_a and peer_b are node_ids. Spawns
+            # a background task that shuttles CONV frames between the two
+            # peers and streams transcript events back via the existing
+            # gui broadcast path (type="dialogue_event").
+            try:
+                await self._spawn_dialogue(cmd, websocket)
+            except Exception as e:
+                await websocket.send(json.dumps({
+                    "type": "send_error", "error": f"Dialogue failed: {e}",
+                }))
+
         else:
             await websocket.send(json.dumps({
                 "type": "send_error", "error": f"Unknown action: {action}",
             }))
+
+    async def _spawn_dialogue(self, cmd: dict, websocket) -> None:
+        """Run a bounded AI-to-AI dialogue between two mesh peers.
+
+        Sends the seed to peer_a as turn 0 via a CONV frame, then
+        shuttles each response to the other peer until we see an end
+        frame, hit the turn cap, or time out.
+        """
+        import uuid as _uuid
+
+        from ironmesh.conversation import (
+            KIND_PROMPT as _KP,
+            Budget as _Budget,
+            ConvEnvelope as _CE,
+        )
+
+        peer_a = cmd.get("peer_a")
+        peer_b = cmd.get("peer_b")
+        seed = cmd.get("seed") or ""
+        max_turns = int(cmd.get("max_turns", 4))
+        turn_timeout = float(cmd.get("turn_timeout", 120.0))
+        budget_seconds = cmd.get("budget_seconds")
+        budget_bytes = cmd.get("budget_bytes")
+        if not peer_a or not peer_b:
+            raise ValueError("peer_a and peer_b required")
+        if peer_a not in self.peers or peer_b not in self.peers:
+            raise ValueError("one or both peers not in peer table")
+
+        conv_id = _uuid.uuid4().hex[:12]
+        budget = None
+        if budget_seconds is not None or budget_bytes is not None:
+            budget = _Budget(
+                max_seconds=(float(budget_seconds)
+                             if budget_seconds is not None else None),
+                max_bytes=(int(budget_bytes)
+                           if budget_bytes is not None else None),
+            )
+
+        def _name_of(pid: str) -> str:
+            state = self.peers.get(pid)
+            return getattr(state, "agent_name", None) or pid[:12]
+
+        async def emit(payload: dict) -> None:
+            await websocket.send(json.dumps({
+                "type": "dialogue_event",
+                "conv_id": conv_id,
+                **payload,
+            }, default=str))
+
+        # Queue incoming CONV envelopes for THIS conversation only.
+        q: asyncio.Queue = asyncio.Queue()
+        from ironmesh.conversation import ConvEnvelope as _CE_cls
+
+        def _on_conv_event(event_type, data):
+            if event_type != "CONV":
+                return
+            pid = data.get("peer_id", "") if hasattr(data, "get") else ""
+            pl = data.get("payload", b"") if hasattr(data, "get") else b""
+            if isinstance(pl, str):
+                pl = pl.encode("utf-8")
+            try:
+                env = _CE_cls.decode(pl)
+            except Exception:
+                return
+            if env.conv_id != conv_id:
+                return
+            q.put_nowait((pid, env))
+
+        self.bus.on_any(_on_conv_event)
+
+        try:
+            await emit({
+                "event": "started",
+                "peer_a": peer_a, "peer_b": peer_b,
+                "max_turns": max_turns, "seed": seed,
+            })
+
+            # Turn 0: send seed to peer_a.
+            first_env = _CE(
+                conv_id=conv_id, turn=0, max_turns=max_turns,
+                kind=_KP, body=seed,
+                from_role="orchestrator", to_role=_name_of(peer_a),
+                budget=budget,
+            )
+            await self.send_message(peer_a, "CONV", first_env.encode())
+            await emit({"event": "turn", "turn": 0,
+                        "speaker": "ORCHESTRATOR", "body": seed})
+
+            current = peer_a
+            other = peer_b
+            while True:
+                try:
+                    pid, env = await asyncio.wait_for(q.get(), timeout=turn_timeout)
+                except asyncio.TimeoutError:
+                    await emit({"event": "timeout",
+                                "waiting_on": _name_of(current),
+                                "timeout": turn_timeout})
+                    break
+
+                if env.kind in ("end", "error"):
+                    await emit({
+                        "event": env.kind,
+                        "speaker": _name_of(pid),
+                        "reason": env.end_reason or env.body,
+                    })
+                    break
+
+                await emit({
+                    "event": "turn", "turn": env.turn,
+                    "speaker": _name_of(pid), "body": env.body,
+                })
+
+                if env.turn >= max_turns:
+                    await emit({"event": "turn_cap_reached", "cap": max_turns})
+                    break
+
+                # Relay to the other peer, carrying the same turn.
+                current, other = other, current
+                next_env = _CE(
+                    conv_id=conv_id, turn=env.turn, max_turns=max_turns,
+                    kind=_KP, body=env.body,
+                    from_role=_name_of(pid), to_role=_name_of(current),
+                    budget=budget,
+                )
+                await self.send_message(current, "CONV", next_env.encode())
+        finally:
+            # Detach the listener. MessageBus has no explicit off_any API
+            # for catch-alls; accept the small per-conversation overhead
+            # and just leave a no-op closure behind. Trim the list to
+            # avoid growth on long-running processes.
+            try:
+                self.bus._catch_all.remove(_on_conv_event)
+            except ValueError:
+                pass
+            await emit({"event": "finished"})
 
     async def _start_gui_server(self):
         """Start the GUI WebSocket+HTTP server on port+1."""
