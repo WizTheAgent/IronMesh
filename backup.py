@@ -6,7 +6,7 @@ SecretBox.  Same crypto pattern as :mod:`ironmesh.keys`.
 
 The archive contains:
     manifest.json     — version, node_id (if derivable), created_at
-    keys.json         — copy of ~/.kingpi-secure/ironmesh/keys.json
+    keys.json         — copy of ~/.ironmesh/keys.json
     known_peers.json  — copy of ~/.ironmesh/known_peers.json
     audit.log         — last ~10k lines of ~/.ironmesh/audit.log
 
@@ -74,7 +74,7 @@ def _tail_file(path: str, max_lines: int) -> bytes:
 def create_backup(
     out_path: str,
     passphrase: str,
-    keys_path: str = "~/.kingpi-secure/ironmesh/keys.json",
+    keys_path: str = "~/.ironmesh/keys.json",
     trust_path: str = "~/.ironmesh/known_peers.json",
     audit_path: str = "~/.ironmesh/audit.log",
     node_id: Optional[str] = None,
@@ -169,7 +169,7 @@ def create_backup(
 def restore_backup(
     in_path: str,
     passphrase: str,
-    keys_path: str = "~/.kingpi-secure/ironmesh/keys.json",
+    keys_path: str = "~/.ironmesh/keys.json",
     trust_path: str = "~/.ironmesh/known_peers.json",
     audit_path: str = "~/.ironmesh/audit.log",
     force: bool = False,
@@ -218,6 +218,9 @@ def restore_backup(
     with tarfile.open(fileobj=tar_buf, mode="r:gz") as tar:
         for member in tar.getmembers():
             if not member.isfile():
+                continue
+            if ".." in member.name or member.name.startswith("/") or "\\" in member.name:
+                logger.warning("Skipping unsafe tar member path: %s", member.name)
                 continue
             f = tar.extractfile(member)
             if f is None:

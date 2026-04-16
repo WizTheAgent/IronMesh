@@ -13,7 +13,7 @@ class IronMeshConfig:
     """Centralized configuration for IronMesh."""
     # Identity
     agent_name: str = "agent"
-    keys_path: str = "~/.kingpi-secure/ironmesh/keys.json"
+    keys_path: str = "~/.ironmesh/keys.json"
     keys_passphrase: Optional[str] = None
 
     # Networking

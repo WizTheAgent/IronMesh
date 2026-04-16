@@ -481,7 +481,7 @@ class BridgeDaemon:
 
     def __init__(self, name: str = "agent", port: int = 8765,
                  passphrase: Optional[str] = None,
-                 keys_path: str = "~/.kingpi-secure/ironmesh/keys.json",
+                 keys_path: str = "~/.ironmesh/keys.json",
                  db_path: str = "~/.ironmesh/data.db",
                  keys_passphrase: Optional[str] = None,
                  tls_cert: Optional[str] = None,

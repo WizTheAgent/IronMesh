@@ -360,7 +360,7 @@ def verify_chain(audit_path: str, keys_path: Optional[str] = None,
         (ok, entries_checked, first_invalid_line)
     """
     from ironmesh import keys as ew_keys
-    kp = keys_path or "~/.kingpi-secure/ironmesh/keys.json"
+    kp = keys_path or "~/.ironmesh/keys.json"
     kp_pass = keys_passphrase or os.environ.get("IRONMESH_PASSPHRASE")
     if not kp_pass:
         import getpass
@@ -375,7 +375,7 @@ def verify_archived_chain(audit_path: str, keys_path: Optional[str] = None,
                           keys_passphrase: Optional[str] = None) -> tuple:
     """Verify audit log across rotated archives."""
     from ironmesh import keys as ew_keys
-    kp = keys_path or "~/.kingpi-secure/ironmesh/keys.json"
+    kp = keys_path or "~/.ironmesh/keys.json"
     kp_pass = keys_passphrase or os.environ.get("IRONMESH_PASSPHRASE")
     if not kp_pass:
         import getpass

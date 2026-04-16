@@ -273,8 +273,8 @@ class Agent:
                 asyncio.run_coroutine_threadsafe(
                     self.daemon.shutdown(), self._loop,
                 ).result(timeout=5)
-            except Exception:
-                pass
+            except (TimeoutError, RuntimeError) as e:
+                logger.debug("Shutdown wait: %s", e)
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._loop_thread is not None:
             self._loop_thread.join(timeout=3)

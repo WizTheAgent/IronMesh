@@ -31,7 +31,6 @@ import fnmatch
 import json
 import logging
 import os
-import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -109,9 +108,6 @@ class FederationGateway:
             caps_on_dest = [
                 cap for _, cap in dest_agent.discover("*")
             ]
-            source_caps = [
-                cap for _, cap in source_agent.discover("*")
-            ]
 
             for cap in caps_on_dest:
                 if self.policy.should_forward(cap):
@@ -140,8 +136,8 @@ class FederationGateway:
         """Start both mesh agents and the forwarding bridge."""
         self._running = True
 
-        loop_a = self.agent_a.run(foreground=False)
-        loop_b = self.agent_b.run(foreground=False)
+        self.agent_a.run(foreground=False)
+        self.agent_b.run(foreground=False)
 
         @self.agent_a.on_message()
         def a_to_b(peer_id, payload):

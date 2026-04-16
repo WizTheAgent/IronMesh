@@ -2,10 +2,8 @@
 
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **⚠️ v0.7.2-beta — stable protocol, pre-1.0 release.** 472 tests passing, hardening
-> complete, live-validated on a 3-node mesh with a real Android client (Sideband) and
-> a single-hop LoRa link at SF8/BW125.
-> See [Known limitations](#known-limitations) before deploying in production.
+> **v0.8.0 — pre-1.0 release.** 510+ tests, production-hardened, validated on a 3-node
+> mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
 **Your agents. Your network. Your rules.**
@@ -118,27 +116,95 @@ That's it. Both agents discover each other via mDNS, authenticate with the share
 
 > **Note:** `--passphrase` was removed from the CLI to prevent passphrase leaks via `ps aux`. Use `--passphrase-file`, `IRONMESH_PASSPHRASE_FILE`, or interactive `getpass` prompt instead.
 
-### Programmatic usage
+### Python SDK (v0.8)
+
+The high-level Agent SDK eliminates all asyncio/threading boilerplate:
+
+```python
+from ironmesh import Agent
+
+agent = Agent("my-bot", passphrase="shared-secret")
+
+@agent.on_message()
+def handle(peer_id, payload):
+    print(f"From {peer_id[:12]}: {payload.decode()}")
+    agent.reply(peer_id, b"ack")
+
+agent.run()  # blocks, Ctrl-C to stop
+```
+
+For background use: `loop = agent.run(foreground=False)`, then call `agent.send_sync("peer-name", "hello")` from any thread.
+
+### 30-second demo (two terminals, one machine)
+
+```bash
+# Terminal 1
+ironmesh run --name alice --port 8765 --passphrase demo-secret \
+  --open-discovery --allow-plaintext-ws
+
+# Terminal 2
+ironmesh run --name bob --port 8766 --passphrase demo-secret \
+  --open-discovery --allow-plaintext-ws
+```
+
+Both nodes auto-discover via mDNS and establish an encrypted session within seconds. Open `http://127.0.0.1:8767/` (alice's dashboard) to see bob connected.
+
+### Framework integrations
+
+```python
+# LangChain — gives an LLM agent mesh communication tools
+from ironmesh.adapters.langchain_adapter import create_ironmesh_toolkit
+tools = create_ironmesh_toolkit(name="lc-agent", passphrase="secret")
+
+# CrewAI — mesh-connected crew agent
+from ironmesh.adapters.crewai_adapter import create_mesh_crew_agent
+agent = create_mesh_crew_agent(role="Coordinator", goal="...", llm=my_llm,
+                                mesh_passphrase="secret")
+
+# AutoGen — register mesh functions on an assistant
+from ironmesh.adapters.autogen_adapter import register_ironmesh
+register_ironmesh(my_agent, my_autogen_assistant)
+
+# MCP (Claude Desktop / Claude Code) — see ironmesh_mcp/
+ironmesh-mcp --passphrase-file ~/.ironmesh/passphrase
+```
+
+### Multi-mesh federation
+
+Bridge two independent meshes with policy-controlled capability sharing:
+
+```python
+from ironmesh import FederationGateway
+
+gw = FederationGateway(
+    mesh_a={"name": "gw-alpha", "port": 8780, "passphrase": "mesh-a-pass"},
+    mesh_b={"name": "gw-beta",  "port": 8781, "passphrase": "mesh-b-pass"},
+    policy={"allow": ["llm:*"], "deny": ["tool:filesystem"]},
+)
+gw.run()
+```
+
+### Go reference client
+
+A minimal Go implementation proves the wire protocol is language-independent:
+
+```bash
+cd clients/go && go build ./cmd/ironmesh-go/
+./ironmesh-go --host 192.168.1.20 --port 8765 --name go-client --passphrase secret
+```
+
+See [`docs/PROTOCOL_SPEC.md`](docs/PROTOCOL_SPEC.md) for the formal wire specification.
+
+### Advanced: low-level BridgeDaemon API
 
 ```python
 import asyncio
 from ironmesh.bridge import BridgeDaemon
 
 async def main():
-    daemon = BridgeDaemon(
-        name="my-agent",
-        port=8765,
-        passphrase="shared-secret",
-        allowed_peers=["peer-agent"],
-    )
+    daemon = BridgeDaemon(name="my-agent", port=8765, passphrase="secret")
     daemon.run(background=True)
-
-    # Send an encrypted message to a discovered peer
-    await daemon.send_message(
-        to_node="peer-fingerprint",
-        msg_type="MSG",
-        payload=b"Hello from my-agent!",
-    )
+    await daemon.send_message("peer-node-id", "MSG", b"Hello!")
 
 asyncio.run(main())
 ```

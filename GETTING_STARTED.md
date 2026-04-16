@@ -40,7 +40,7 @@ echo 'a-strong-passphrase-at-least-12-chars' > ~/.ironmesh/passphrase
 chmod 600 ~/.ironmesh/passphrase
 
 # Generate an identity keypair (prompts for key-encryption passphrase)
-ironmesh keys generate --path ~/.kingpi-secure/ironmesh/keys.json
+ironmesh keys generate --path ~/.ironmesh/keys.json
 ```
 
 ## 3. Start the bridge
@@ -79,7 +79,7 @@ On another machine (same LAN — mDNS auto-discovers):
 scp ~/.ironmesh/passphrase user@host2:~/.ironmesh/
 
 # On host2 with a DIFFERENT --name
-ironmesh keys generate --path ~/.kingpi-secure/ironmesh/keys.json
+ironmesh keys generate --path ~/.ironmesh/keys.json
 IRONMESH_PASSPHRASE_FILE=~/.ironmesh/passphrase \
     ironmesh run --name bob --port 8765 \
     --gui --allow-plaintext-ws --open-discovery

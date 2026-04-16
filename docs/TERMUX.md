@@ -43,7 +43,7 @@ echo 'a-strong-passphrase-at-least-12-chars' > ~/.ironmesh/passphrase
 chmod 600 ~/.ironmesh/passphrase
 
 # Generate keys
-ironmesh keys generate --path ~/.kingpi-secure/ironmesh/keys.json
+ironmesh keys generate --path ~/.ironmesh/keys.json
 
 # Start the bridge
 IRONMESH_PASSPHRASE_FILE=~/.ironmesh/passphrase \

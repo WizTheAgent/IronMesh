@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ironmesh"
-version = "0.7.2"
+version = "0.8.0"
 description = "Local-first agent-to-agent mesh protocol with multi-hop routing, end-to-end encryption, and capability discovery"
 readme = "README.md"
 license = {text = "MIT"}

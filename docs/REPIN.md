@@ -16,11 +16,11 @@ explicit operator action. That action is documented here.
 
 ## Offline pubkey backup (do this before you need it)
 
-Each node's identity lives in `~/.kingpi-secure/ironmesh/keys.json`. Back
+Each node's identity lives in `~/.ironmesh/keys.json`. Back
 it up to offline media immediately after first deploy:
 
 ```bash
-cp ~/.kingpi-secure/ironmesh/keys.json /path/to/offline/keys-$(hostname)-$(date -u +%F).json
+cp ~/.ironmesh/keys.json /path/to/offline/keys-$(hostname)-$(date -u +%F).json
 ```
 
 Restoring from this backup lets a reinstalled node come back with its
@@ -75,7 +75,7 @@ Symptom: `Failed to load trust store: ...` on startup; or the MAC check
 fails (possible tampering).
 
 1. Stop the daemon.
-2. Move the broken store aside: `mv ~/.kingpi-secure/ironmesh/trust.json ~/.kingpi-secure/ironmesh/trust.json.broken`
+2. Move the broken store aside: `mv ~/.ironmesh/trust.json ~/.ironmesh/trust.json.broken`
 3. Start the daemon. It will create a fresh empty store.
 4. **You are now in a first-contact state with every peer.** Existing
    peer keys on other nodes are fine. Your node will TOFU-pin each peer

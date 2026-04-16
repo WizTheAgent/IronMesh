@@ -24,7 +24,7 @@ def parse_args():
     run_parser.add_argument("--port", type=int, default=8765, help="WebSocket port (default: 8765)")
     # --passphrase REMOVED from run parser — leaks in process list (ps aux).
     # Use --passphrase-file, IRONMESH_PASSPHRASE_FILE, or interactive getpass.
-    run_parser.add_argument("--keys-path", default="~/.kingpi-secure/ironmesh/keys.json")
+    run_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json")
     run_parser.add_argument("--keys-passphrase", default=None, help="Passphrase to decrypt key file")
     run_parser.add_argument("--db-path", default="~/.ironmesh/data.db")
     run_parser.add_argument("--tls-cert", default=None, help="TLS certificate file for WSS")
@@ -90,7 +90,7 @@ def parse_args():
 
     # --- trust ---
     trust_parser = sub.add_parser("trust", help="Manage peer trust (TOFU)")
-    trust_parser.add_argument("--keys-path", default="~/.kingpi-secure/ironmesh/keys.json",
+    trust_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json",
                               help="Identity keys file (needed for trust store MAC)")
     trust_parser.add_argument("--keys-passphrase", default=None,
                               help="Passphrase to decrypt identity keys")
@@ -112,22 +112,22 @@ def parse_args():
     keys_parser = sub.add_parser("keys", help="Key management")
     keys_sub = keys_parser.add_subparsers(dest="keys_command")
     gen_parser = keys_sub.add_parser("generate", help="Generate new keypair")
-    gen_parser.add_argument("--path", default="~/.kingpi-secure/ironmesh/keys.json")
+    gen_parser.add_argument("--path", default="~/.ironmesh/keys.json")
     gen_parser.add_argument("--passphrase", default=None, help="Encrypt key file with passphrase")
     info_parser = keys_sub.add_parser("info", help="Show key info")
-    info_parser.add_argument("--path", default="~/.kingpi-secure/ironmesh/keys.json")
+    info_parser.add_argument("--path", default="~/.ironmesh/keys.json")
     info_parser.add_argument("--passphrase", default=None)
 
     # --- backup / restore ---
     backup_parser = sub.add_parser("backup", help="Create an encrypted backup of node state")
     backup_parser.add_argument("--out", required=True, help="Output backup file path")
-    backup_parser.add_argument("--keys-path", default="~/.kingpi-secure/ironmesh/keys.json")
+    backup_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json")
     backup_parser.add_argument("--trust-path", default="~/.ironmesh/known_peers.json")
     backup_parser.add_argument("--audit-path", default="~/.ironmesh/audit.log")
 
     restore_parser = sub.add_parser("restore", help="Restore from an encrypted backup")
     restore_parser.add_argument("--in", dest="in_path", required=True, help="Backup file path")
-    restore_parser.add_argument("--keys-path", default="~/.kingpi-secure/ironmesh/keys.json")
+    restore_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json")
     restore_parser.add_argument("--trust-path", default="~/.ironmesh/known_peers.json")
     restore_parser.add_argument("--audit-path", default="~/.ironmesh/audit.log")
     restore_parser.add_argument("--force", action="store_true",
@@ -143,7 +143,7 @@ def parse_args():
     ae = audit_sub.add_parser("export", help="Export signed audit log bundle")
     ae.add_argument("--path", default="~/.ironmesh/audit.log")
     ae.add_argument("--out", required=True, help="Output JSON file")
-    ae.add_argument("--keys-path", default="~/.kingpi-secure/ironmesh/keys.json")
+    ae.add_argument("--keys-path", default="~/.ironmesh/keys.json")
     ae.add_argument("--keys-passphrase", default=None)
     avx = audit_sub.add_parser("verify-export", help="Verify a signed audit export")
     avx.add_argument("file", help="Signed export JSON file")
@@ -161,7 +161,7 @@ def parse_args():
     parser.add_argument("--name", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--port", type=int, default=8765, help=argparse.SUPPRESS)
     # --passphrase REMOVED from root parser — use --passphrase-file or env var
-    parser.add_argument("--keys-path", default="~/.kingpi-secure/ironmesh/keys.json", help=argparse.SUPPRESS)
+    parser.add_argument("--keys-path", default="~/.ironmesh/keys.json", help=argparse.SUPPRESS)
     parser.add_argument("--db-path", default="~/.ironmesh/data.db", help=argparse.SUPPRESS)
     parser.add_argument("--rotate-keys", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
@@ -378,7 +378,7 @@ def cmd_trust(args):
     from ironmesh.trust import TrustStore
     # Audit C-03: TrustStore is bound to the agent identity. Load keys
     # to derive the MAC key. Require a passphrase to decrypt them.
-    keys_path = getattr(args, "keys_path", "~/.kingpi-secure/ironmesh/keys.json")
+    keys_path = getattr(args, "keys_path", "~/.ironmesh/keys.json")
     pp = getattr(args, "keys_passphrase", None) or os.environ.get("IRONMESH_PASSPHRASE")
     if not pp:
         pp = getpass.getpass("Identity key passphrase (for trust store MAC): ")
