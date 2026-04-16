@@ -3166,16 +3166,24 @@ class BridgeDaemon:
     def _wire_gui_hooks(self):
         """Hook into bus events and peer lifecycle to push to GUI clients."""
         def on_bus_event(event_type, data):
+            # MessageBus.publish wraps dict payloads in MappingProxyType for
+            # immutability, and MappingProxyType is NOT a dict subclass --
+            # ``isinstance(data, dict)`` returned False and every GUI event
+            # was broadcast with empty peer_id + payload. Use the Mapping ABC
+            # instead so both dicts and proxies are accepted.
+            from collections.abc import Mapping
             safe = {}
-            for k, v in (data if isinstance(data, dict) else {}).items():
-                if isinstance(v, bytes):
-                    safe[k] = v.decode("utf-8", errors="replace")
-                else:
-                    safe[k] = v
+            if isinstance(data, Mapping):
+                for k, v in data.items():
+                    if isinstance(v, bytes):
+                        safe[k] = v.decode("utf-8", errors="replace")
+                    else:
+                        safe[k] = v
             msg = {
                 "type": "message_event",
                 "msg_type": event_type,
                 "peer_id": safe.get("peer_id", ""),
+                "msg_id": safe.get("msg_id", ""),
                 "payload": safe.get("payload", ""),
                 "timestamp": time.time(),
             }
