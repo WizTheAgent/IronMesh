@@ -88,78 +88,104 @@ IronMesh is for preppers, homelab operators, privacy advocates, tinkerers, and a
 
 ## Quick Start
 
-**👉 New to IronMesh? Read [GETTING_STARTED.md](GETTING_STARTED.md) — a
-5-minute path from zero to two nodes talking.**
+Requires Python 3.10 or newer. On Linux the firewall must allow UDP 5353
+(mDNS) and TCP 8765 (WebSocket) between nodes. Full walkthrough:
+[GETTING_STARTED.md](GETTING_STARTED.md).
 
 ### Install
 
 ```bash
-# Option A: pip
-pip install ironmesh
-
-# Option B: Docker
-docker compose up -d
-
-# Option C: One-line installer (Linux/macOS)
-./scripts/install.sh
-
-# Option D: Android via Termux — see docs/TERMUX.md
+pip install ironmesh            # PyPI
+# or: docker pull wiztheagent/ironmesh:0.8.0
+# or: ./scripts/install.sh       (Linux / macOS systemd)
+# or: see docs/TERMUX.md         (Android)
 ```
 
-### Start a bridge on Machine A (e.g., your Raspberry Pi)
+### 60-second demo — two agents on one machine
+
+Open two terminals. Export the same passphrase in both, then run one
+agent per terminal:
 
 ```bash
-# Passphrase from file (recommended — never appears in process list)
-echo "my-strong-secret-phrase" > ~/.ironmesh/passphrase
-chmod 600 ~/.ironmesh/passphrase
-export IRONMESH_PASSPHRASE_FILE=~/.ironmesh/passphrase
+# Both terminals
+export IRONMESH_PASSPHRASE="any-12-plus-char-passphrase"
 
-ironmesh run --name kingpi --port 8765 --allowed-peers wiz
+# Terminal 1
+ironmesh run --name alice --port 8765 --open-discovery --allow-plaintext-ws
+
+# Terminal 2
+ironmesh run --name bob   --port 8766 --open-discovery --allow-plaintext-ws
 ```
 
-### Start a bridge on Machine B (e.g., your desktop)
+Within a few seconds each terminal prints a line like:
 
-```bash
-export IRONMESH_PASSPHRASE_FILE=~/.ironmesh/passphrase
-ironmesh run --name wiz --port 8765 --allowed-peers kingpi
+```
+Discovered agent: bob @ 127.0.0.1:8766
+Peer bob (8f3c2a1b...) online -- ephemeral ECDH complete
 ```
 
-That's it. Both agents discover each other via mDNS, authenticate with the shared passphrase, exchange ephemeral encryption keys, and establish a secure channel. No config files, no cloud accounts, no internet required.
+That means the handshake succeeded and the two nodes have a live,
+encrypted session. `--open-discovery` turns off the default-deny peer
+filter so a same-machine demo just works. `--allow-plaintext-ws`
+disables the wss-first attempt so you don't need to generate a TLS cert
+for localhost. In any real deployment you'll leave both of those off.
 
-> **Note:** `--passphrase` was removed from the CLI to prevent passphrase leaks via `ps aux`. Use `--passphrase-file`, `IRONMESH_PASSPHRASE_FILE`, or interactive `getpass` prompt instead.
+### Using it from Python
 
-### Python SDK (v0.8)
-
-The high-level Agent SDK eliminates all asyncio/threading boilerplate:
+The Agent SDK hides the asyncio / WebSocket plumbing:
 
 ```python
 from ironmesh import Agent
 
-agent = Agent("my-bot", passphrase="shared-secret")
+agent = Agent("my-bot", passphrase="shared-secret-12-plus")
 
 @agent.on_message()
 def handle(peer_id, payload):
     print(f"From {peer_id[:12]}: {payload.decode()}")
     agent.reply(peer_id, b"ack")
 
-agent.run()  # blocks, Ctrl-C to stop
+agent.run()                      # blocks; Ctrl-C to stop
+# agent.run(foreground=False)    # returns the event loop for background use
 ```
 
-For background use: `loop = agent.run(foreground=False)`, then call `agent.send_sync("peer-name", "hello")` from any thread.
+Send from any thread once the agent is running:
 
-### 30-second demo (two terminals, one machine)
+```python
+agent.send_sync("peer-name", "hello")
+```
+
+### Running two physical machines
+
+For a real two-node deployment, use a passphrase *file* (not an env var
+— env vars are visible via `/proc/<pid>/environ`) and lock down peer
+discovery with `--allowed-peers`:
 
 ```bash
-# Terminal 1
-ironmesh run --name alice --port 8765 --passphrase demo-secret \
-  --open-discovery --allow-plaintext-ws
+# On both machines
+install -d -m 700 ~/.ironmesh
+printf '%s' 'your-strong-secret-phrase-12-plus' > ~/.ironmesh/passphrase
+chmod 600 ~/.ironmesh/passphrase
+export IRONMESH_PASSPHRASE_FILE=~/.ironmesh/passphrase
 
-# Terminal 2
-ironmesh run --name bob --port 8766 --passphrase demo-secret \
-  --open-discovery --allow-plaintext-ws
+# Machine A (e.g. Raspberry Pi)
+ironmesh run --name alice --port 8765 --allowed-peers bob
+
+# Machine B (e.g. desktop)
+ironmesh run --name bob   --port 8765 --allowed-peers alice
 ```
 
-Both nodes auto-discover via mDNS and establish an encrypted session within seconds. Open `http://127.0.0.1:8767/` (alice's dashboard) to see bob connected.
+> The `--passphrase` CLI flag was deliberately removed in v0.3 — it
+> would leak the passphrase into `ps aux`. Use `--passphrase-file`,
+> `IRONMESH_PASSPHRASE_FILE`, or the interactive `getpass` prompt.
+
+### Docker
+
+```bash
+# One-off .env with your passphrase (>= 12 chars)
+printf 'IRONMESH_PASSPHRASE=your-strong-secret-phrase\n' > .env
+docker compose up -d
+# Dashboard at http://127.0.0.1:8766 (GUI token printed in logs)
+```
 
 ### Framework integrations
 
@@ -202,7 +228,8 @@ A minimal Go implementation proves the wire protocol is language-independent:
 
 ```bash
 cd clients/go && go build ./cmd/ironmesh-go/
-./ironmesh-go --host 192.168.1.20 --port 8765 --name go-client --passphrase secret
+export IRONMESH_PASSPHRASE='your-strong-secret-phrase-12-plus'
+./ironmesh-go --host 192.168.1.20 --port 8765 --name go-client
 ```
 
 See [`docs/PROTOCOL_SPEC.md`](docs/PROTOCOL_SPEC.md) for the formal wire specification.

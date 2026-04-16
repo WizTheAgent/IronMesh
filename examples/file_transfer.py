@@ -2,8 +2,11 @@
 """IronMesh file transfer example — send binary data between agents.
 
 Usage:
-  Receiver: python file_transfer.py --name receiver --port 8765
-  Sender:   python file_transfer.py --name sender --port 8766 --send path/to/file.txt
+  export IRONMESH_PASSPHRASE='shared-passphrase-12-plus'
+  # Receiver:
+  python file_transfer.py --name receiver --port 8765
+  # Sender:
+  python file_transfer.py --name sender   --port 8766 --send path/to/file.txt
 
 The sender discovers the receiver via mDNS and sends the file as binary MSG payload.
 """
@@ -14,8 +17,6 @@ import base64
 import json
 import os
 import sys
-
-sys.path.insert(0, "..")
 
 from ironmesh.bridge import BridgeDaemon
 
@@ -83,15 +84,18 @@ def main():
     parser = argparse.ArgumentParser(description="IronMesh file transfer")
     parser.add_argument("--name", required=True)
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--passphrase", default="empire")
     parser.add_argument("--send", default=None, help="File path to send")
     parser.add_argument("--output-dir", default="./received_files")
     args = parser.parse_args()
 
+    passphrase = os.environ.get("IRONMESH_PASSPHRASE")
+    if not passphrase:
+        sys.exit("Set IRONMESH_PASSPHRASE env var (12+ chars) before running.")
+
     daemon = BridgeDaemon(
         name=args.name,
         port=args.port,
-        passphrase=args.passphrase,
+        passphrase=passphrase,
     )
 
     loop = daemon.run(background=True)
