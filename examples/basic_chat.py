@@ -2,17 +2,19 @@
 """IronMesh basic chat — two agents send messages to each other.
 
 Usage:
-  Machine A: python basic_chat.py --name alice --passphrase secret
-  Machine B: python basic_chat.py --name bob   --passphrase secret
+  export IRONMESH_PASSPHRASE='your-shared-passphrase-12-plus'
+  # Machine A:
+  python basic_chat.py --name alice
+  # Machine B (or another terminal with --port 8766):
+  python basic_chat.py --name bob
 
 Both agents auto-discover via mDNS, authenticate, and establish an encrypted channel.
 Type messages to send; received messages are printed automatically.
 """
 
 import argparse
+import os
 import sys
-
-sys.path.insert(0, "..")
 
 from ironmesh.agent import Agent
 
@@ -21,10 +23,13 @@ def main():
     p = argparse.ArgumentParser(description="IronMesh basic chat")
     p.add_argument("--name", required=True)
     p.add_argument("--port", type=int, default=8765)
-    p.add_argument("--passphrase", default="empire")
     args = p.parse_args()
 
-    agent = Agent(args.name, port=args.port, passphrase=args.passphrase)
+    passphrase = os.environ.get("IRONMESH_PASSPHRASE")
+    if not passphrase:
+        sys.exit("Set IRONMESH_PASSPHRASE env var (12+ chars) before running.")
+
+    agent = Agent(args.name, port=args.port, passphrase=passphrase)
 
     @agent.on_message()
     def on_msg(peer_id, payload):

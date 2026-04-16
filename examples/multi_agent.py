@@ -5,6 +5,7 @@ Demonstrates 3+ agents discovering each other and coordinating.
 Run on separate machines or with different ports on the same machine.
 
 Usage:
+  export IRONMESH_PASSPHRASE='shared-passphrase-12-plus'
   python multi_agent.py --name coordinator --port 8765 --role coordinator
   python multi_agent.py --name worker1    --port 8766 --role worker
   python multi_agent.py --name worker2    --port 8767 --role worker
@@ -13,10 +14,9 @@ Usage:
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
-
-sys.path.insert(0, "..")
 
 from ironmesh.bridge import BridgeDaemon
 from ironmesh.protocol import MessageType
@@ -82,14 +82,17 @@ def main():
     parser = argparse.ArgumentParser(description="IronMesh multi-agent example")
     parser.add_argument("--name", required=True)
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--passphrase", default="empire")
     parser.add_argument("--role", choices=["coordinator", "worker"], required=True)
     args = parser.parse_args()
+
+    passphrase = os.environ.get("IRONMESH_PASSPHRASE")
+    if not passphrase:
+        sys.exit("Set IRONMESH_PASSPHRASE env var (12+ chars) before running.")
 
     daemon = BridgeDaemon(
         name=args.name,
         port=args.port,
-        passphrase=args.passphrase,
+        passphrase=passphrase,
     )
 
     loop = daemon.run(background=True)
