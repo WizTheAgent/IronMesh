@@ -784,8 +784,15 @@ def cmd_demo(args):
                   flush=True)
             return 0
         finally:
-            alice.stop()
-            bob.stop()
+            # Silence the Windows proactor-loop shutdown race that fires a
+            # harmless AssertionError when sockets close during server
+            # teardown; it's noise, not a real failure.
+            logging.getLogger("asyncio").setLevel(logging.CRITICAL + 1)
+            for stop_fn in (alice.stop, bob.stop):
+                try:
+                    stop_fn()
+                except (KeyboardInterrupt, Exception):
+                    pass
 
 
 def main():
