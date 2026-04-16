@@ -511,7 +511,7 @@ subcommand for a 10-second smoke test. See the
 - **Backpressure + throttling** (from v0.7.2) — per-peer queue cap with priority-aware eviction, per-peer bandwidth budget.
 - **MCP server** — `ironmesh_mcp/` exposes the mesh as tools for Claude Desktop and other MCP-capable agents over stdio JSON-RPC.
 
-Full list: [CHANGELOG.md](CHANGELOG.md).
+Full list: [CHANGELOG.md](CHANGELOG.md). Planned work: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Distribution & caveats
 
