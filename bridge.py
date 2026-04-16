@@ -1225,21 +1225,33 @@ class BridgeDaemon:
             except Exception:
                 pass
             if peer_id:
-                # Audit C-01: cleanup under the same lock that guarded
-                # the check+assign to avoid a cleanup-vs-new-connect race.
+                # v0.8.1: scope the teardown to the owning connection.
+                # When two handshakes race for the same peer (both sides
+                # dial simultaneously), the duplicate-handler `return`
+                # path would otherwise tear down a *live* connection
+                # that belongs to the winning handshake. Only clear the
+                # ws_clients entry + session_key if this specific
+                # websocket is the one registered.
+                owned_session = False
                 async with self._peer_lock:
-                    self.ws_clients.pop(peer_id, None)
-                    self._peer_rate_limiters.pop(peer_id, None)
-                    if peer_id in self.peers:
-                        self.peers[peer_id].transition(ew_protocol.PeerState.Status.OFFLINE)
-                        self.peers[peer_id].session_key = None  # Clear session key
-                if self._hooks:
-                    try:
-                        await self._hooks.fire("on_peer_disconnect", {"peer_id": peer_id})
-                    except Exception:
-                        pass
-                # v0.5: attempt immediate failover to alternative transport
-                asyncio.ensure_future(self._try_transport_failover(peer_id))
+                    if self.ws_clients.get(peer_id) is websocket:
+                        self.ws_clients.pop(peer_id, None)
+                        self._peer_rate_limiters.pop(peer_id, None)
+                        if peer_id in self.peers:
+                            self.peers[peer_id].transition(
+                                ew_protocol.PeerState.Status.OFFLINE,
+                            )
+                            self.peers[peer_id].session_key = None
+                        owned_session = True
+                if owned_session:
+                    if self._hooks:
+                        try:
+                            await self._hooks.fire(
+                                "on_peer_disconnect", {"peer_id": peer_id},
+                            )
+                        except Exception:
+                            pass
+                    asyncio.ensure_future(self._try_transport_failover(peer_id))
 
     async def _try_transport_failover(self, peer_id: str):
         """Attempt immediate reconnection on an alternative transport after disconnect."""
@@ -2389,13 +2401,41 @@ class BridgeDaemon:
         # Flush pending
         asyncio.ensure_future(self._flush_pending(peer_id))
 
-        # Message loop
-        async for raw in ws:
-            try:
-                self.metrics.bytes_received += len(raw)
-                await self._handle_message(peer_id, raw)
-            except Exception as e:
-                logger.warning("Error from %s: %s", peer_id, e)
+        # Message loop. On exit (socket closed or error), tear down the
+        # peer state so reconnect paths see OFFLINE and can re-dial. v0.8.1
+        # fix: previously the client side left the peer as ONLINE forever
+        # once the message loop ended, which blocked the reconnect loop
+        # (which skips peers not in OFFLINE state).
+        try:
+            async for raw in ws:
+                try:
+                    self.metrics.bytes_received += len(raw)
+                    await self._handle_message(peer_id, raw)
+                except Exception as e:
+                    logger.warning("Error from %s: %s", peer_id, e)
+        finally:
+            # Scope the teardown to the owning connection -- same
+            # duplicate-handshake race as _handle_connection.
+            owned_session = False
+            async with self._peer_lock:
+                if self.ws_clients.get(peer_id) is ws:
+                    self.ws_clients.pop(peer_id, None)
+                    self._peer_rate_limiters.pop(peer_id, None)
+                    if peer_id in self.peers:
+                        self.peers[peer_id].transition(
+                            ew_protocol.PeerState.Status.OFFLINE,
+                        )
+                        self.peers[peer_id].session_key = None
+                    owned_session = True
+            if owned_session:
+                if self._hooks:
+                    try:
+                        await self._hooks.fire(
+                            "on_peer_disconnect", {"peer_id": peer_id},
+                        )
+                    except Exception:
+                        pass
+                asyncio.ensure_future(self._try_transport_failover(peer_id))
 
         return peer_id
 

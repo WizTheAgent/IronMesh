@@ -12,21 +12,24 @@ import hmac
 import json
 import os
 import time
-import pytest
-import pytest_asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
 from types import MappingProxyType
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from ironmesh.bridge import BridgeDaemon
-from ironmesh.keys import generate_keypair, generate_ephemeral, get_fingerprint
 from ironmesh.crypto import (
-    ecdh_exchange, encrypt_message, decrypt_message,
-    sign_message, verify_signature, sign_detached, verify_detached,
+    encrypt_message,
+    sign_detached,
 )
+from ironmesh.keys import generate_keypair, get_fingerprint
 from ironmesh.protocol import (
-    Frame, Handshake, MessageType, PeerState, ReplayGuard, TokenBucket,
+    Frame,
+    Handshake,
+    MessageType,
+    PeerState,
+    ReplayGuard,
 )
-
 
 # -----------------------------------------------------------------------
 # Replay guard: seq=0 rejection
@@ -256,6 +259,7 @@ class TestMDNSNoPubkey:
     def test_announce_does_not_include_pubkey(self):
         """mDNS announce should not broadcast identity key."""
         from unittest.mock import MagicMock as MM
+
         from ironmesh.discovery import announce
 
         mock_zc = MM()
@@ -453,3 +457,74 @@ class TestBridgeSeqZeroRejection:
         await d._handle_message("peer1", msg)
         assert peer_state.messages_received == 0
         await d._db.close()
+
+
+# -----------------------------------------------------------------------
+# v0.8.1 regression: duplicate-handshake race must not tear down the
+# live connection owned by the winning handshake.
+# -----------------------------------------------------------------------
+
+class TestDuplicateHandshakeTeardown:
+    """When two handshakes race for the same peer_id, the losing one
+    must not clobber the winner's ws_clients entry or session_key.
+    This used to happen because the finally-block in _handle_connection
+    unconditionally popped ws_clients[peer_id] on every exit, even
+    when that entry belonged to a different, still-live connection.
+    """
+
+    @pytest.mark.asyncio
+    async def test_loser_must_not_teardown_winner(self, tmp_path):
+        d = BridgeDaemon(
+            name="test", passphrase="secret-pass-12",
+            db_path=str(tmp_path / "test.db"),
+        )
+
+        winner_ws = MagicMock()
+        winner_ws.close = AsyncMock()
+        loser_ws = MagicMock()
+        loser_ws.close = AsyncMock()
+
+        peer_id = "a" * 32
+        peer_state = PeerState(node_id=peer_id, address="127.0.0.1:1")
+        peer_state.session_key = os.urandom(32)
+        peer_state.transition(PeerState.Status.ONLINE)
+        d.peers[peer_id] = peer_state
+        d.ws_clients[peer_id] = winner_ws
+
+        # The losing handshake's finally-block decision: only tear down
+        # if THIS connection is the one registered.
+        async with d._peer_lock:
+            if d.ws_clients.get(peer_id) is loser_ws:
+                d.ws_clients.pop(peer_id, None)
+                d.peers[peer_id].transition(PeerState.Status.OFFLINE)
+                d.peers[peer_id].session_key = None
+
+        assert d.ws_clients.get(peer_id) is winner_ws
+        assert d.peers[peer_id].is_online
+        assert d.peers[peer_id].session_key is not None
+
+    @pytest.mark.asyncio
+    async def test_winner_cleans_up_its_own_state(self, tmp_path):
+        d = BridgeDaemon(
+            name="test", passphrase="secret-pass-12",
+            db_path=str(tmp_path / "test.db"),
+        )
+        ws = MagicMock()
+        ws.close = AsyncMock()
+        peer_id = "b" * 32
+
+        peer_state = PeerState(node_id=peer_id, address="127.0.0.1:1")
+        peer_state.session_key = os.urandom(32)
+        peer_state.transition(PeerState.Status.ONLINE)
+        d.peers[peer_id] = peer_state
+        d.ws_clients[peer_id] = ws
+
+        async with d._peer_lock:
+            if d.ws_clients.get(peer_id) is ws:
+                d.ws_clients.pop(peer_id, None)
+                d.peers[peer_id].transition(PeerState.Status.OFFLINE)
+                d.peers[peer_id].session_key = None
+
+        assert peer_id not in d.ws_clients
+        assert not d.peers[peer_id].is_online
+        assert d.peers[peer_id].session_key is None
