@@ -759,7 +759,14 @@ def cmd_demo(args):
             if args.gui:
                 gui_port = port_a + 1
                 token = alice.daemon._gui_token
-                print("Dashboard:", flush=True)
+                print("Dashboard URL (token on its own line so terminals can't crop it):",
+                      flush=True)
+                print(f"  http://127.0.0.1:{gui_port}/", flush=True)
+                print(flush=True)
+                print("GUI token:", flush=True)
+                print(f"  {token}", flush=True)
+                print(flush=True)
+                print("Full URL to paste into a browser:", flush=True)
                 print(f"  http://127.0.0.1:{gui_port}/?token={token}",
                       flush=True)
                 print(flush=True)
