@@ -1,7 +1,7 @@
 # IronMesh Wire Protocol Specification
 
 **Version:** 4 (ironmesh/0.6)
-**Status:** Stable. Describes the wire format as implemented in v0.8.0.
+**Status:** Stable. Describes the wire format as implemented in v0.8.1.
 
 This specification is the canonical reference for implementing IronMesh
 in any language. The Python implementation in `protocol.py` and `bridge.py`
@@ -216,7 +216,7 @@ Default interval: 1800 seconds (30 minutes).
 
 - **node_id:** `SHA-256(Ed25519_public_key_bytes)[:32]` — 32 hex characters.
 - **Fingerprint:** Same as node_id. Used in TOFU pinning, routing tables, and mDNS.
-- **Agent name:** Human-readable name (e.g. "kingpi", "wiz"). Not cryptographically bound — used for mDNS discovery and display only.
+- **Agent name:** Human-readable name (e.g. "kingpi", "wiz"). Not cryptographically bound — used for mDNS discovery, the simultaneous-dial tie-breaker, and display. Advertised in the HELLO frame's `name` field and persisted on `PeerState.agent_name` after handshake (v0.8.1+).
 
 ## 7. Replay Protection
 
