@@ -193,14 +193,17 @@ This will let us add a real LoRa baseline to the README and tune the
 `_peer_bandwidth_rate` default for LoRa operators (which is currently
 sized for LAN, not LoRa).
 
-## Why this is a v0.7.3 item, not v0.7.2
+## Open work
 
-Shipping "LoRa goodput number" as a README figure without real hardware
-validation would be dishonest. The LoRa *interface* works; the
-*multi-node transport* works in theory and in Reticulum's own test
-suite; but a published "IronMesh over LoRa at SF8/BW125 sustains N KB/s"
-claim needs a real hardware measurement which we don't have access to
-as of this release.
+The single-hop indoor numbers above are useful as a sanity check, but
+they don't tell the whole story. What's still on the list:
 
-v0.7.3 goal: ship with a LoRa measurement from at least one
-two-RNode field test.
+- Multi-hop LoRa routing across 3+ RNodes at real distance.
+- Behavior in adversarial RF conditions (interference sweeps, duty-cycle
+  limits, marginal signal).
+- Sustained goodput over a long window, not just a short probe sweep.
+
+If you run any of these, please open a PR against this document with
+your hardware, config, and results. The `--chaos` flag on
+`tests/harness/mesh_bench.py` is useful for injecting packet loss while
+measuring.

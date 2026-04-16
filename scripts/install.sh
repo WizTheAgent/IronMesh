@@ -5,7 +5,7 @@
 #     ./scripts/install.sh
 #
 # Usage (remote, once published):
-#     curl -fsSL https://raw.githubusercontent.com/kingpi-empire/ironmesh/main/scripts/install.sh | bash
+#     curl -fsSL https://raw.githubusercontent.com/WizTheAgent/IronMesh/main/scripts/install.sh | bash
 #
 # Options (environment variables):
 #   IRONMESH_PREFIX      — install prefix (default: $HOME/.local/share/ironmesh)

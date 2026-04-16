@@ -1,13 +1,12 @@
 # IronMesh Threat Model
 
-This document enumerates the assets, threats, mitigations, and residual
-risks for IronMesh v0.6.0.  It uses the STRIDE framework
+Assets, threats, mitigations, and residual risks, organized under STRIDE
 (Spoofing, Tampering, Repudiation, Information disclosure, Denial of
-service, Elevation of privilege) and is intended for security reviewers,
+service, Elevation of privilege). Written for security reviewers,
 operators, and contributors evaluating deployment fit.
 
-For the cryptographic primitives and wire-level detail, see
-`SECURITY.md` and `PROTOCOL.md`.
+For cryptographic primitives and the wire-level detail, see
+`SECURITY.md` and `PROTOCOL_SPEC.md`.
 
 ---
 

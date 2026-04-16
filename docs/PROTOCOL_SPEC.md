@@ -1,7 +1,7 @@
 # IronMesh Wire Protocol Specification
 
 **Version:** 4 (ironmesh/0.6)
-**Status:** Stable — this document describes the wire format as implemented in v0.7.2+.
+**Status:** Stable. Describes the wire format as implemented in v0.8.0.
 
 This specification is the canonical reference for implementing IronMesh
 in any language. The Python implementation in `protocol.py` and `bridge.py`

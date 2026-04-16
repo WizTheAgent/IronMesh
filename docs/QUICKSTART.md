@@ -180,6 +180,6 @@ Type messages and see them appear encrypted on the other side.
 
 - Read [DASHBOARD.md](DASHBOARD.md) for full GUI dashboard documentation
 - Read [SECURITY.md](SECURITY.md) to understand the threat model
-- Read [PROTOCOL.md](PROTOCOL.md) for the wire format specification
+- Read [PROTOCOL_SPEC.md](PROTOCOL_SPEC.md) for the wire format specification
 - Check out the `examples/` directory for multi-agent coordination and file transfer
 - Hook into the plugin system (`ironmesh.hooks`) for custom message processing

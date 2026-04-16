@@ -39,31 +39,37 @@ IronMesh is for preppers, homelab operators, privacy advocates, tinkerers, and a
 
 ## Features
 
-- **Zero-config discovery** — mDNS/Zeroconf auto-discovers agents on your LAN. No manual IP configuration. Identity keys are never broadcast — exchanged only during authenticated handshake. Default-deny: requires `--allowed-peers` or `--open-discovery` to enable auto-connect.
-- **End-to-end encryption** — NaCl/libsodium (XSalsa20-Poly1305 + X25519 ECDH). Battle-tested crypto, not homebrew. Plaintext messages are never accepted after handshake.
-- **Binary wire protocol** — Compact binary frame format with Ed25519 signatures on every frame. No JSON on the wire after handshake.
-- **Forward secrecy** — Ephemeral keys per session, destroyed after handshake. Compromising today's keys can't decrypt yesterday's traffic.
-- **Mutual authentication** — Both client and server prove they know the passphrase. No trusting a server that can't authenticate itself.
-- **Mandatory Ed25519 signatures** — Every message is signed by the sender and verified by the receiver. No unsigned messages accepted.
-- **Channel binding** — The authentication nonce is embedded in the ECDH handshake signature, cryptographically binding the two stages together.
-- **Offline-capable** — Messages queued in encrypted SQLite when peers are offline, automatically delivered on reconnect.
-- **Replay protection** — Monotonic sequence numbers (no seq=0 bypass) + timestamp validation block replay attacks.
-- **Trust-On-First-Use** — SSH-style key pinning. If a peer's identity key changes, the connection is **immediately terminated** (not just logged). mDNS fingerprint pinning prevents address spoofing of known peers.
-- **Integrity-protected trust store** — HMAC-SHA256 detects any tampering with the known_peers file.
-- **Mandatory key encryption** — Identity keys are encrypted at rest with Argon2id by default. Plaintext keys auto-migrate to encrypted on next startup.
-- **Encrypted storage** — SQLite message payloads are encrypted with SecretBox. No plaintext at rest.
-- **Tamper-evident audit log** — Every security event (auth failures, TOFU mismatches, key rotations, peer connections) recorded with HMAC-SHA256 chain. Any tampering breaks the chain and is detected.
-- **Token-authenticated GUI** — Dashboard requires a per-session bearer token (printed at startup). No unauthenticated access to metrics or state.
-- **Auth failure blocking** — 3 failed auth attempts from an IP in 5 minutes triggers a 5-minute block. Rate-limited mDNS discovery prevents flood attacks.
-- **TLS-first connections** — Client tries wss:// before ws://. Plaintext WebSocket fallback requires explicit `--allow-plaintext-ws`.
-- **Multi-hop mesh routing (v0.4)** — Distance-vector routing with split horizon, poisoned reverse, TTL loop prevention, and per-source-sharded dedup. Messages traverse intermediate peers automatically. See [docs/MESH.md](docs/MESH.md).
-- **End-to-end encryption (v0.4)** — NaCl `SealedBox` payload wrapping over X25519 keys derived from each node's identity. Relays cannot read message bodies. Inner Ed25519 source signature survives per-hop re-encryption.
-- **Capability discovery (v0.4)** — Agents advertise services like `llm:llama3` or `tool:filesystem` and discover them across the mesh with `find_capability("llm:*")`. See [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
-- **Prometheus metrics (v0.4)** — `/metrics` endpoint serves Prometheus exposition format by default; JSON remains available via `?format=json`.
-- **Reticulum / LoRa transport (v0.5)** — Optional second transport layer over [Reticulum](https://reticulum.network/). Agents communicate over LoRa radio (915 MHz) with no internet at all — just RNode hardware. Both WebSocket and Reticulum run simultaneously. Enable with `--reticulum` and the `rns` package (`pip install ironmesh[rns]`). See below for setup.
-- **Audit log rotation (v0.4)** — Logs rotate at 10 MB with cryptographic chain anchors so tamper evidence survives across rotation.
-- **Model agnostic** — IronMesh doesn't care what AI you're running. Ollama, llama.cpp, vLLM, a bash script — if it can open a WebSocket, it can use IronMesh.
-- **Cross-platform** — Works on Raspberry Pi, Windows, Linux, Mac. Tested daily on a Pi 5 and a Windows gaming rig.
+### Discovery and transport
+- **Zero-config discovery.** mDNS/Zeroconf finds agents on your LAN. Identity keys are never broadcast; they're exchanged inside the authenticated handshake. Default-deny: auto-connect requires `--allowed-peers` or `--open-discovery`.
+- **Binary wire protocol.** Compact binary frame format with Ed25519 signatures on every frame. No JSON on the wire after handshake.
+- **Multi-hop mesh routing.** Distance-vector with split horizon, poisoned reverse, TTL loop prevention, and per-source-sharded dedup. See [docs/MESH.md](docs/MESH.md).
+- **Reticulum / LoRa transport.** Optional second transport over [Reticulum](https://reticulum.network/) for off-grid use. WebSocket and Reticulum run concurrently. Enable with `--reticulum` and `pip install ironmesh[rns]`.
+- **TLS-first connections.** Client tries `wss://` before `ws://`. Plaintext fallback requires `--allow-plaintext-ws`.
+
+### Cryptography
+- **End-to-end encryption.** NaCl / libsodium (XSalsa20-Poly1305 + X25519 ECDH). Plaintext messages are rejected after handshake.
+- **Forward secrecy.** Per-session ephemeral keys, destroyed once the handshake completes. Compromising today's keys can't decrypt yesterday's traffic.
+- **Mutual authentication.** Both client and server prove knowledge of the passphrase. No trusting a server that can't authenticate itself.
+- **Mandatory Ed25519 signatures.** Every message is signed and verified. Unsigned messages are dropped.
+- **Channel binding.** The authentication nonce is embedded in the ECDH handshake signature, cryptographically tying the two stages together.
+- **Replay protection.** Monotonic sequence numbers (no seq=0 bypass) plus timestamp validation.
+- **End-to-end encryption over multi-hop.** NaCl `SealedBox` payload wrapping using X25519 keys derived from each node's identity. Relays cannot read message bodies. Inner Ed25519 signatures survive per-hop re-encryption.
+
+### Trust and storage
+- **Trust-On-First-Use.** SSH-style key pinning. If a peer's identity key changes, the connection is terminated (not just logged). mDNS fingerprint pinning blocks address spoofing of known peers.
+- **Integrity-protected trust store.** HMAC-SHA256 on the known-peers file catches tampering.
+- **Mandatory key encryption.** Identity keys are encrypted at rest with Argon2id by default. Plaintext keys auto-migrate on next startup.
+- **Encrypted queue storage.** SQLite payloads are SecretBox-encrypted. No plaintext at rest.
+- **Offline-capable.** Messages queue when peers are offline and deliver automatically on reconnect.
+- **Tamper-evident audit log.** Auth failures, TOFU mismatches, key rotations, and peer connections are chained with HMAC-SHA256. Any tampering breaks the chain. Logs rotate at 10 MB with chain anchors carried across files.
+
+### Operations
+- **Capability discovery.** Agents advertise services like `llm:llama3` or `tool:filesystem`; peers find them with `find_capability("llm:*")`. See [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
+- **Prometheus metrics.** `/metrics` endpoint in Prometheus exposition format; JSON available via `?format=json`.
+- **Token-authenticated GUI.** Dashboard requires a per-session bearer token (printed at startup).
+- **Auth-failure blocking.** 3 failed auth attempts from an IP in 5 minutes trigger a 5-minute block. Rate-limited mDNS discovery prevents flood attacks.
+- **Model agnostic.** Ollama, llama.cpp, vLLM, a bash script — if it speaks WebSocket, it can use IronMesh.
+- **Cross-platform.** Raspberry Pi, Windows, Linux, Mac. Tested daily on a Pi 5 and a Windows desktop.
 
 ## How It Compares
 
@@ -381,18 +387,17 @@ pip install -e ".[dev]"
 pytest tests/ -v --cov=ironmesh
 ```
 
-## What's new in v0.7.2
+## What's in v0.8.0
 
-- **Per-peer observability** — Prometheus metrics labelled by peer/name: `ironmesh_peer_rtt_ms`, `_retries_total`, `_bytes_sent_total`, `_bytes_received_total`, `_online`. End-to-end message lifetime histogram (p50/p90/p99). New stable-schema `/api/mesh_stats` JSON endpoint for harness/dashboard polling.
-- **Backpressure** — Offline queue capped per peer (default 1000 msgs) with priority-aware eviction. Per-peer bandwidth throttle (default 1 MB/s sustained, 1 MB burst) with wait-or-drop. Prevents a noisy or stuck peer from starving the mesh.
-- **Peer-drop alerting** — Audit event `PEER_DROPPED_LONG` emitted once per drop when a peer stays offline past the threshold (default 5 min).
-- **Simultaneous-dial tie-breaker** — Eliminates the online/offline flap storm on 3+ node meshes. Deterministic agent-name rule applied uniformly across mDNS, discover, and reconnect loops.
-- **mDNS multi-NIC fix** — Route-based local-IP detection (prefers the LAN adapter, not VirtualBox/WSL/Docker host-only). Zeroconf interface restriction when `--bind` is set.
-- **Agent integrations** — [MCP server](ironmesh_mcp/) exposes IronMesh as tools for Claude Desktop / MCP-capable agents. [Trusted skills package](skills/ironmesh/) for Claude Code: `/ironmesh-status`, `/ironmesh-send`, `/ironmesh-peers`, `/ironmesh-audit`.
-- **Benchmark harness** — `tests/harness/mesh_bench.py` + `bench_responder.py` with `--chaos <rate>` for loss injection. `scripts/chaos-netem.sh` for tc-netem link chaos. Live baseline: 100% delivery, p50 ≈ 12 ms, goodput 38-77 KB/s @ 1 KB.
-- **Ops polish** — `scripts/startup-capture.sh` (auto-logs GUI token to `/var/log/ironmesh-token.log`), `docs/REPIN.md` (revoke/re-pin playbook), 510 passing tests.
+- **Agent SDK** — the `Agent` class wraps the bridge daemon so you can join the mesh in 3 lines. Decorator-based handlers, sync+async send, capability discovery. See the Python SDK section above.
+- **Framework adapters** — first-party LangChain, CrewAI, and AutoGen integration modules under `adapters/`. Drop IronMesh into an existing agent stack with one call.
+- **Multi-mesh federation** — `FederationGateway` bridges two independent meshes with allow/deny glob rules on capabilities. Each mesh keeps its own trust boundary.
+- **Go reference client** — full wire-protocol implementation in `clients/go/`. Crypto primitives verified against the Python reference.
+- **Per-peer observability** (from v0.7.2) — Prometheus metrics labelled by peer, message lifetime histogram, stable `/api/mesh_stats` JSON.
+- **Backpressure + throttling** (from v0.7.2) — per-peer queue cap with priority-aware eviction, per-peer bandwidth budget.
+- **MCP server** — `ironmesh_mcp/` exposes the mesh as tools for Claude Desktop and other MCP-capable agents over stdio JSON-RPC.
 
-Full list in [CHANGELOG.md](CHANGELOG.md).
+Full list: [CHANGELOG.md](CHANGELOG.md).
 
 ## Distribution & caveats
 
@@ -403,11 +408,11 @@ Where to get it and what's still rough:
 - **GitHub releases** — signed tags, wheel + sdist attached: [releases page](https://github.com/WizTheAgent/IronMesh/releases).
 - **Go client** — `clients/go/` (reference implementation, crypto primitives verified against Python).
 - **LoRa end-to-end latency** — Measured live at 915 MHz SF8/BW125 between two RNode-equipped nodes (1 hop, strong signal): 16-byte probe 1.07 — 1.23 s, 64-byte probe 1.17 — 1.25 s, 256-byte probe 1.77 — 1.98 s, 100% delivery across 9 probes. Multi-hop + long-range interference sweeps are still pending — see [`docs/LORA_VALIDATION.md`](docs/LORA_VALIDATION.md).
-- **`scripts/install.sh`** — The systemd installer hasn't been re-tested on a clean Ubuntu VM since the v0.7.2 code changes. File itself is unchanged; caveat operator.
+- **`scripts/install.sh`** — The systemd installer works against the repo layout, but hasn't been re-tested on a clean Ubuntu VM recently. File itself is unchanged from v0.7.1.
 - **Android** — Use [Sideband](https://unsigned.io/sideband/) + the bundled LXMF gateway (`examples/lxmf_gateway.py`). Proven end-to-end with a Google Pixel. No first-party Android app planned — LXMF is the correct layer for that.
 - **Windows service** — No native service wrapper shipped. Run under WSL2, a terminal session, or Docker.
 - **GUI dashboard auth** — Per-session 32-byte token only. If you ever expose the dashboard beyond localhost (NOT recommended), front it with a reverse proxy that enforces your own auth.
-- **Third-party security audit** — Primitives are NaCl/libsodium (battle-tested), but the protocol itself has not been externally reviewed. See [SECURITY.md](SECURITY.md) for threat model and [docs/PROTOCOL_SPEC.md](docs/PROTOCOL_SPEC.md) for the wire format.
+- **No third-party protocol audit.** The cryptographic primitives are NaCl / libsodium, but the IronMesh protocol itself has not been externally reviewed. Read [SECURITY.md](SECURITY.md) for the threat model and [docs/PROTOCOL_SPEC.md](docs/PROTOCOL_SPEC.md) for the wire format before relying on this for anything critical.
 
 ## Legacy highlights (v0.4 → v0.7.1)
 
