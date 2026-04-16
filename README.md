@@ -17,14 +17,14 @@
 Zero-config, end-to-end encrypted agent-to-agent communication that never leaves your local network.
 
 <!--
-  The dashboard screenshot is intentionally kept in docs/assets/.
-  If you add a screenshot (recommended — it's above-the-fold real
-  estate), commit it as docs/assets/dashboard.png and GitHub will
-  render the img tag below. See docs/assets/README.md.
--->
+  Dashboard screenshot slot. To enable: save a 1440×900 PNG of the
+  live dashboard (ironmesh demo --gui) to docs/assets/dashboard.png
+  and uncomment the img tag below.
+
 <p align="center">
   <img src="docs/assets/dashboard.png" alt="IronMesh dashboard showing peers, messages, and per-peer metrics" width="780">
 </p>
+-->
 
 ## Why IronMesh Exists
 

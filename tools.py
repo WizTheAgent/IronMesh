@@ -72,7 +72,7 @@ def _make_http_get(max_bytes: int) -> Callable[[str], str]:
         url = args.strip()
         if not (url.startswith("http://") or url.startswith("https://")):
             raise ToolError("http-get: URL must start with http:// or https://")
-        req = urllib.request.Request(url, headers={"User-Agent": "IronMesh-tool/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible)"})
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = resp.read(max_bytes + 1)
