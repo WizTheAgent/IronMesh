@@ -281,20 +281,44 @@ class DedupCache:
     def add(self, source: str, msg_id: str, now: Optional[float] = None) -> None:
         ts = now if now is not None else time.time()
         with self._lock:
+            self._add_locked(source, msg_id, ts)
+
+    def _add_locked(self, source: str, msg_id: str, ts: float) -> None:
+        """Lock-free add. Caller MUST hold ``self._lock``."""
+        bucket = self._sources.get(source)
+        if bucket is None:
+            bucket = OrderedDict()
+            self._sources[source] = bucket
+        else:
+            self._sources.move_to_end(source)
+
+        bucket[msg_id] = ts
+        bucket.move_to_end(msg_id)
+
+        while len(bucket) > self._per_source_max:
+            bucket.popitem(last=False)
+        while len(self._sources) > self._sources_max:
+            self._sources.popitem(last=False)
+
+    def check_and_add(
+        self, source: str, msg_id: str, now: Optional[float] = None,
+    ) -> bool:
+        """Atomic test-and-add: return True if this ``(source, msg_id)``
+        pair was already seen (caller should drop it as a duplicate), or
+        False if it was newly added (caller should process it).
+
+        Fixes the TOCTOU race between ``is_duplicate`` and ``add`` that
+        let two concurrent deliveries of the same frame both pass the
+        duplicate check when they arrived on different tasks. Added in
+        v0.8.3 audit.
+        """
+        ts = now if now is not None else time.time()
+        with self._lock:
             bucket = self._sources.get(source)
-            if bucket is None:
-                bucket = OrderedDict()
-                self._sources[source] = bucket
-            else:
-                self._sources.move_to_end(source)
-
-            bucket[msg_id] = ts
-            bucket.move_to_end(msg_id)
-
-            while len(bucket) > self._per_source_max:
-                bucket.popitem(last=False)
-            while len(self._sources) > self._sources_max:
-                self._sources.popitem(last=False)
+            if bucket and msg_id in bucket:
+                return True
+            self._add_locked(source, msg_id, ts)
+            return False
 
     def cleanup_expired(self, now: Optional[float] = None) -> int:
         ts = now if now is not None else time.time()
@@ -674,13 +698,13 @@ class MeshRouter:
                 )
                 return False
 
-        # Dedup
-        if self.dedup.is_duplicate(frame.source, frame.msg_id):
+        # Dedup — atomic check-and-add so two concurrent deliveries of
+        # the same frame can't both pass the dup check (v0.8.3 audit).
+        if self.dedup.check_and_add(frame.source, frame.msg_id):
             self._audit_log(EVENT_DUPLICATE_DROPPED, {
                 "source": frame.source, "msg_id": frame.msg_id,
             })
             return False
-        self.dedup.add(frame.source, frame.msg_id)
 
         # TTL check
         if frame.ttl <= 0:
