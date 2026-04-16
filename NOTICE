@@ -1,0 +1,16 @@
+IronMesh
+Copyright (c) 2025-2026 IronMesh Contributors
+Licensed under the MIT License. See LICENSE.
+
+This project uses the following third-party libraries:
+
+- PyNaCl (Apache License 2.0) — Python binding to libsodium
+  https://github.com/pyca/pynacl
+- libsodium (ISC License) — Portable NaCl implementation
+  https://github.com/jedisct1/libsodium
+- websockets (BSD License) — WebSocket library for asyncio
+  https://github.com/python-websockets/websockets
+- zeroconf (LGPL-2.1) — mDNS / DNS-SD library
+  https://github.com/python-zeroconf/python-zeroconf
+- aiosqlite (MIT License) — asyncio bridge to sqlite3
+  https://github.com/omnilib/aiosqlite

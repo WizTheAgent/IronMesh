@@ -17,6 +17,7 @@ WORKDIR /build
 COPY pyproject.toml README.md LICENSE ./
 # Package source lives at repo root (pyproject.toml: package-dir.ironmesh = ".")
 COPY *.py ./
+COPY adapters ./adapters
 COPY ironmesh_mcp ./ironmesh_mcp
 COPY examples ./examples
 
