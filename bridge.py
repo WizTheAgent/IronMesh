@@ -3538,6 +3538,28 @@ class BridgeDaemon:
 
     def run(self, background: bool = False):
         loop = asyncio.new_event_loop()
+        # Windows proactor has a known race (CPython issue #109538 family)
+        # where an accept() completes between server.close() and the
+        # actual socket shutdown, and the fresh transport asserts because
+        # the server's _sockets is already None. Install a scoped handler
+        # that swallows *only* that specific pattern — every other
+        # exception still surfaces through the default handler.
+        def _handle_loop_exception(the_loop, context):
+            exc = context.get("exception")
+            if isinstance(exc, AssertionError):
+                msg = context.get("message", "") or ""
+                tb_str = "".join(
+                    str(f) for f in (context.get("source_traceback") or [])
+                )
+                if (
+                    "_start_serving" in msg
+                    or "_start_serving" in tb_str
+                    or "proactor_events" in tb_str
+                ):
+                    return
+            the_loop.default_exception_handler(context)
+
+        loop.set_exception_handler(_handle_loop_exception)
         loop.run_until_complete(self._start())
 
         if background:
