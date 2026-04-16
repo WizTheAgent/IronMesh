@@ -1,55 +1,40 @@
 #!/usr/bin/env python3
-"""IronMesh basic chat example — two agents send messages to each other.
+"""IronMesh basic chat — two agents send messages to each other.
 
 Usage:
-  Machine A: python basic_chat.py --name alice --port 8765 --passphrase secret
-  Machine B: python basic_chat.py --name bob   --port 8765 --passphrase secret
+  Machine A: python basic_chat.py --name alice --passphrase secret
+  Machine B: python basic_chat.py --name bob   --passphrase secret
 
 Both agents auto-discover via mDNS, authenticate, and establish an encrypted channel.
 Type messages to send; received messages are printed automatically.
 """
 
 import argparse
-import asyncio
 import sys
-import threading
 
 sys.path.insert(0, "..")
 
-from ironmesh.bridge import BridgeDaemon
+from ironmesh.agent import Agent
 
 
 def main():
-    parser = argparse.ArgumentParser(description="IronMesh basic chat")
-    parser.add_argument("--name", required=True)
-    parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--passphrase", default="empire")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(description="IronMesh basic chat")
+    p.add_argument("--name", required=True)
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--passphrase", default="empire")
+    args = p.parse_args()
 
-    daemon = BridgeDaemon(
-        name=args.name,
-        port=args.port,
-        passphrase=args.passphrase,
-    )
+    agent = Agent(args.name, port=args.port, passphrase=args.passphrase)
 
-    # Subscribe to incoming messages
-    def on_message(data):
-        peer = data.get("peer_id", "?")
-        payload = data.get("payload", b"")
-        if isinstance(payload, bytes):
-            payload = payload.decode("utf-8", errors="replace")
-        print(f"\n[{peer}]: {payload}")
+    @agent.on_message()
+    def on_msg(peer_id, payload):
+        print(f"\n[{peer_id[:12]}]: {payload.decode('utf-8', errors='replace')}")
         print("> ", end="", flush=True)
 
-    daemon.bus.subscribe("MSG", on_message)
-
-    # Start daemon in background
-    loop = daemon.run(background=True)
+    loop = agent.run(foreground=False)
     print(f"Chat started as '{args.name}'. Waiting for peers...")
-    print("Type a message and press Enter to send to all connected peers.")
-    print("Type 'quit' to exit.\n")
+    print("Type a message and press Enter. 'quit' to exit.\n")
 
-    # Input loop
     try:
         while True:
             text = input("> ")
@@ -57,19 +42,12 @@ def main():
                 break
             if not text.strip():
                 continue
-
-            # Send to all online peers
-            for peer_id, state in daemon.peers.items():
-                if state.is_online:
-                    asyncio.run_coroutine_threadsafe(
-                        daemon.send_message(peer_id, "MSG", text.encode("utf-8")),
-                        loop,
-                    )
+            for peer in agent.peers:
+                agent.reply(peer["node_id"], text)
     except (KeyboardInterrupt, EOFError):
         pass
     finally:
-        asyncio.run_coroutine_threadsafe(daemon.shutdown(), loop)
-        loop.call_soon_threadsafe(loop.stop)
+        agent.stop()
         print("\nChat ended.")
 
 
