@@ -1,9 +1,15 @@
 # IronMesh
 
+[![CI](https://github.com/WizTheAgent/IronMesh/actions/workflows/ci.yml/badge.svg)](https://github.com/WizTheAgent/IronMesh/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/ironmesh.svg)](https://pypi.org/project/ironmesh/)
+[![Python](https://img.shields.io/pypi/pyversions/ironmesh.svg)](https://pypi.org/project/ironmesh/)
+[![Docker](https://img.shields.io/docker/v/wiztheagent/ironmesh?label=docker&sort=semver)](https://hub.docker.com/r/wiztheagent/ironmesh)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **v0.8.0 — pre-1.0 release.** 510+ tests, production-hardened, validated on a 3-node
-> mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
+> **v0.8.0 — pre-1.0 release.** 510 tests green on Ubuntu + Windows across Python 3.10 – 3.13.
+> Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
 **Your agents. Your network. Your rules.**
@@ -384,21 +390,24 @@ pytest tests/ -v --cov=ironmesh
 - **mDNS multi-NIC fix** — Route-based local-IP detection (prefers the LAN adapter, not VirtualBox/WSL/Docker host-only). Zeroconf interface restriction when `--bind` is set.
 - **Agent integrations** — [MCP server](ironmesh_mcp/) exposes IronMesh as tools for Claude Desktop / MCP-capable agents. [Trusted skills package](skills/ironmesh/) for Claude Code: `/ironmesh-status`, `/ironmesh-send`, `/ironmesh-peers`, `/ironmesh-audit`.
 - **Benchmark harness** — `tests/harness/mesh_bench.py` + `bench_responder.py` with `--chaos <rate>` for loss injection. `scripts/chaos-netem.sh` for tc-netem link chaos. Live baseline: 100% delivery, p50 ≈ 12 ms, goodput 38-77 KB/s @ 1 KB.
-- **Ops polish** — `scripts/startup-capture.sh` (auto-logs GUI token to `/var/log/ironmesh-token.log`), `docs/REPIN.md` (revoke/re-pin playbook), 456 passing tests.
+- **Ops polish** — `scripts/startup-capture.sh` (auto-logs GUI token to `/var/log/ironmesh-token.log`), `docs/REPIN.md` (revoke/re-pin playbook), 510 passing tests.
 
 Full list in [CHANGELOG.md](CHANGELOG.md).
 
-## Known limitations
+## Distribution & caveats
 
-Things that work but are rough, or are claimed but not yet end-to-end verified:
+Where to get it and what's still rough:
 
-- **Docker image** — On Docker Hub as [`wiztheagent/ironmesh`](https://hub.docker.com/r/wiztheagent/ironmesh). Runs as non-root UID 1000. `docker pull wiztheagent/ironmesh:latest`.
-- **PyPI** — Published as [`ironmesh`](https://pypi.org/project/ironmesh/). `pip install ironmesh` works. Add `[rns]` for the Reticulum/LoRa transport.
-- **LoRa end-to-end latency** — Measured live at 915 MHz SF8/BW125 between two RNode-equipped nodes (1 hop, strong signal): 16-byte probe 1.07 — 1.23 s, 64-byte probe 1.17 — 1.25 s, 256-byte probe 1.77 — 1.98 s, 100% delivery across 9 probes. Multi-hop + long-range interference sweeps are still pending — see [`docs/LORA_VALIDATION.md`](docs/LORA_VALIDATION.md) for the test procedure and results.
-- **`install.sh`** — The systemd install script hasn't been re-tested on a clean Ubuntu VM since the v0.7.2 code changes. The file itself is unchanged from v0.7.1, but caveat operator.
-- **Android client** — Use [Sideband](https://unsigned.io/sideband/) + the bundled LXMF gateway (`examples/lxmf_gateway.py`). Proven end-to-end in v0.7.1 with a Google Pixel. No first-party Android app planned — LXMF is the right layer for that.
-- **Windows service** — No Windows service wrapper shipped. Run under WSL2 or in a terminal with `ironmesh run ...`.
-- **GUI dashboard password** — The per-session GUI token (32 bytes) is the only auth. If you expose the dashboard beyond localhost (NOT recommended), put it behind a reverse proxy with your own auth.
+- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport). Latest: **v0.8.0**.
+- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.8.0`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
+- **GitHub releases** — signed tags, wheel + sdist attached: [releases page](https://github.com/WizTheAgent/IronMesh/releases).
+- **Go client** — `clients/go/` (reference implementation, crypto primitives verified against Python).
+- **LoRa end-to-end latency** — Measured live at 915 MHz SF8/BW125 between two RNode-equipped nodes (1 hop, strong signal): 16-byte probe 1.07 — 1.23 s, 64-byte probe 1.17 — 1.25 s, 256-byte probe 1.77 — 1.98 s, 100% delivery across 9 probes. Multi-hop + long-range interference sweeps are still pending — see [`docs/LORA_VALIDATION.md`](docs/LORA_VALIDATION.md).
+- **`scripts/install.sh`** — The systemd installer hasn't been re-tested on a clean Ubuntu VM since the v0.7.2 code changes. File itself is unchanged; caveat operator.
+- **Android** — Use [Sideband](https://unsigned.io/sideband/) + the bundled LXMF gateway (`examples/lxmf_gateway.py`). Proven end-to-end with a Google Pixel. No first-party Android app planned — LXMF is the correct layer for that.
+- **Windows service** — No native service wrapper shipped. Run under WSL2, a terminal session, or Docker.
+- **GUI dashboard auth** — Per-session 32-byte token only. If you ever expose the dashboard beyond localhost (NOT recommended), front it with a reverse proxy that enforces your own auth.
+- **Third-party security audit** — Primitives are NaCl/libsodium (battle-tested), but the protocol itself has not been externally reviewed. See [SECURITY.md](SECURITY.md) for threat model and [docs/PROTOCOL_SPEC.md](docs/PROTOCOL_SPEC.md) for the wire format.
 
 ## Legacy highlights (v0.4 → v0.7.1)
 
