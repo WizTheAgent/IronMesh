@@ -16,6 +16,16 @@
 
 Zero-config, end-to-end encrypted agent-to-agent communication that never leaves your local network.
 
+<!--
+  The dashboard screenshot is intentionally kept in docs/assets/.
+  If you add a screenshot (recommended — it's above-the-fold real
+  estate), commit it as docs/assets/dashboard.png and GitHub will
+  render the img tag below. See docs/assets/README.md.
+-->
+<p align="center">
+  <img src="docs/assets/dashboard.png" alt="IronMesh dashboard showing peers, messages, and per-peer metrics" width="780">
+</p>
+
 ## Why IronMesh Exists
 
 When we looked for a way to make AI agents talk to each other on a local network, there was nothing. Every existing protocol assumes you're connected to the internet, routing through someone else's cloud, trusting someone else's infrastructure.
@@ -96,6 +106,10 @@ wire a LangChain `AgentExecutor` to IronMesh peers with a single
 IronMesh gives them connectivity that survives a router reboot, a dead
 ISP, or no internet at all.
 
+Five concrete deployment patterns — home AI mesh, offline LLM swarm,
+robotics coordination, air-gapped lab, off-grid LoRa — in
+[`docs/USE_CASES.md`](docs/USE_CASES.md).
+
 ## Why not just use X?
 
 | Question | Answer |
@@ -137,6 +151,18 @@ pip install ironmesh            # PyPI
 # or: ./scripts/install.sh       (Linux / macOS systemd)
 # or: see docs/TERMUX.md         (Android)
 ```
+
+### 10-second smoke test
+
+```bash
+ironmesh demo
+```
+
+Spawns two temporary agents on `127.0.0.1`, does the full mutual-auth +
+ECDH handshake between them, sends one encrypted ping, prints the
+round-trip latency, and exits. No keys, ports, or state touched in
+`~/.ironmesh`. Use this to confirm the install works before wiring up a
+real deployment.
 
 ### 60-second demo — two agents on one machine
 
