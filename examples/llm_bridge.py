@@ -15,6 +15,26 @@ Prerequisites:
     - Ollama running locally (``ollama serve``)
     - Model pulled (``ollama pull llama3.2:3b``)
     - IronMesh installed (``pip install ironmesh``)
+
+Loop prevention
+---------------
+Agent-to-agent dialogue needs bounded turn counts, otherwise two LLM
+bridges that can both talk will ping-pong forever. Three protections
+stack here:
+
+1. Responses are tagged with the ``[LLM] `` prefix. This bridge
+   ignores any incoming message that starts with ``[LLM] `` or
+   ``[LLM-ERR] ``, so a reply landing in another LLM bridge's inbox
+   doesn't re-trigger generation.
+2. Optional conversation header on the prompt:
+   ``[CONV:<id>:<turn>/<max>]\\n<prompt>``. The bridge parses it,
+   increments the turn counter, and if ``turn >= max`` it sends back
+   a ``[END] `` frame and stops. The orchestrator (e.g.
+   ``examples/ai_to_ai_dialogue.py``) reads the turn from the
+   reply's own conv header.
+3. Per-conversation cooldown: the bridge will not respond to the same
+   conv_id more than once every ``--conv-cooldown`` seconds (default 1s)
+   to catch accidental self-replay loops.
 """
 
 from __future__ import annotations
@@ -24,6 +44,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -42,6 +63,12 @@ log = logging.getLogger("llm_bridge")
 
 RESPONSE_PREFIX = b"[LLM] "
 ERROR_PREFIX = b"[LLM-ERR] "
+END_PREFIX = b"[END] "
+
+# Matches e.g. "[CONV:8f3c-...:2/5]\n" at the start of a prompt.
+_CONV_HEADER_RE = re.compile(
+    r"^\[CONV:(?P<id>[A-Za-z0-9._-]+):(?P<turn>\d+)/(?P<max>\d+)\]\n",
+)
 
 
 def _ollama_generate_sync(url: str, model: str, prompt: str,
@@ -100,6 +127,8 @@ def main():
                     help="Passphrase protecting the keys file, if any")
     p.add_argument("--allowed-peers", default=None,
                     help="Comma-separated list of peer names allowed to auto-connect via mDNS")
+    p.add_argument("--conv-cooldown", type=float, default=1.0,
+                    help="Seconds to wait before processing the same conv_id twice (default: 1.0)")
     args = p.parse_args()
 
     passphrase = None
@@ -125,22 +154,74 @@ def main():
         **extra,
     )
 
-    stats = {"received": 0, "replied": 0, "errors": 0}
+    stats = {"received": 0, "replied": 0, "errors": 0, "ended": 0, "cooldown_drops": 0}
+    # conv_id -> last timestamp we processed it. Small bounded dict
+    # (capped by _trim_conv_seen) so we don't leak memory on long runs.
+    conv_seen: dict[str, float] = {}
+
+    def _trim_conv_seen(max_entries: int = 1024) -> None:
+        if len(conv_seen) > max_entries:
+            # Drop the oldest half. Good enough; not a hot path.
+            cutoff = sorted(conv_seen.values())[len(conv_seen) // 2]
+            for k in [k for k, v in conv_seen.items() if v < cutoff]:
+                conv_seen.pop(k, None)
 
     @agent.on_message()
     def on_prompt(peer_id, payload):
-        if payload.startswith(RESPONSE_PREFIX) or payload.startswith(ERROR_PREFIX):
+        # 1. Ignore our own protocol responses so two LLM bridges don't
+        #    turn each other's replies into prompts.
+        if (payload.startswith(RESPONSE_PREFIX)
+                or payload.startswith(ERROR_PREFIX)
+                or payload.startswith(END_PREFIX)):
             return
         if len(payload) > args.max_prompt_bytes:
             agent.reply(peer_id, ERROR_PREFIX + f"Prompt too large (max {args.max_prompt_bytes} bytes)".encode())
             return
         try:
-            prompt = payload.decode("utf-8")
+            text = payload.decode("utf-8")
         except UnicodeDecodeError:
             return
 
+        # 2. Parse the optional conversation header. Absent header
+        #    = single-turn Q&A, no loop risk.
+        conv_id: str | None = None
+        turn: int = 0
+        max_turns: int = 0
+        m = _CONV_HEADER_RE.match(text)
+        if m:
+            conv_id = m.group("id")
+            turn = int(m.group("turn"))
+            max_turns = int(m.group("max"))
+            prompt = text[m.end():]
+        else:
+            prompt = text
+
+        # 3. Turn-limit check: if this is a CONV message and we've
+        #    hit the cap, send [END] and don't call the model.
+        if conv_id and turn >= max_turns:
+            stats["ended"] += 1
+            log.info("[%s] conv %s reached turn %d/%d — ending",
+                     peer_id[:8], conv_id, turn, max_turns)
+            agent.reply(peer_id, END_PREFIX + b"turn limit reached")
+            return
+
+        # 4. Cooldown: drop repeats of the same conv_id within the window.
+        if conv_id:
+            now = time.monotonic()
+            prev = conv_seen.get(conv_id, 0.0)
+            if now - prev < args.conv_cooldown:
+                stats["cooldown_drops"] += 1
+                log.info("[%s] conv %s dropped (cooldown, %.2fs < %.2fs)",
+                         peer_id[:8], conv_id, now - prev, args.conv_cooldown)
+                return
+            conv_seen[conv_id] = now
+            _trim_conv_seen()
+
         stats["received"] += 1
-        log.info("[%s] prompt (%d chars): %s", peer_id[:8], len(prompt),
+        log.info("[%s] prompt%s (%d chars): %s",
+                 peer_id[:8],
+                 f" [conv {conv_id} turn {turn}/{max_turns}]" if conv_id else "",
+                 len(prompt),
                  prompt[:80] + ("..." if len(prompt) > 80 else ""))
 
         async def _respond():
@@ -154,9 +235,17 @@ def main():
             if response.startswith("[LLM-ERR]"):
                 stats["errors"] += 1
                 await agent.send(peer_id, response.encode())
+                return
+            stats["replied"] += 1
+            # Pass the conversation header through with turn+1 so the
+            # orchestrator (or the other LLM bridge) sees its own
+            # position in the exchange.
+            if conv_id:
+                header = f"[CONV:{conv_id}:{turn + 1}/{max_turns}]\n"
+                out = RESPONSE_PREFIX + (header + response).encode()
             else:
-                stats["replied"] += 1
-                await agent.send(peer_id, RESPONSE_PREFIX + response.encode())
+                out = RESPONSE_PREFIX + response.encode()
+            await agent.send(peer_id, out)
 
         asyncio.run_coroutine_threadsafe(_respond(), agent._loop)
 
@@ -166,13 +255,14 @@ def main():
     print(f"Node ID: {agent.node_id}")
     print(f"Ollama:  {args.ollama_url}  model={args.model}")
     print(f"Capability: llm:{args.model}")
-    print(f"\nWaiting for MSG prompts. Ctrl-C to stop.\n")
+    print("\nWaiting for MSG prompts. Ctrl-C to stop.\n")
 
     try:
         while True:
             time.sleep(30)
-            log.info("Stats: received=%d replied=%d errors=%d peers=%d",
-                     stats["received"], stats["replied"], stats["errors"],
+            log.info("Stats: received=%d replied=%d ended=%d cooldown=%d errors=%d peers=%d",
+                     stats["received"], stats["replied"], stats["ended"],
+                     stats["cooldown_drops"], stats["errors"],
                      len(agent.peers))
     except KeyboardInterrupt:
         pass
