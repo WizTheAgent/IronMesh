@@ -91,6 +91,15 @@ def main():
     p.add_argument("--timeout", type=float, default=30.0)
     p.add_argument("--gui", action="store_true")
     p.add_argument("--reticulum", action="store_true")
+    # Identity + trust: reuse the same keys that an existing
+    # ``ironmesh run`` daemon uses, so TOFU pinning on other peers
+    # doesn't break when you upgrade a normal node into an LLM bridge.
+    p.add_argument("--keys-path", default=None,
+                    help="Identity keys file to load (default: ~/.ironmesh/keys.json)")
+    p.add_argument("--keys-passphrase", default=None,
+                    help="Passphrase protecting the keys file, if any")
+    p.add_argument("--allowed-peers", default=None,
+                    help="Comma-separated list of peer names allowed to auto-connect via mDNS")
     args = p.parse_args()
 
     passphrase = None
@@ -98,10 +107,22 @@ def main():
         with open(os.path.expanduser(args.passphrase_file)) as f:
             passphrase = f.read().strip()
 
+    extra = {}
+    if args.keys_path:
+        extra["keys_path"] = os.path.expanduser(args.keys_path)
+    if args.keys_passphrase:
+        extra["keys_passphrase"] = args.keys_passphrase
+    if args.allowed_peers:
+        extra["allowed_peers"] = [p.strip() for p in args.allowed_peers.split(",") if p.strip()]
+        # When an allowlist is set the daemon's default-deny kicks in;
+        # open_discovery=False pairs with that.
+        extra["open_discovery"] = False
+
     agent = Agent(
         args.name, port=args.port, passphrase=passphrase,
         gui=args.gui, reticulum=args.reticulum,
         capabilities=[f"llm:{args.model}"],
+        **extra,
     )
 
     stats = {"received": 0, "replied": 0, "errors": 0}
