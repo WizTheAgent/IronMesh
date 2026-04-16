@@ -223,6 +223,6 @@ ironmesh_circuit_breakers_open 0
 
 ## Further reading
 
-- `docs/PROTOCOL.md` — wire format, message schemas, frame layout.
+- `docs/PROTOCOL_SPEC.md` — wire format, message schemas, frame layout.
 - `docs/SECURITY.md` — full threat model and crypto rationale.
 - `docs/CAPABILITIES.md` — capability advertisement and discovery.

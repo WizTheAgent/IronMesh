@@ -8,7 +8,7 @@ IronMesh protocol must uphold.  They double as:
   - A reference for anyone writing a second implementation (Rust/Go)
     to understand the protocol surface without reading all of our code.
 
-See ``docs/PROTOCOL.md`` for the human-readable specification.
+See ``docs/PROTOCOL_SPEC.md`` for the human-readable specification.
 """
 
 from __future__ import annotations

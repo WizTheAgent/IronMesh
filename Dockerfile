@@ -28,7 +28,7 @@ FROM python:3.13-slim-bookworm
 
 LABEL org.opencontainers.image.title="IronMesh"
 LABEL org.opencontainers.image.description="Zero-config encrypted agent-to-agent mesh protocol"
-LABEL org.opencontainers.image.source="https://github.com/kingpi-empire/ironmesh"
+LABEL org.opencontainers.image.source="https://github.com/WizTheAgent/IronMesh"
 LABEL org.opencontainers.image.licenses="MIT"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

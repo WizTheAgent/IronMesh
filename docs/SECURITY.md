@@ -4,7 +4,7 @@
 
 IronMesh exists so you can run AI agents that communicate on **your** network without depending on corporate infrastructure. That means the security can't depend on corporate infrastructure either. No certificate authorities, no cloud key management, no "trust us" from a vendor. The crypto has to be solid, local, and verifiable.
 
-We use battle-tested primitives from libsodium (via PyNaCl) — the same crypto library used by Signal, WireGuard, and countless other projects that take security seriously. Nothing homebrew, nothing exotic.
+The cryptographic primitives come from libsodium (via PyNaCl), the same library used by Signal, WireGuard, and many other projects. Nothing homebrew, nothing exotic.
 
 ## Threat Model
 
