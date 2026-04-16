@@ -13,6 +13,15 @@ queue backpressure, peer-drop alerting, per-peer bandwidth throttle).
 All 5 critical and 11/11 high-severity items from the prior audit now
 fixed. 456 tests passing, zero regressions.
 
+### Breaking: Python 3.10+ required
+
+`requires-python` bumped from `>=3.9` to `>=3.10`. Python 3.9 went
+EOL in October 2025. The codebase relies on `asyncio.Lock()` being
+constructible outside a running loop (a 3.10 change) — keeping the
+3.9 compat shim is more complexity than the shrinking 3.9 user base
+justifies. If you're on 3.9, pin to `ironmesh==0.7.1` until you
+upgrade.
+
 ### Major protocol bugs fixed
 
 - **Event loop not started on `BridgeDaemon.run(background=True)`** —
