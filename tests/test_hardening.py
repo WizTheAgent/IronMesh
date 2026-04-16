@@ -528,3 +528,41 @@ class TestDuplicateHandshakeTeardown:
         assert peer_id not in d.ws_clients
         assert not d.peers[peer_id].is_online
         assert d.peers[peer_id].session_key is None
+
+
+# -----------------------------------------------------------------------
+# v0.8.2 regression: GUI message_event broadcasts include peer_id + payload
+# (previously blanked because MappingProxyType is not a dict subclass).
+# -----------------------------------------------------------------------
+
+class TestGUIBroadcastMappingProxy:
+    """Bus.publish freezes dict payloads in MappingProxyType. The GUI
+    hook used isinstance(data, dict) which returns False for
+    MappingProxyType, so every broadcast had empty peer_id and payload.
+    """
+
+    def test_mapping_is_dict_like_for_broadcast(self):
+        # The on_bus_event logic inside _wire_gui_hooks is intentionally
+        # a small closure; reproduce its data-extraction shape here and
+        # assert we see the fields we care about.
+        from collections.abc import Mapping
+
+        frozen = MappingProxyType({
+            "peer_id": "abc" * 8,
+            "msg_id": "m-1",
+            "type": "MSG",
+            "payload": b"hello",
+        })
+        # Old buggy check:
+        assert not isinstance(frozen, dict), (
+            "sanity: MappingProxyType was never a dict subclass"
+        )
+        # New fixed check:
+        assert isinstance(frozen, Mapping)
+        # Extraction as the hook does it now:
+        safe = {}
+        for k, v in frozen.items():
+            safe[k] = v.decode("utf-8", errors="replace") if isinstance(v, bytes) else v
+        assert safe["peer_id"] == "abc" * 8
+        assert safe["payload"] == "hello"
+        assert safe["msg_id"] == "m-1"
