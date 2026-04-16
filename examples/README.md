@@ -109,11 +109,23 @@ python examples/llm_bridge.py \
     --name llm-node --port 8766 \
     --passphrase-file ~/.ironmesh/passphrase \
     --ollama-url http://localhost:11434 \
-    --model llama3.2:3b
+    --model llama3.2:3b \
+    --role security-analyst \
+    --tools echo,http-get
 ```
 
-Any other agent on the mesh can now send a prompt as a MSG payload and
-get a model completion back.
+Supports (v0.8.2+):
+- `--role <name>` — persona preset (`assistant`, `security-analyst`,
+  `network-engineer`, `historian`, `coder`, `ops`, `devil`). Loads a
+  bundled system prompt and advertises `role:<name>` as a capability.
+- `--tools <list>` — opt-in tool-use (`echo`, `http-get`, `file-read`
+  with `--file-read-allow`). The model can call tools mid-reply with
+  `<tool name="X">args</tool>` markers.
+- `--keys-path` / `--keys-passphrase` — reuse an existing identity
+  instead of generating fresh keys.
+- Accepts both plain `MSG` payloads and structured `MessageType.CONV`
+  frames. Turn caps, budgets, and `[DONE]` smart termination are all
+  handled automatically.
 
 ## lxmf_gateway.py
 

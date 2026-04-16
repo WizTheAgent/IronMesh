@@ -106,7 +106,7 @@ message, click Send.  It should appear in Bob's message feed.
   topologies.
 - **[Threat model](docs/THREAT_MODEL.md)** — what we defend against and
   what we don't.
-- **[Compatibility matrix](docs/ARCHITECTURE.md#14-version-compatibility-matrix)** —
+- **[Compatibility matrix](ARCHITECTURE.md#14-version-compatibility-matrix)** —
   which features work across versions.
 
 ## Troubleshooting

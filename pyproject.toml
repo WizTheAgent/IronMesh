@@ -67,6 +67,9 @@ ironmesh_mcp = "ironmesh_mcp"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m not slow')",
+]
 addopts = "-v --tb=short"
 
 [tool.ruff]
