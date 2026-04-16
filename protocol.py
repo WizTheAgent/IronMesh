@@ -91,6 +91,10 @@ class MessageType(str, Enum):
     CAPABILITY_ANNOUNCE = "CAPABILITY_ANNOUNCE"
     CAPABILITY_QUERY = "CAPABILITY_QUERY"
 
+    # v0.8.2: Structured multi-turn conversations (LLM-to-LLM dialogue).
+    # Payload is a JSON envelope: see docs/PROTOCOL_SPEC.md §4.
+    CONV = "CONV"
+
 
 class MessagePriority(str, Enum):
     LOW = "LOW"
