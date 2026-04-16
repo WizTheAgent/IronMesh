@@ -42,14 +42,14 @@ install_python_if_missing() {
         local ver
         ver=$("$PYTHON_BIN" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
         msg "Found $PYTHON_BIN (Python $ver)"
-        # Check >= 3.9
-        if "$PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)'; then
+        # Check >= 3.10 (matches pyproject.toml requires-python)
+        if "$PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)'; then
             return 0
         fi
-        warn "Python $ver is too old; need >= 3.9"
+        warn "Python $ver is too old; need >= 3.10"
     fi
 
-    msg "Python 3.9+ not found — attempting install"
+    msg "Python 3.10+ not found — attempting install"
     local os
     os=$(detect_os)
     case "$os" in
@@ -68,7 +68,7 @@ install_python_if_missing() {
             brew install python
             ;;
         *)
-            err "Unsupported OS '$os'. Please install Python 3.9+ manually and re-run."
+            err "Unsupported OS '$os'. Please install Python 3.10+ manually and re-run."
             exit 1
             ;;
     esac

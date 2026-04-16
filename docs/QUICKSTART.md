@@ -5,7 +5,7 @@ Get two agents talking on your local network in 5 minutes. No cloud, no internet
 ## What you need
 
 - Two machines on the same LAN (Raspberry Pi, desktop, laptop, VM — anything that runs Python)
-- Python 3.9+
+- Python 3.10+
 - That's it
 
 ## 1. Install

@@ -98,6 +98,44 @@ At the bottom of the message feed panel:
 
 Messages sent from the GUI are encrypted and signed just like any programmatic `send_message()` call — full end-to-end encryption with forward secrecy.
 
+### Start A2A panel (v0.8.2+)
+
+A second row under the send form kicks off a bounded AI-to-AI
+dialogue between two peers that advertise `llm:*` capabilities. The
+dashboard shuttles `MessageType.CONV` frames between them and streams
+the transcript into the message feed live.
+
+Fields:
+
+1. **AI peer A** / **AI peer B** — dropdowns auto-populated with
+   only peers that advertise an `llm:*` capability. Must be different
+   peers.
+2. **Max turns** — spinner (default 4). Each turn = one agent reply.
+   The first recipient to receive a frame at `turn >= max_turns`
+   sends back an `end / turn-limit` frame and refrains from calling
+   its model.
+3. **Seed prompt** — the opening message sent to peer A.
+4. **Start A2A** — kicks off the `start_dialogue` WS action.
+
+Transcript events stream back as `type:"dialogue_event"` with
+`event` set to one of `started`, `turn`, `end`, `error`, `timeout`,
+`turn_cap_reached`, or `finished`. The dashboard renders each turn
+with its speaker and turn number. See the "WebSocket Protocol"
+section below for the full event schema.
+
+Loop prevention (three layers, all active by default):
+
+1. CONV envelope carries `turn` + `max_turns`; every LLM bridge
+   returns an end-frame when the cap is hit.
+2. `[LLM] ` response prefix stops replies re-triggering generation.
+3. Per-conversation cooldown drops duplicate re-plays within 1 s.
+
+Optional budgets (pass `budget_seconds` and/or `budget_bytes` in the
+`start_dialogue` payload) end the exchange early with
+`end_reason="budget-exceeded"`. An LLM can also self-terminate by
+starting its reply with `[DONE] <reason>` — the bridge strips the
+marker and emits `end_reason="goal-achieved"`.
+
 ## HTTP Endpoints
 
 | Path | Description |
@@ -122,6 +160,7 @@ The dashboard communicates with the bridge via WebSocket at `/ws`.
 | `peer_event` | `{event: "connected"/"disconnected", peer_id, timestamp}` | On peer connect/disconnect |
 | `send_ack` | `{msg_id}` | After successful message send |
 | `send_error` | `{error: "description"}` | On send failure or invalid command |
+| `dialogue_event` (v0.8.2+) | `{conv_id, event, turn?, speaker?, body?, reason?, ...}` | Transcript tick from a running `start_dialogue` session. `event` is one of `started`, `turn`, `end`, `error`, `timeout`, `turn_cap_reached`, `finished`. |
 
 ### Client -> Server Messages
 
@@ -130,6 +169,7 @@ The dashboard communicates with the bridge via WebSocket at `/ws`.
 | `send_message` | `{to_node, msg_type, payload}` | Encrypts and sends via `daemon.send_message()` |
 | `get_history` | `{peer_id (optional), limit}` | Queries SQLite message store |
 | `refresh` | (none) | Re-sends full state snapshot |
+| `start_dialogue` (v0.8.2+) | `{peer_a, peer_b, seed, max_turns?, turn_timeout?, budget_seconds?, budget_bytes?}` | Runs an in-process AI-to-AI orchestrator that shuttles CONV frames between two peers. Streams back `dialogue_event` messages. |
 
 ### Example: Sending a message via WebSocket
 
