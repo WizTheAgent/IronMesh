@@ -71,7 +71,44 @@ IronMesh is for preppers, homelab operators, privacy advocates, tinkerers, and a
 - **Model agnostic.** Ollama, llama.cpp, vLLM, a bash script — if it speaks WebSocket, it can use IronMesh.
 - **Cross-platform.** Raspberry Pi, Windows, Linux, Mac. Tested daily on a Pi 5 and a Windows desktop.
 
-## How It Compares
+## Where IronMesh fits
+
+IronMesh is a networking layer for agents, not another orchestration
+framework. It sits under the tools you already use:
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Your application                                   │
+├─────────────────────────────────────────────────────┤
+│  Agent frameworks — LangChain, CrewAI, AutoGen      │  <- adapters ship with IronMesh
+├─────────────────────────────────────────────────────┤
+│  Tool / context protocols — MCP, A2A                │
+├─────────────────────────────────────────────────────┤
+│  IronMesh — identity, encryption, routing, queue    │  <- this project
+├─────────────────────────────────────────────────────┤
+│  Transport — WebSocket over LAN, Reticulum / LoRa   │
+└─────────────────────────────────────────────────────┘
+```
+
+You can run MCP tool servers *on top of* an IronMesh session; you can
+wire a LangChain `AgentExecutor` to IronMesh peers with a single
+`create_ironmesh_toolkit()` call. The other layers assume connectivity;
+IronMesh gives them connectivity that survives a router reboot, a dead
+ISP, or no internet at all.
+
+## Why not just use X?
+
+| Question | Answer |
+|---|---|
+| Can't I use **HTTPS between agents**? | Yes, until DNS goes down or your router reboots. IronMesh keeps working. Also: zero cert wrangling for a home-lab setup. |
+| Doesn't **MCP** already solve this? | MCP connects agents to *tools*. IronMesh connects agents to *each other*. They compose. |
+| What about **LangGraph / CrewAI**? | They orchestrate agent logic. IronMesh carries the messages between machines. They compose. |
+| Isn't **Tailscale / WireGuard** enough? | Those give you an encrypted tunnel. IronMesh adds identity pinning, capability discovery, offline queueing, and a mesh-aware routing table on top — specific to how agents talk. |
+| Why not **Reticulum** directly? | Reticulum is a great low-level mesh; IronMesh uses it as one of its transports. IronMesh adds agent-level features (per-agent identity, capability discovery, authenticated handshake, typed messages). |
+
+## Feature comparison with internet-native agent protocols
+
+These assume the internet. IronMesh doesn't.
 
 | Feature | IronMesh | Google A2A | Anthropic MCP | ACP | ANP |
 |---------|-----------|------------|---------------|-----|-----|
@@ -129,6 +166,15 @@ encrypted session. `--open-discovery` turns off the default-deny peer
 filter so a same-machine demo just works. `--allow-plaintext-ws`
 disables the wss-first attempt so you don't need to generate a TLS cert
 for localhost. In any real deployment you'll leave both of those off.
+
+### The "two Ollama agents talking" demo
+
+For the full picture — two local LLM agents actually exchanging
+prompts and responses over the encrypted mesh — see
+[`examples/ollama_swarm.py`](examples/ollama_swarm.py). One node runs
+Ollama, advertises a `llm:<model>` capability, and answers prompts; the
+other sends a question and prints the reply. No cloud, no API keys, no
+internet.
 
 ### Using it from Python
 
