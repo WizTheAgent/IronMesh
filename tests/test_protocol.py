@@ -155,16 +155,17 @@ class TestTokenBucket:
         assert not bucket.consume()
 
     def test_refills_over_time(self):
-        """After sleeping, the bucket must refill. Sleep a margin above the
-        worst Windows scheduler granularity (~15.6 ms) so this test is not
-        flaky — at 1000 tokens/sec, 100 ms should refill ~100 tokens even
-        in the slowest plausible wakeup scenario.
+        """Bucket refills based on elapsed time since last refill.
+        Instead of sleeping (which is flaky on Windows due to ~15.6 ms
+        scheduler granularity), we backdate `_last_refill` to simulate
+        time passing deterministically.
         """
-        bucket = TokenBucket(rate=1000, burst=1)
+        import time as _time
+        bucket = TokenBucket(rate=10, burst=1)
         bucket.consume()
         assert not bucket.consume()
-        import time as _time
-        _time.sleep(0.1)  # 100 ms — robust to Windows 15.6 ms ticks
+        # Simulate 1 second passing → 10 tokens should refill at rate=10/s
+        bucket._last_refill = _time.monotonic() - 1.0
         assert bucket.consume()
 
     def test_wait_time_zero_when_available(self):
