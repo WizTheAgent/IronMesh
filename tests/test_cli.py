@@ -29,6 +29,18 @@ class TestSubcommandParsing:
         assert args.name == "wiz"
         assert args.port == 8765
 
+    def test_demo_subcommand_defaults(self):
+        args = _parse(["demo"])
+        assert args.command == "demo"
+        assert args.port == 18765
+        assert args.timeout == 30.0
+
+    def test_demo_subcommand_custom_port_and_timeout(self):
+        args = _parse(["demo", "--port", "40000", "--timeout", "5"])
+        assert args.command == "demo"
+        assert args.port == 40000
+        assert args.timeout == 5.0
+
     def test_trust_list(self):
         args = _parse(["trust", "list"])
         assert args.command == "trust"

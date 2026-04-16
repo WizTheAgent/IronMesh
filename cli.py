@@ -157,6 +157,16 @@ def parse_args():
                     help="Local bridge GUI WebSocket URL")
     sr.add_argument("--token", required=True, help="GUI token")
 
+    # --- demo ---
+    demo_parser = sub.add_parser(
+        "demo",
+        help="Spawn two local agents, exchange an encrypted ping, print RTT",
+    )
+    demo_parser.add_argument("--port", type=int, default=18765,
+                             help="Base port (uses --port and --port+1, default: 18765)")
+    demo_parser.add_argument("--timeout", type=float, default=30.0,
+                             help="Max seconds to wait for discovery + reply (default: 30)")
+
     # --- Backward compatibility: allow flags directly on root parser ---
     parser.add_argument("--name", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--port", type=int, default=8765, help=argparse.SUPPRESS)
@@ -641,6 +651,116 @@ def cmd_session(args):
     return 1
 
 
+def cmd_demo(args):
+    """Spawn two local agents and exchange an encrypted ping.
+
+    The demo connects the two agents directly by host:port rather than
+    relying on mDNS, so it's reliable on Windows (where zeroconf over
+    localhost is inconsistent). No persistent state is created.
+    Returns 0 on success, 1 on timeout or handshake failure.
+    """
+    import tempfile
+    import time
+
+    from ironmesh.agent import Agent
+
+    setup_logging("ERROR")
+    # The demo legitimately generates some cosmetic noise on Windows
+    # (websocket scan probes, one-time trust-store init). Silence it.
+    for noisy in ("websockets", "websockets.server", "websockets.client",
+                  "ironmesh.bridge", "ironmesh.discovery"):
+        logging.getLogger(noisy).setLevel(logging.CRITICAL)
+    logging.getLogger("ironmesh.trust").setLevel(logging.CRITICAL + 1)
+
+    # Each agent also binds port+1 for its metrics endpoint, so the two
+    # agents need at least 2 ports of headroom between them.
+    port_a = args.port
+    port_b = args.port + 2
+    passphrase = "ironmesh-demo-passphrase-ephemeral"
+
+    print(f"IronMesh demo -- two agents on 127.0.0.1:{port_a} and :{port_b}",
+          flush=True)
+    print("(temporary keys in a temp dir; no state written to ~/.ironmesh)",
+          flush=True)
+    print(flush=True)
+
+    with tempfile.TemporaryDirectory(
+        prefix="ironmesh-demo-", ignore_cleanup_errors=True,
+    ) as tmp:
+        def _daemon_kwargs(tag: str, allowed: list[str]) -> dict:
+            root = os.path.join(tmp, tag)
+            os.makedirs(root, exist_ok=True)
+            return dict(
+                keys_path=os.path.join(root, "keys.json"),
+                db_path=os.path.join(root, "data.db"),
+                routes_path=os.path.join(root, "routes.json"),
+                capabilities_path=os.path.join(root, "capabilities.json"),
+                allowed_peers=allowed,
+            )
+
+        alice = Agent(
+            "demo-alice", port=port_a, passphrase=passphrase,
+            open_discovery=False, allow_plaintext=True,
+            **_daemon_kwargs("alice", allowed=["demo-bob"]),
+        )
+        bob = Agent(
+            "demo-bob", port=port_b, passphrase=passphrase,
+            open_discovery=False, allow_plaintext=True,
+            **_daemon_kwargs("bob", allowed=["demo-alice"]),
+        )
+
+        received: list[tuple[float, bytes]] = []
+
+        @bob.on_message()
+        def _on_msg(peer_id: str, payload: bytes) -> None:
+            received.append((time.monotonic(), payload))
+
+        alice.run(foreground=False)
+        bob.run(foreground=False)
+
+        try:
+            # mDNS on the local LAN will bring the two agents together;
+            # the allowed_peers filter keeps them from dialing anyone else.
+            deadline = time.monotonic() + args.timeout
+            while time.monotonic() < deadline:
+                bob_peer = alice.peer_by_name("demo-bob")
+                alice_peer = bob.peer_by_name("demo-alice")
+                if bob_peer and alice_peer:
+                    break
+                time.sleep(0.25)
+            else:
+                print(f"[fail] peers did not handshake within "
+                      f"{args.timeout:.0f}s.", flush=True)
+                return 1
+
+            print("[ok]   handshake complete (encrypted session established).",
+                  flush=True)
+
+            t0 = time.monotonic()
+            alice.send_sync("demo-bob", b"ping")
+            reply_deadline = time.monotonic() + min(10.0, args.timeout)
+            while time.monotonic() < reply_deadline and not received:
+                time.sleep(0.02)
+
+            if not received:
+                print("[fail] bob did not receive the ping.", flush=True)
+                return 1
+
+            t1, payload = received[0]
+            latency_ms = (t1 - t0) * 1000
+            print(f"[ok]   bob received {payload!r} in {latency_ms:.1f} ms.",
+                  flush=True)
+            print(flush=True)
+            print("That's an NaCl SecretBox + Ed25519 session between two",
+                  flush=True)
+            print("agents. Next: examples/ollama_swarm.py for a real demo.",
+                  flush=True)
+            return 0
+        finally:
+            alice.stop()
+            bob.stop()
+
+
 def main():
     args = parse_args()
     command = getattr(args, "command", None)
@@ -659,13 +779,16 @@ def main():
         return cmd_session(args)
     elif command == "run":
         return cmd_run(args)
+    elif command == "demo":
+        return cmd_demo(args)
     elif args.name:
         # Backward compatibility: no subcommand but --name given -> run
         return cmd_run(args)
     else:
         print("IronMesh — Zero-config encrypted A2A protocol\n")
         print("Usage:")
-        print("  ironmesh run --name <agent> [--port 8765] [--passphrase <pass>]")
+        print("  ironmesh demo                          # spawn two agents on localhost and exchange a ping")
+        print("  ironmesh run --name <agent> [--port 8765]")
         print("  ironmesh trust list")
         print("  ironmesh trust revoke <node_id>")
         print("  ironmesh keys generate [--path <path>] [--passphrase <pass>]")

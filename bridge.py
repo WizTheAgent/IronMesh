@@ -1101,6 +1101,10 @@ class BridgeDaemon:
             peer_state.protocol_version = peer_protocol
             peer_state.supports_mesh = _peer_supports_mesh(peer_protocol)
             peer_state.is_relay_capable = peer_state.supports_mesh
+            # Expose the HELLO-advertised agent name so SDK helpers like
+            # Agent.peer_by_name() and the dashboard peer list can resolve
+            # a peer by its friendly name.
+            peer_state.agent_name = peer_name
             if not peer_state.supports_mesh:
                 logger.info("Peer %s on %s — mesh forwarding disabled (direct only)",
                             peer_id, peer_protocol)
@@ -2318,6 +2322,7 @@ class BridgeDaemon:
         peer_state.protocol_version = peer_protocol
         peer_state.supports_mesh = _peer_supports_mesh(peer_protocol)
         peer_state.is_relay_capable = peer_state.supports_mesh
+        peer_state.agent_name = peer_name
         if not peer_state.supports_mesh:
             logger.info("Peer %s on %s — mesh forwarding disabled (direct only)",
                         peer_id, peer_protocol)
