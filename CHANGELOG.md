@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] — Multi-turn AI dialogue, personas, tools, A2A dashboard
+
+Feature release on top of v0.8.1. Adds structured multi-turn
+conversations, seven persona presets, byte/time budgets + smart
+termination, a one-click AI-to-AI panel in the dashboard, and an
+opt-in tool-use registry. No wire-protocol version bump — the new
+`CONV` frame is additive. Full write-up:
+[`docs/RELEASE_NOTES_v0.8.2.md`](docs/RELEASE_NOTES_v0.8.2.md).
+
+### Added
+
+- `MessageType.CONV` and `ironmesh.conversation` (`ConvEnvelope`,
+  `Budget`, `make_reply`, `is_terminal`) for multi-turn agent
+  dialogue with turn caps and budgets. Documented in
+  [`docs/PROTOCOL_SPEC.md §4.1`](docs/PROTOCOL_SPEC.md).
+- `ironmesh.roles` with 7 persona presets; `--role` on
+  `examples/llm_bridge.py`. Also advertised as `role:<name>` capability.
+- Budgets + `[DONE] <reason>` smart termination in `llm_bridge.py`.
+- Dashboard `start_dialogue` GUI WS action + "Start A2A" panel.
+- `ironmesh.tools` registry with `echo` / `http-get` / `file-read`
+  tools; `--tools` + `--file-read-allow` on `llm_bridge.py`.
+
+### Fixed
+
+- **GUI `message_event` emitted empty `peer_id` and `payload`.**
+  `MessageBus.publish` wraps dict payloads in `MappingProxyType`
+  which is not a `dict` subclass; the old `isinstance(data, dict)`
+  check silently dropped the fields. Now uses
+  `collections.abc.Mapping`. Regression in
+  `tests/test_hardening.py::TestGUIBroadcastMappingProxy`.
+
+### Verification
+
+559 tests pass (+45 new), ruff/mypy/bandit clean.
+
 ## [0.8.1] — Mesh stability: duplicate-handshake race fix
 
 Bug-fix release on top of v0.8.0. No wire-protocol changes.

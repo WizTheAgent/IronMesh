@@ -1,7 +1,7 @@
 # IronMesh Wire Protocol Specification
 
 **Version:** 4 (ironmesh/0.6)
-**Status:** Stable. Describes the wire format as implemented in v0.8.1.
+**Status:** Stable. Describes the wire format as implemented in v0.8.2.
 
 This specification is the canonical reference for implementing IronMesh
 in any language. The Python implementation in `protocol.py` and `bridge.py`
@@ -177,6 +177,74 @@ previous hop, but cannot read the contents.
 | `CAPABILITY_QUERY` | Any → Mesh | Search for capabilities |
 | `ROUTE_ANNOUNCE` | Any → Mesh | Distance-vector routing update |
 | `GOODBYE` | Either | Graceful disconnect |
+| `CONV` (v0.8.2+) | Peer → Peer | Structured multi-turn conversation frame |
+
+### 4.1 CONV envelope (v0.8.2+)
+
+A `CONV` frame's payload is a UTF-8 JSON object ("envelope") used for
+multi-turn agent-to-agent dialogue. Every turn carries enough context
+that the receiver can enforce caps and the orchestrator can route
+without its own state.
+
+```json
+{
+  "v": 1,
+  "conv_id": "8f3c2a1b",
+  "turn": 0,
+  "max_turns": 5,
+  "kind": "prompt",
+  "body": "the actual prompt or response text",
+  "reply_to": "<msg_id of the preceding message>",
+  "from_role": "security-analyst",
+  "to_role": "network-engineer",
+  "budget": { "max_seconds": 60, "max_bytes": 16384 },
+  "end_reason": ""
+}
+```
+
+**Required fields**
+
+| Field | Type | Meaning |
+|---|---|---|
+| `v` | int | Envelope version. Receivers MUST accept `v=1`. |
+| `conv_id` | string | Opaque, non-empty identifier for the conversation. |
+| `kind` | enum | `prompt`, `response`, `end`, or `error`. |
+| `body` | string | The human-readable turn content. For `end`/`error`, a short reason. |
+
+**Optional fields**
+
+| Field | Meaning |
+|---|---|
+| `turn` | Non-negative integer turn counter. 0 = the seed prompt. |
+| `max_turns` | Cap enforced by every participant. Receiver MUST send a `kind="end"` / `end_reason="turn-limit"` frame if it gets a frame with `turn >= max_turns > 0` and refrain from calling its model. |
+| `reply_to` | The `msg_id` of the frame this replies to. |
+| `from_role` / `to_role` | Human-readable role labels (see `ironmesh.roles`). Not cryptographically bound. |
+| `budget.max_seconds` / `budget.max_bytes` / `budget.max_tokens` | Optional caps. Any participant that has run past one of them SHOULD end the conversation with `end_reason="budget-exceeded"`. |
+| `end_reason` | One of `turn-limit`, `goal-achieved`, `budget-exceeded`, `error`. Only meaningful on `kind="end"`. |
+
+**Termination**
+
+A CONV exchange ends when any of the following happens:
+
+1. A participant sends a frame with `kind="end"` (graceful).
+2. Turn cap reached: the next recipient responds with `kind="end"` / `end_reason="turn-limit"` instead of invoking its model.
+3. Budget exceeded: any participant that tracks budget state sends `kind="end"` / `end_reason="budget-exceeded"`.
+4. Smart termination: the LLM's reply starts with `[DONE] <reason>`; the bridge strips the marker and emits `kind="end"` / `end_reason="goal-achieved"`.
+5. Error: the model returned an `[LLM-ERR]` string, or the envelope failed validation; bridges send `kind="error"`.
+
+**Forward compatibility**
+
+Unknown top-level keys MUST be preserved on round-trip by any
+library-level parser so a future field added by an updated peer
+doesn't silently drop. See `ironmesh.conversation.ConvEnvelope.extra`
+for the Python reference implementation.
+
+**Legacy `[CONV:id:turn/max]` prefix**
+
+Prior to v0.8.2 conversation state was carried as a magic prefix on
+ordinary `MSG` payloads. The v0.8.2 `llm_bridge.py` still accepts that
+form for one release so older orchestrators keep working; all newly
+written code should emit a real CONV frame.
 
 ## 5. Cryptographic Primitives
 

@@ -8,7 +8,7 @@
 
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **v0.8.1 — pre-1.0 release.** 514 tests green on Ubuntu + Windows across Python 3.10 – 3.13.
+> **v0.8.2 — pre-1.0 release.** 559 tests green on Ubuntu + Windows across Python 3.10 – 3.13.
 > Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -147,7 +147,7 @@ Requires Python 3.10 or newer. On Linux the firewall must allow UDP 5353
 
 ```bash
 pip install ironmesh            # PyPI
-# or: docker pull wiztheagent/ironmesh:0.8.1
+# or: docker pull wiztheagent/ironmesh:0.8.2
 # or: ./scripts/install.sh       (Linux / macOS systemd)
 # or: see docs/TERMUX.md         (Android)
 ```
@@ -488,11 +488,18 @@ pytest tests/ -v --cov=ironmesh
 
 ## Recent changes
 
-**v0.8.1 (current):** fixes a duplicate-handshake race that could kick
-the winning connection offline when two peers dialed each other at
-nearly the same time, silences the CPython proactor shutdown
-`AssertionError` on Windows, and adds the `ironmesh demo` subcommand
-for a 10-second smoke test. See the
+**v0.8.2 (current):** structured multi-turn AI-to-AI dialogue, seven
+persona presets for LLM bridges, byte + time budgets, `[DONE]` smart
+termination, a one-click **Start A2A** panel in the dashboard, and an
+opt-in tool-use registry (`echo`, `http-get`, `file-read`). Fixes
+a GUI-WS `message_event` bug that blanked `peer_id` and `payload`.
+Full write-up: [v0.8.2 release notes](docs/RELEASE_NOTES_v0.8.2.md).
+
+**v0.8.1:** fixed a duplicate-handshake race that could kick the
+winning connection offline when two peers dialed each other at
+nearly the same time, silenced the CPython proactor shutdown
+`AssertionError` on Windows, and added the `ironmesh demo`
+subcommand for a 10-second smoke test. See the
 [v0.8.1 release notes](docs/RELEASE_NOTES_v0.8.1.md).
 
 **v0.8.0:**
@@ -510,8 +517,8 @@ Full list: [CHANGELOG.md](CHANGELOG.md).
 
 Where to get it and what's still rough:
 
-- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport). Latest: **v0.8.1**.
-- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.8.1`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
+- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport). Latest: **v0.8.2**.
+- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.8.2`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
 - **GitHub releases** — signed tags, wheel + sdist attached: [releases page](https://github.com/WizTheAgent/IronMesh/releases).
 - **Go client** — `clients/go/` (reference implementation, crypto primitives verified against Python).
 - **LoRa end-to-end latency** — Measured live at 915 MHz SF8/BW125 between two RNode-equipped nodes (1 hop, strong signal): 16-byte probe 1.07 — 1.23 s, 64-byte probe 1.17 — 1.25 s, 256-byte probe 1.77 — 1.98 s, 100% delivery across 9 probes. Multi-hop + long-range interference sweeps are still pending — see [`docs/LORA_VALIDATION.md`](docs/LORA_VALIDATION.md).
