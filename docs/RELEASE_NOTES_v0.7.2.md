@@ -157,7 +157,8 @@ procedure and reproduction steps.
 
 ## Known limitations (please read before deploying)
 
-- **Available on PyPI** — `pip install ironmesh` works; add `[rns]` for the LoRa/Reticulum transport. Docker Hub image coming shortly.
+- **Available on PyPI** — `pip install ironmesh` works; add `[rns]` for the LoRa/Reticulum transport.
+- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.7.2-beta` (also `:latest`, `:0.7.2`).
 - **Docker image builds clean** but is not yet pushed to Docker Hub
 - **Multi-hop LoRa goodput sweep** not yet measured (single-hop only in
   this release)

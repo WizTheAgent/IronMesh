@@ -18,6 +18,7 @@ WORKDIR /build
 COPY pyproject.toml README.md LICENSE ./
 # Package source lives at repo root (pyproject.toml: package-dir.ironmesh = ".")
 COPY *.py ./
+COPY ironmesh_mcp ./ironmesh_mcp
 COPY examples ./examples
 
 RUN pip install --prefix=/install --no-cache-dir ".[rns]"
