@@ -64,6 +64,11 @@ from ironmesh.conversation import (
     make_reply,
 )
 from ironmesh.roles import get_role_prompt, list_roles
+from ironmesh.tools import (
+    build_registry,
+    describe_tools,
+    expand_tool_calls,
+)
 
 # When the model thinks the conversation goal is met it prefixes its
 # reply with this marker; the bridge turns that into a graceful
@@ -150,6 +155,14 @@ def main():
                     help="Comma-separated list of peer names allowed to auto-connect via mDNS")
     p.add_argument("--conv-cooldown", type=float, default=1.0,
                     help="Seconds to wait before processing the same conv_id twice (default: 1.0)")
+    p.add_argument("--tools", default="",
+                    help="Comma-separated list of tool names to enable "
+                         "(e.g. 'echo,http-get,file-read'). Empty = none.")
+    p.add_argument("--file-read-allow", default="",
+                    help="Comma-separated paths the file-read tool may access. "
+                         "Required when --tools includes file-read.")
+    p.add_argument("--tool-timeout", type=float, default=8.0,
+                    help="Per-call timeout for tools (default: 8.0s)")
     args = p.parse_args()
 
     passphrase = None
@@ -181,9 +194,29 @@ def main():
         "relay will stop the exchange when it sees that."
     )
 
+    # Phase 5: optional tool registry. When --tools is non-empty we
+    # build the registry, append its description to the system prompt,
+    # and expand <tool name="X">args</tool> markers in every response.
+    tool_names = [t.strip() for t in args.tools.split(",") if t.strip()]
+    file_read_allow: list[str] = [
+        p for p in (x.strip() for x in args.file_read_allow.split(",")) if p
+    ] if args.file_read_allow else []
+    try:
+        tool_registry = build_registry(
+            tool_names,
+            file_read_allowlist=file_read_allow,
+        )
+    except ValueError as e:
+        sys.exit(str(e))
+    if tool_registry:
+        system_prompt += "\n" + describe_tools(tool_registry)
+        log.info("Tools enabled: %s", ", ".join(sorted(tool_registry)))
+
     caps = [f"llm:{args.model}"]
     if role_name:
         caps.append(f"role:{role_name}")
+    for tname in sorted(tool_registry):
+        caps.append(f"tool:{tname}")
 
     extra = {}
     if args.keys_path:
@@ -315,6 +348,17 @@ def main():
                 args.ollama_url, args.model, prompt,
                 system_prompt, args.timeout,
             )
+            # Phase 5: expand any <tool name=...>args</tool> markers
+            # the model emitted. Skip for error replies to avoid
+            # wasting tool calls on nothing.
+            if tool_registry and not response.startswith("[LLM-ERR]"):
+                expanded, calls = await expand_tool_calls(
+                    tool_registry, response,
+                    timeout=args.tool_timeout,
+                )
+                if calls:
+                    log.info("[%s] expanded %d tool call(s)", peer_id[:8], calls)
+                    response = expanded
             elapsed = time.monotonic() - t0
             log.info("[%s] responded in %.1fs (%d chars)", peer_id[:8], elapsed, len(response))
             if response.startswith("[LLM-ERR]"):
