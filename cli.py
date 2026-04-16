@@ -163,9 +163,12 @@ def parse_args():
         help="Spawn two local agents, exchange an encrypted ping, print RTT",
     )
     demo_parser.add_argument("--port", type=int, default=18765,
-                             help="Base port (uses --port and --port+1, default: 18765)")
+                             help="Base port (uses --port and --port+2, default: 18765)")
     demo_parser.add_argument("--timeout", type=float, default=30.0,
                              help="Max seconds to wait for discovery + reply (default: 30)")
+    demo_parser.add_argument("--gui", action="store_true",
+                             help="Enable the dashboard on alice's port+1 and keep both "
+                                  "agents running (Ctrl-C to stop). Useful for screenshots.")
 
     # --- Backward compatibility: allow flags directly on root parser ---
     parser.add_argument("--name", default=None, help=argparse.SUPPRESS)
@@ -701,6 +704,7 @@ def cmd_demo(args):
         alice = Agent(
             "demo-alice", port=port_a, passphrase=passphrase,
             open_discovery=False, allow_plaintext=True,
+            gui=args.gui,
             **_daemon_kwargs("alice", allowed=["demo-bob"]),
         )
         bob = Agent(
@@ -751,6 +755,22 @@ def cmd_demo(args):
             print(f"[ok]   bob received {payload!r} in {latency_ms:.1f} ms.",
                   flush=True)
             print(flush=True)
+
+            if args.gui:
+                gui_port = port_a + 1
+                token = alice.daemon._gui_token
+                print("Dashboard:", flush=True)
+                print(f"  http://127.0.0.1:{gui_port}/?token={token}",
+                      flush=True)
+                print(flush=True)
+                print("Both agents stay up. Ctrl-C to stop.", flush=True)
+                try:
+                    while True:
+                        time.sleep(1.0)
+                except KeyboardInterrupt:
+                    print(flush=True)
+                return 0
+
             print("That's an NaCl SecretBox + Ed25519 session between two",
                   flush=True)
             print("agents. Next: examples/ollama_swarm.py for a real demo.",
