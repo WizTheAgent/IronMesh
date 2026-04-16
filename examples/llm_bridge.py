@@ -53,6 +53,7 @@ import urllib.request
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ironmesh.agent import Agent
+from ironmesh.roles import get_role_prompt, list_roles
 from ironmesh.conversation import (
     END_TURN_LIMIT,
     KIND_END,
@@ -119,9 +120,14 @@ def main():
     p.add_argument("--passphrase-file", default=None)
     p.add_argument("--ollama-url", default="http://localhost:11434")
     p.add_argument("--model", default="llama3.2:3b")
-    p.add_argument("--system-prompt",
-                    default="You are a helpful assistant on an encrypted LoRa mesh. "
-                            "Be concise — responses travel over low-bandwidth radio.")
+    p.add_argument("--role", default=None,
+                    help=f"Persona preset ({', '.join(list_roles())}). "
+                         "Sets --system-prompt from a bundled template "
+                         "and advertises ``role:<name>`` as a capability "
+                         "so orchestrators can find specialists.")
+    p.add_argument("--system-prompt", default=None,
+                    help="Custom system prompt (overrides --role). Default: "
+                         "the 'assistant' role template.")
     p.add_argument("--max-prompt-bytes", type=int, default=4096)
     p.add_argument("--timeout", type=float, default=30.0)
     p.add_argument("--gui", action="store_true")
@@ -144,6 +150,24 @@ def main():
         with open(os.path.expanduser(args.passphrase_file)) as f:
             passphrase = f.read().strip()
 
+    # Resolve persona. --system-prompt overrides; --role picks a
+    # bundled template; absent both, fall back to the 'assistant' role.
+    role_name = args.role
+    if args.system_prompt is not None:
+        system_prompt = args.system_prompt
+    elif role_name:
+        resolved = get_role_prompt(role_name)
+        if resolved is None:
+            sys.exit(f"Unknown --role {role_name!r}. Try one of: {', '.join(list_roles())}")
+        system_prompt = resolved
+    else:
+        role_name = "assistant"
+        system_prompt = get_role_prompt("assistant") or ""
+
+    caps = [f"llm:{args.model}"]
+    if role_name:
+        caps.append(f"role:{role_name}")
+
     extra = {}
     if args.keys_path:
         extra["keys_path"] = os.path.expanduser(args.keys_path)
@@ -158,7 +182,7 @@ def main():
     agent = Agent(
         args.name, port=args.port, passphrase=passphrase,
         gui=args.gui, reticulum=args.reticulum,
-        capabilities=[f"llm:{args.model}"],
+        capabilities=caps,
         **extra,
     )
 
@@ -231,7 +255,7 @@ def main():
             t0 = time.monotonic()
             response = await query_ollama(
                 args.ollama_url, args.model, prompt,
-                args.system_prompt, args.timeout,
+                system_prompt, args.timeout,
             )
             elapsed = time.monotonic() - t0
             log.info("[%s] responded in %.1fs (%d chars)", peer_id[:8], elapsed, len(response))
@@ -319,7 +343,9 @@ def main():
     print(f"\nLLM bridge '{args.name}' online (port {args.port})")
     print(f"Node ID: {agent.node_id}")
     print(f"Ollama:  {args.ollama_url}  model={args.model}")
-    print(f"Capability: llm:{args.model}")
+    print(f"Capabilities: {', '.join(caps)}")
+    if role_name:
+        print(f"Role: {role_name}")
     print("\nWaiting for MSG prompts. Ctrl-C to stop.\n")
 
     try:
