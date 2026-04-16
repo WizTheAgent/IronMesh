@@ -437,13 +437,14 @@ function updateUI(){
   const bs=p.bytes_sent_total||0,br=p.bytes_received_total||0;
   const retries=p.retries_total||0;
   const retriesTitle=p.retries_by_reason?Object.entries(p.retries_by_reason).map(([k,v])=>k+'='+v).join(', '):'';
-  tr.innerHTML='<td><span class="status-dot '+sc+'"></span>'+(p.node_id||'').slice(0,12)+'</td><td>'+
+  const label=(p.name||p.node_id||'').slice(0,16);
+  tr.innerHTML='<td><span class="status-dot '+sc+'"></span>'+label+'</td><td>'+
    (p.address||'-')+'</td><td>'+p.status+'</td><td>'+(p.verified?'yes':'no')+'</td><td>'+
    (p.messages_sent||0)+'</td><td>'+(p.messages_received||0)+'</td><td>'+
    fmtBytes(bs)+' / '+fmtBytes(br)+'</td><td>'+
    (p.latency_ms!=null?p.latency_ms.toFixed(0)+'ms':'-')+'</td><td title="'+retriesTitle+'">'+retries+'</td>';
   tb.appendChild(tr);
-  const opt=document.createElement('option');opt.value=p.node_id;opt.textContent=(p.node_id||'').slice(0,12)+' ('+p.status+')';
+  const opt=document.createElement('option');opt.value=p.node_id;opt.textContent=label+' ('+p.status+')';
   sel.appendChild(opt);
  });
  if(prev)sel.value=prev;
@@ -469,7 +470,19 @@ function updateUI(){
  }
 }
 let feedCount=0;
+function peerName(nodeId){
+ // Resolve a node_id to a human-readable peer name from the last state snapshot.
+ if(!nodeId)return '';
+ if(nodeId==='self'||nodeId==='a2a')return nodeId;
+ const peers=(state&&state.peers)||[];
+ for(const p of peers){if(p.node_id===nodeId)return p.name||nodeId.slice(0,8)}
+ return nodeId.slice(0,8);
+}
 function addFeedItem(msg){
+ const mt=msg.msg_type||'?';
+ // Filter out protocol chatter — PING/PONG/HEARTBEAT are noise for
+ // the user. Keep MSG, CONV, DIALOG, CONNECT, DISCONNECT, ACK, ERROR.
+ if(mt==='PING'||mt==='PONG'||mt==='HEARTBEAT'||mt==='ROUTE_ANNOUNCE'||mt==='CAPABILITY_ANNOUNCE')return;
  const feed=$('feed');
  if(feedCount===0)feed.innerHTML='';
  const div=document.createElement('div');div.className='feed-item';
@@ -482,9 +495,15 @@ function addFeedItem(msg){
  if(payloadStr instanceof ArrayBuffer||payloadStr instanceof Uint8Array)payloadStr='[binary]';
  else if(typeof payloadStr==='object')try{payloadStr=JSON.stringify(payloadStr)}catch(e){payloadStr=String(payloadStr)}
  else payloadStr=String(payloadStr);
- if(payloadStr.length>200)payloadStr=payloadStr.slice(0,200)+'...';
+ // Try to render CONV JSON envelopes as readable text.
+ if(payloadStr.charAt(0)==='{'&&payloadStr.indexOf('"conv_id"')>0){
+  try{const e=JSON.parse(payloadStr);payloadStr='['+e.kind+' turn '+e.turn+'/'+e.max_turns+'] '+e.body}catch(x){}
+ }
+ if(payloadStr.length>300)payloadStr=payloadStr.slice(0,300)+'...';
+ // Show peer NAME, not hash.
+ const peerLabel=peerName(msg.peer_id);
  div.innerHTML='<span class="feed-time">'+timeStr+'</span><span class="feed-dir '+dirCls+'">'+arrow+'</span><span class="feed-type">'+
-  (msg.msg_type||'?')+'</span><span class="feed-peer">'+(msg.peer_id||'').slice(0,12)+'</span><span class="feed-payload">'+
+  mt+'</span><span class="feed-peer">'+peerLabel+'</span><span class="feed-payload">'+
   payloadStr.replace(/</g,'&lt;')+'</span>';
  feed.appendChild(div);
  feedCount++;
