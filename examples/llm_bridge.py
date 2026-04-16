@@ -53,6 +53,14 @@ import urllib.request
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ironmesh.agent import Agent
+from ironmesh.conversation import (
+    END_TURN_LIMIT,
+    KIND_END,
+    KIND_ERROR,
+    KIND_RESPONSE,
+    ConvEnvelope,
+    make_reply,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -154,7 +162,8 @@ def main():
         **extra,
     )
 
-    stats = {"received": 0, "replied": 0, "errors": 0, "ended": 0, "cooldown_drops": 0}
+    stats = {"received": 0, "replied": 0, "errors": 0, "ended": 0,
+             "cooldown_drops": 0, "conv_frames": 0, "legacy_prefix": 0}
     # conv_id -> last timestamp we processed it. Small bounded dict
     # (capped by _trim_conv_seen) so we don't leak memory on long runs.
     conv_seen: dict[str, float] = {}
@@ -166,10 +175,97 @@ def main():
             for k in [k for k, v in conv_seen.items() if v < cutoff]:
                 conv_seen.pop(k, None)
 
+    def _dispatch_prompt(peer_id: str, prompt: str,
+                         parent_env: ConvEnvelope | None,
+                         is_conv_frame: bool) -> None:
+        """Shared processing for both legacy-prefix MSGs and CONV frames.
+
+        ``parent_env`` is the incoming envelope if this arrived as a CONV
+        frame or a legacy-prefix-synthesized envelope; None if it was a
+        bare MSG with no conversation metadata (single-turn Q&A, no loop
+        risk, no turn limit, replies sent as plain ``[LLM] `` MSGs).
+        """
+        if parent_env is not None:
+            conv_id = parent_env.conv_id
+            turn = parent_env.turn
+            max_turns = parent_env.max_turns
+
+            # Turn-limit check: signal end without calling the model.
+            if turn >= max_turns and max_turns > 0:
+                stats["ended"] += 1
+                log.info("[%s] conv %s reached turn %d/%d — ending",
+                         peer_id[:8], conv_id, turn, max_turns)
+                if is_conv_frame:
+                    reply = make_reply(parent_env, "turn limit reached",
+                                       kind=KIND_END,
+                                       end_reason=END_TURN_LIMIT)
+                    asyncio.run_coroutine_threadsafe(
+                        agent.send(peer_id, reply.encode(), msg_type="CONV"),
+                        agent._loop,
+                    )
+                else:
+                    agent.reply(peer_id, END_PREFIX + b"turn limit reached")
+                return
+
+            # Cooldown: drop repeats of the same conv_id within the window.
+            now = time.monotonic()
+            prev = conv_seen.get(conv_id, 0.0)
+            if now - prev < args.conv_cooldown:
+                stats["cooldown_drops"] += 1
+                log.info("[%s] conv %s dropped (cooldown %.2fs < %.2fs)",
+                         peer_id[:8], conv_id, now - prev, args.conv_cooldown)
+                return
+            conv_seen[conv_id] = now
+            _trim_conv_seen()
+
+        stats["received"] += 1
+        tag = ""
+        if parent_env is not None:
+            tag = f" [{'CONV' if is_conv_frame else 'legacy'} " \
+                  f"conv={parent_env.conv_id} turn={parent_env.turn}/{parent_env.max_turns}]"
+        log.info("[%s] prompt%s (%d chars): %s",
+                 peer_id[:8], tag, len(prompt),
+                 prompt[:80] + ("..." if len(prompt) > 80 else ""))
+
+        async def _respond() -> None:
+            t0 = time.monotonic()
+            response = await query_ollama(
+                args.ollama_url, args.model, prompt,
+                args.system_prompt, args.timeout,
+            )
+            elapsed = time.monotonic() - t0
+            log.info("[%s] responded in %.1fs (%d chars)", peer_id[:8], elapsed, len(response))
+            if response.startswith("[LLM-ERR]"):
+                stats["errors"] += 1
+                if is_conv_frame and parent_env is not None:
+                    err = make_reply(parent_env, response,
+                                     kind=KIND_ERROR, end_reason="error")
+                    await agent.send(peer_id, err.encode(), msg_type="CONV")
+                else:
+                    await agent.send(peer_id, response.encode())
+                return
+            stats["replied"] += 1
+            if is_conv_frame and parent_env is not None:
+                reply_env = make_reply(parent_env, response,
+                                       kind=KIND_RESPONSE,
+                                       from_role=parent_env.to_role)
+                await agent.send(peer_id, reply_env.encode(), msg_type="CONV")
+            elif parent_env is not None:
+                # Legacy prefix: keep emitting [LLM] + [CONV:...] header
+                # so pre-CONV orchestrators still work.
+                header = f"[CONV:{parent_env.conv_id}:{parent_env.turn + 1}/{parent_env.max_turns}]\n"
+                await agent.send(peer_id, RESPONSE_PREFIX + (header + response).encode())
+            else:
+                await agent.send(peer_id, RESPONSE_PREFIX + response.encode())
+
+        asyncio.run_coroutine_threadsafe(_respond(), agent._loop)
+
     @agent.on_message()
     def on_prompt(peer_id, payload):
-        # 1. Ignore our own protocol responses so two LLM bridges don't
-        #    turn each other's replies into prompts.
+        # Ignore our own protocol prefixes so two LLM bridges don't turn
+        # each other's replies into prompts (still applies to the legacy
+        # path; CONV frames carry ``kind`` + ``[LLM] `` would never land
+        # in the CONV.body).
         if (payload.startswith(RESPONSE_PREFIX)
                 or payload.startswith(ERROR_PREFIX)
                 or payload.startswith(END_PREFIX)):
@@ -182,74 +278,43 @@ def main():
         except UnicodeDecodeError:
             return
 
-        # 2. Parse the optional conversation header. Absent header
-        #    = single-turn Q&A, no loop risk.
-        conv_id: str | None = None
-        turn: int = 0
-        max_turns: int = 0
+        # Legacy ``[CONV:<id>:<t>/<m>]`` prefix path. Still accepted for
+        # one release so older orchestrators keep working; new code
+        # should emit a proper CONV frame (see ``on_conv_frame`` below).
         m = _CONV_HEADER_RE.match(text)
         if m:
-            conv_id = m.group("id")
-            turn = int(m.group("turn"))
-            max_turns = int(m.group("max"))
-            prompt = text[m.end():]
-        else:
-            prompt = text
-
-        # 3. Turn-limit check: if this is a CONV message and we've
-        #    hit the cap, send [END] and don't call the model.
-        if conv_id and turn >= max_turns:
-            stats["ended"] += 1
-            log.info("[%s] conv %s reached turn %d/%d — ending",
-                     peer_id[:8], conv_id, turn, max_turns)
-            agent.reply(peer_id, END_PREFIX + b"turn limit reached")
+            stats["legacy_prefix"] += 1
+            synth = ConvEnvelope(
+                conv_id=m.group("id"),
+                turn=int(m.group("turn")),
+                max_turns=int(m.group("max")),
+                body=text[m.end():],
+            )
+            _dispatch_prompt(peer_id, synth.body, synth, is_conv_frame=False)
             return
 
-        # 4. Cooldown: drop repeats of the same conv_id within the window.
-        if conv_id:
-            now = time.monotonic()
-            prev = conv_seen.get(conv_id, 0.0)
-            if now - prev < args.conv_cooldown:
-                stats["cooldown_drops"] += 1
-                log.info("[%s] conv %s dropped (cooldown, %.2fs < %.2fs)",
-                         peer_id[:8], conv_id, now - prev, args.conv_cooldown)
-                return
-            conv_seen[conv_id] = now
-            _trim_conv_seen()
+        _dispatch_prompt(peer_id, text, None, is_conv_frame=False)
 
-        stats["received"] += 1
-        log.info("[%s] prompt%s (%d chars): %s",
-                 peer_id[:8],
-                 f" [conv {conv_id} turn {turn}/{max_turns}]" if conv_id else "",
-                 len(prompt),
-                 prompt[:80] + ("..." if len(prompt) > 80 else ""))
+    @agent.on("CONV")
+    def on_conv_frame(data):
+        peer_id = data.get("peer_id", "")
+        payload = data.get("payload", b"") or b""
+        if isinstance(payload, str):
+            payload = payload.encode("utf-8")
+        try:
+            env = ConvEnvelope.decode(payload)
+        except ValueError as e:
+            log.warning("[%s] malformed CONV frame: %s", peer_id[:8], e)
+            return
+        if env.kind in (KIND_END, KIND_ERROR):
+            # End-of-conversation signals aren't prompts for us; just log.
+            log.info("[%s] conv %s terminal: %s",
+                     peer_id[:8], env.conv_id, env.end_reason or env.kind)
+            return
+        stats["conv_frames"] += 1
+        _dispatch_prompt(peer_id, env.body, env, is_conv_frame=True)
 
-        async def _respond():
-            t0 = time.monotonic()
-            response = await query_ollama(
-                args.ollama_url, args.model, prompt,
-                args.system_prompt, args.timeout,
-            )
-            elapsed = time.monotonic() - t0
-            log.info("[%s] responded in %.1fs (%d chars)", peer_id[:8], elapsed, len(response))
-            if response.startswith("[LLM-ERR]"):
-                stats["errors"] += 1
-                await agent.send(peer_id, response.encode())
-                return
-            stats["replied"] += 1
-            # Pass the conversation header through with turn+1 so the
-            # orchestrator (or the other LLM bridge) sees its own
-            # position in the exchange.
-            if conv_id:
-                header = f"[CONV:{conv_id}:{turn + 1}/{max_turns}]\n"
-                out = RESPONSE_PREFIX + (header + response).encode()
-            else:
-                out = RESPONSE_PREFIX + response.encode()
-            await agent.send(peer_id, out)
-
-        asyncio.run_coroutine_threadsafe(_respond(), agent._loop)
-
-    loop = agent.run(foreground=False)
+    agent.run(foreground=False)
 
     print(f"\nLLM bridge '{args.name}' online (port {args.port})")
     print(f"Node ID: {agent.node_id}")

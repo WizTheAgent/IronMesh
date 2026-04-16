@@ -30,28 +30,16 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 import time
 import uuid
 
-from ironmesh import Agent
-
-RESPONSE_PREFIX = b"[LLM] "
-END_PREFIX = b"[END] "
-ERROR_PREFIX = b"[LLM-ERR] "
-
-_CONV_HEADER_RE = re.compile(
-    r"^\[CONV:(?P<id>[A-Za-z0-9._-]+):(?P<turn>\d+)/(?P<max>\d+)\]\n",
+from ironmesh import Agent, ConvEnvelope, Budget
+from ironmesh.conversation import (
+    KIND_END,
+    KIND_ERROR,
+    KIND_PROMPT,
 )
-
-
-def strip_header(text: str) -> tuple[str, int, int]:
-    """Return (body, turn, max) from a conv-headered string (defaults if absent)."""
-    m = _CONV_HEADER_RE.match(text)
-    if not m:
-        return text, 0, 0
-    return text[m.end():], int(m.group("turn")), int(m.group("max"))
 
 
 def pick_llm_peers(agent: Agent) -> tuple[str, str] | None:
@@ -90,8 +78,12 @@ def main() -> None:
                     help="Max conversation turns (default: 4). Each turn = one agent reply.")
     p.add_argument("--turn-timeout", type=float, default=120.0,
                     help="Seconds to wait for each reply before bailing (default: 120)")
-    p.add_argument("--discovery-timeout", type=float, default=20.0,
-                    help="Seconds to wait for both peers to come online (default: 20)")
+    p.add_argument("--discovery-timeout", type=float, default=60.0,
+                    help="Seconds to wait for both peers to come online (default: 60)")
+    p.add_argument("--budget-seconds", type=float, default=None,
+                    help="Per-conversation wall-clock budget (default: no limit)")
+    p.add_argument("--budget-bytes", type=int, default=None,
+                    help="Per-conversation total response-byte budget (default: no limit)")
     args = p.parse_args()
 
     passphrase = os.environ.get("IRONMESH_PASSPHRASE")
@@ -103,20 +95,31 @@ def main() -> None:
         open_discovery=True, allow_plaintext=True,
     )
 
-    # Collect the latest reply from each peer. Each entry is
-    # (timestamp, peer_id, payload).
-    inbox: list[tuple[float, str, bytes]] = []
+    # Collect the latest inbound CONV envelope per peer.
+    inbox: list[tuple[float, str, ConvEnvelope]] = []
 
-    @agent.on_message()
-    def _on_msg(peer_id: str, payload: bytes) -> None:
-        inbox.append((time.monotonic(), peer_id, payload))
+    @agent.on("CONV")
+    def _on_conv(data):
+        peer_id = data.get("peer_id", "")
+        payload = data.get("payload", b"") or b""
+        if isinstance(payload, str):
+            payload = payload.encode("utf-8")
+        try:
+            env = ConvEnvelope.decode(payload)
+        except ValueError as e:
+            print(f"[orchestrator] malformed CONV frame from {peer_id[:12]}: {e}",
+                  file=sys.stderr, flush=True)
+            return
+        inbox.append((time.monotonic(), peer_id, env))
 
     agent.run(foreground=False)
 
-    # Wait for the two LLM peers to come online.
+    # Wait for the two LLM peers to come online. Print status every 5s so
+    # the wait is observable.
     deadline = time.monotonic() + args.discovery_timeout
     peer_a = args.peer_a
     peer_b = args.peer_b
+    last_status = 0.0
     while time.monotonic() < deadline:
         if peer_a and peer_b:
             a_online = agent.peer_by_name(peer_a)
@@ -128,6 +131,14 @@ def main() -> None:
             if picked:
                 peer_a, peer_b = picked
                 break
+        now = time.monotonic()
+        if now - last_status >= 5:
+            last_status = now
+            names = [p.get("name", "?") for p in agent.peers]
+            remaining = deadline - now
+            print(f"[discovery] {len(agent.peers)} peer(s) online: {names} "
+                  f"(looking for {peer_a},{peer_b}; {remaining:.0f}s left)",
+                  flush=True)
         time.sleep(0.5)
     else:
         print("timed out waiting for two LLM-capable peers on the mesh.",
@@ -141,77 +152,83 @@ def main() -> None:
 
     conv_id = uuid.uuid4().hex[:12]
     transcript: list[tuple[str, str]] = []  # (speaker_name, text)
+    budget = None
+    if args.budget_seconds is not None or args.budget_bytes is not None:
+        budget = Budget(
+            max_seconds=args.budget_seconds,
+            max_bytes=args.budget_bytes,
+        )
 
-    def send_with_header(to_name: str, body: str, turn: int) -> None:
-        header = f"[CONV:{conv_id}:{turn}/{args.turns}]\n"
-        agent.send_sync(to_name, header + body)
+    def send_prompt(to_name: str, body: str, turn: int,
+                    to_role: str, from_role: str = "orchestrator") -> None:
+        env = ConvEnvelope(
+            conv_id=conv_id,
+            turn=turn,
+            max_turns=args.turns,
+            kind=KIND_PROMPT,
+            body=body,
+            from_role=from_role,
+            to_role=to_role,
+            budget=budget,
+        )
+        agent.send_sync(to_name, env.encode(), msg_type="CONV")
 
-    # Turn 0 (initial prompt) → peer_a. Peer_a's reply will come back
-    # as turn 1; we then relay it to peer_b as turn 1; their reply is
-    # turn 2; etc. until turn >= args.turns or [END] shows up.
+    # Turn 0 (initial prompt) → peer_a. Peer_a's reply comes back as
+    # turn 1; we relay it to peer_b still carrying turn 1; their reply
+    # is turn 2; etc. until turn >= args.turns or [END] shows up.
     transcript.append(("ORCHESTRATOR", args.seed))
     current_target = peer_a
     next_target = peer_b
-    send_with_header(current_target, args.seed, turn=0)
+    send_prompt(current_target, args.seed, turn=0, to_role=current_target)
 
-    # Wait for replies and shuttle them. We stop when either:
-    #   - a peer sends [END]
-    #   - the relayed-reply turn reaches args.turns
-    #   - turn_timeout elapses with no reply
     inbox_cursor = 0
     while True:
         wait_deadline = time.monotonic() + args.turn_timeout
-        reply: bytes | None = None
+        env: ConvEnvelope | None = None
         speaker: str | None = None
         while time.monotonic() < wait_deadline:
             if inbox_cursor < len(inbox):
-                _, peer_id, payload = inbox[inbox_cursor]
+                _, peer_id, incoming = inbox[inbox_cursor]
                 inbox_cursor += 1
-                # Find the speaker's name
+                if incoming.conv_id != conv_id:
+                    # Someone else's conversation; ignore.
+                    continue
                 for p in agent.peers:
                     if p["node_id"] == peer_id:
                         speaker = p.get("name")
                         break
-                reply = payload
+                env = incoming
                 break
             time.sleep(0.1)
 
-        if reply is None:
+        if env is None:
             print(f"\nNo reply from {current_target} within {args.turn_timeout}s. Stopping.")
             break
 
-        if reply.startswith(END_PREFIX):
-            reason = reply[len(END_PREFIX):].decode("utf-8", errors="replace")
-            print(f"\n{speaker} sent [END]: {reason}")
+        if env.kind == KIND_END:
+            print(f"\n{speaker} sent END: {env.end_reason or env.body}")
             break
-        if reply.startswith(ERROR_PREFIX):
-            print(f"\n{speaker} error: {reply[len(ERROR_PREFIX):].decode(errors='replace')}")
-            break
-        if not reply.startswith(RESPONSE_PREFIX):
-            # Unexpected -- just log and stop
-            print(f"\nUnexpected payload from {speaker}: {reply[:60]!r}")
+        if env.kind == KIND_ERROR:
+            print(f"\n{speaker} error: {env.body}")
             break
 
-        body_bytes = reply[len(RESPONSE_PREFIX):]
-        body_text = body_bytes.decode("utf-8", errors="replace")
-        body_clean, body_turn, body_max = strip_header(body_text)
-
-        transcript.append((speaker or "?", body_clean))
-        print(f"--- Turn {body_turn} ({speaker}) ---")
-        print(body_clean.strip())
+        transcript.append((speaker or "?", env.body))
+        print(f"--- Turn {env.turn} ({speaker}) ---")
+        print(env.body.strip())
         print()
 
-        if body_turn >= args.turns:
+        if env.turn >= args.turns:
             print(f"Reached turn limit ({args.turns}). Done.")
             break
 
-        # Relay to the other peer, passing the orchestrator's view
-        # of the turn so the next bridge sees the same conv state.
+        # Relay to the OTHER peer. We keep the same turn counter -- the
+        # receiving bridge will bump it by one when it replies.
         current_target, next_target = next_target, current_target
-        send_with_header(current_target, body_clean, turn=body_turn)
+        send_prompt(current_target, env.body, turn=env.turn,
+                    to_role=current_target, from_role=speaker or "peer")
 
     print()
-    print(f"Transcript length: {len(transcript)} turn(s).  conv_id={conv_id}")
+    print(f"Transcript: {len(transcript)} turn(s).  conv_id={conv_id}")
     agent.stop()
 
 

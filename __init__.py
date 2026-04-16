@@ -9,6 +9,12 @@ __version__ = "0.8.1"
 
 from ironmesh.agent import Agent
 from ironmesh.capabilities import CapabilityRegistry
+from ironmesh.conversation import (
+    Budget,
+    ConvEnvelope,
+    is_terminal,
+    make_reply,
+)
 from ironmesh.crypto import (
     decrypt_message,
     ecdh_exchange,
@@ -56,4 +62,9 @@ __all__ = [
     "seal_to_destination",
     "unseal_from_source",
     "CapabilityRegistry",
+    # v0.8.2: structured conversation envelope
+    "ConvEnvelope",
+    "Budget",
+    "make_reply",
+    "is_terminal",
 ]
