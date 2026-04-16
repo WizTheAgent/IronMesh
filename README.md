@@ -326,7 +326,7 @@ Full list in [CHANGELOG.md](CHANGELOG.md).
 
 Things that work but are rough, or are claimed but not yet end-to-end verified:
 
-- **Docker image** — Builds clean, runs as non-root UID 1000, imports IronMesh, binds ports. Not yet pushed to Docker Hub.
+- **Docker image** — On Docker Hub as [`wiztheagent/ironmesh`](https://hub.docker.com/r/wiztheagent/ironmesh). Runs as non-root UID 1000. `docker pull wiztheagent/ironmesh:latest`.
 - **PyPI** — Published as [`ironmesh`](https://pypi.org/project/ironmesh/). `pip install ironmesh` works. Add `[rns]` for the Reticulum/LoRa transport.
 - **LoRa end-to-end latency** — Measured live at 915 MHz SF8/BW125 between two RNode-equipped nodes (1 hop, strong signal): 16-byte probe 1.07 — 1.23 s, 64-byte probe 1.17 — 1.25 s, 256-byte probe 1.77 — 1.98 s, 100% delivery across 9 probes. Multi-hop + long-range interference sweeps are still pending — see [`docs/LORA_VALIDATION.md`](docs/LORA_VALIDATION.md) for the test procedure and results.
 - **`install.sh`** — The systemd install script hasn't been re-tested on a clean Ubuntu VM since the v0.7.2 code changes. The file itself is unchanged from v0.7.1, but caveat operator.
