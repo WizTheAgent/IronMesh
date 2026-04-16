@@ -5,6 +5,106 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] — Mesh stability: duplicate-handshake race fix
+
+Bug-fix release on top of v0.8.0. No wire-protocol changes.
+
+### Fixed
+
+- **Duplicate-handshake race.** When two peers dial each other at
+  nearly the same time, the losing handshake's `finally` block in
+  `_handle_connection` used to unconditionally pop
+  `ws_clients[peer_id]`, transition the peer to `OFFLINE`, and clear
+  the session key — clobbering the winning handshake's still-live
+  connection. Symptoms: peers appearing online then immediately
+  offline in the dashboard, streams of `No session key for peer X —
+  dropping message` warnings, and a mesh that could only keep one
+  peer online at a time. The teardown is now scoped to the
+  *owning* websocket: `self.ws_clients.get(peer_id) is websocket`.
+- **Client-side message-loop cleanup.** The mirror path in
+  `_do_client_handshake` previously had no cleanup at all when the
+  connection died, leaving stale `ONLINE` state that blocked the
+  reconnect loop from ever re-dialing. Same scoped teardown applied.
+- **Windows proactor shutdown noise.** Installed a scoped exception
+  handler on the daemon's event loop that silences only the known
+  CPython `AssertionError` from `proactor_events._start_serving` that
+  fires when an `accept()` completes between `server.close()` and
+  socket shutdown. Every other exception still surfaces normally.
+- **`Agent.peer_by_name()` always returned `None`.** `PeerState.agent_name`
+  was never populated during the handshake, so the SDK's friendly-name
+  lookup (and the `name` field in `Agent.peers`) didn't work. The
+  HELLO-advertised name is now stored on `PeerState` in both the
+  server and client handshake paths.
+
+### Added
+
+- **`ironmesh demo` subcommand.** One command spawns two temporary
+  agents on `127.0.0.1`, does the full mutual-auth + ECDH handshake,
+  sends an encrypted ping, prints the round-trip latency, and exits.
+  No keys, ports, or state written to `~/.ironmesh`. Use it as a
+  10-second smoke test after `pip install ironmesh`. Pass `--gui` to
+  keep both agents up with the dashboard enabled on `alice`'s port+1
+  (handy for screenshots and poking around the state endpoints).
+- **`docs/USE_CASES.md`.** Five concrete deployment patterns with
+  runnable commands: home AI mesh, offline LLM swarm, robotics
+  coordination, air-gapped lab, off-grid LoRa comms.
+- **`examples/ollama_swarm.py`.** Two local-LLM agents talking over
+  an encrypted IronMesh session — the flagship "multiple AI agents
+  on your home network, no cloud" demo.
+- **`docs/assets/`.** Slot for the README dashboard screenshot.
+
+### Docs + positioning
+
+- README now leads with a stack diagram showing IronMesh *under*
+  MCP / LangChain / CrewAI rather than competing with them. Four
+  Q&A cards address the common "but doesn't X already do this?"
+  objections (MCP, LangGraph, Tailscale, Reticulum).
+- Feature comparison table retitled to acknowledge it's one axis
+  (offline-first), not a universal ranking.
+- Site (ironmesh.org) mirrors the same reframing.
+
+### Regression tests
+
+Two new tests in `tests/test_hardening.py::TestDuplicateHandshakeTeardown`
+cover both branches of the fix (loser must not clobber winner; winner
+still cleans up its own state). Total: 514 tests, ruff clean, mypy
+clean, bandit clean on Ubuntu + Windows across Python 3.10–3.13.
+
+## [0.8.0] — Agent SDK, framework adapters, federation, Go client
+
+First release above the "transport" layer. Turns IronMesh from a
+protocol you integrate by hand into a platform you build on.
+
+### Added
+
+- **Agent SDK** (`ironmesh.Agent`) — high-level wrapper over
+  `BridgeDaemon` with decorator handlers, sync+async send, capability
+  discovery. Joins the mesh in 3 lines.
+- **Framework adapters** for LangChain (`create_ironmesh_toolkit`),
+  CrewAI (`create_mesh_crew_agent`), and AutoGen (`register_ironmesh`).
+- **Federation gateway** (`FederationGateway`, `FederationPolicy`) —
+  bridges two independent meshes with allow/deny glob rules on
+  capabilities. Runs two Agent instances, one per mesh.
+- **Go reference client** (`clients/go/`) — full wire-protocol
+  implementation: frame serialization, X25519 ECDH, XSalsa20-Poly1305,
+  Ed25519 detached signatures, 3-stage handshake. Crypto primitives
+  verified against the Python reference.
+- **Docker + PyPI + GitHub release** — `pip install ironmesh`,
+  `docker pull wiztheagent/ironmesh:0.8.0`, GitHub release with
+  wheel + sdist attached.
+
+### Changed
+
+- Default keys path migrated from `~/.kingpi-secure/ironmesh/keys.json`
+  to `~/.ironmesh/keys.json`.
+- Python minimum: 3.10 (3.9 was already dropped in 0.7.2).
+
+### Fixed (security)
+
+- Tarfile path-traversal guard in `backup.py` (rejects `..`,
+  absolute paths, backslash).
+- Narrowed bare `except` clauses in `agent.py` and `crypto.secure_wipe`.
+
 ## [0.7.2] — Mesh stability, observability, and backpressure
 
 Focused on production-readiness for multi-node deployments. Closes
