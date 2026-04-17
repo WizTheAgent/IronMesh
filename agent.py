@@ -25,6 +25,7 @@ access to the ``BridgeDaemon``, use ``agent.daemon``.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 import threading
@@ -273,7 +274,12 @@ class Agent:
                 asyncio.run_coroutine_threadsafe(
                     self.daemon.shutdown(), self._loop,
                 ).result(timeout=5)
-            except (TimeoutError, RuntimeError) as e:
+            except (TimeoutError, concurrent.futures.TimeoutError, RuntimeError) as e:
+                # concurrent.futures.TimeoutError is a distinct class from
+                # builtins.TimeoutError on Python 3.10 and earlier (PEP 616
+                # unified them in 3.11). A bare `except TimeoutError` missed
+                # the 3.10 case and leaked out of Agent.stop(), which bit us
+                # in tests/test_concurrency_audit.py under GH Actions.
                 logger.debug("Shutdown wait: %s", e)
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._loop_thread is not None:

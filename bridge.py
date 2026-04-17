@@ -1807,7 +1807,10 @@ class BridgeDaemon:
 
         except websockets.ConnectionClosed:
             logger.info("Peer %s disconnected", peer_id or "unknown")
-        except (TimeoutError, json.JSONDecodeError) as e:
+        except (TimeoutError, asyncio.TimeoutError, json.JSONDecodeError) as e:
+            # asyncio.TimeoutError is a distinct class from builtins.TimeoutError
+            # on Python 3.10 (unified in 3.11 via PEP 616). Spelling both keeps
+            # the 3.10 matrix green.
             logger.warning("Handshake failed: %s", e)
             self.metrics.handshake_failures += 1
         except (ConnectionResetError, ConnectionError, OSError) as e:
