@@ -14,7 +14,7 @@ routers, carrier-grade NAT, or corporate firewalls — talk to each other
 without a single public IP between them, while preserving every
 security property of the current LAN-only deployment.
 
-Today (v0.8.2) IronMesh runs fine on a single LAN because mDNS + direct
+Today (v0.8.3) IronMesh runs fine on a single LAN because mDNS + direct
 WebSocket dial is enough. It falls over the moment both peers are
 behind NAT and neither has a routable public `ip:port`. This design
 fixes that.
