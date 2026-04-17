@@ -58,10 +58,15 @@ Issues = "https://github.com/WizTheAgent/IronMesh/issues"
 Changelog = "https://github.com/WizTheAgent/IronMesh/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
-packages = ["ironmesh", "ironmesh_mcp"]
+# `ironmesh.adapters` is declared explicitly: without it, the framework
+# adapters (LangChain / CrewAI / AutoGen) are physically excluded from the
+# wheel — discovered during the v0.8.3 pre-release verification sweep.
+# Downstream code does `from ironmesh.adapters.langchain_adapter import …`.
+packages = ["ironmesh", "ironmesh.adapters", "ironmesh_mcp"]
 
 [tool.setuptools.package-dir]
 ironmesh = "."
+"ironmesh.adapters" = "adapters"
 ironmesh_mcp = "ironmesh_mcp"
 
 [tool.pytest.ini_options]
