@@ -747,6 +747,11 @@ class PeerState:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "node_id": self.node_id,
+            # v0.8.3: surface the human-readable agent name so the dashboard
+            # can render "kingpi" instead of "611979d2…". Populated by the
+            # handshake (bridge.py:1702,2932). Null if the peer hasn't
+            # completed HELLO yet.
+            "name": getattr(self, "agent_name", None),
             "address": self.address,
             "status": self.status.value,
             "uptime": self.uptime,

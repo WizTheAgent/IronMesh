@@ -16,15 +16,9 @@
 
 Zero-config, end-to-end encrypted agent-to-agent communication that never leaves your local network.
 
-<!--
-  Dashboard screenshot slot. To enable: save a 1440×900 PNG of the
-  live dashboard (ironmesh demo --gui) to docs/assets/dashboard.png
-  and uncomment the img tag below.
-
 <p align="center">
-  <img src="docs/assets/dashboard.png" alt="IronMesh dashboard showing peers, messages, and per-peer metrics" width="780">
+  <img src="docs/assets/dashboard.png" alt="IronMesh dashboard: operator console showing three live encrypted peers, the 3-stage handshake diagram, and a live A2A dialogue between two local LLMs" width="900">
 </p>
--->
 
 ## Why IronMesh Exists
 
@@ -488,7 +482,21 @@ pytest tests/ -v --cov=ironmesh
 
 ## Recent changes
 
-**v0.8.2 (current):** structured multi-turn AI-to-AI dialogue, seven
+**v0.8.3 (current):** the operator dashboard is rebuilt from scratch
+to match the ironmesh.org visual identity — a monospace operator
+console with the site's 3-stage handshake diagram baked in, a TOFU
+trust tri-state column, concurrent WS/RNS transport view, stat-strip
+sparklines, regex-capable message feed, bearer-token masked reveal,
+and a CSP meta tag that locks the page to same-origin so *pull the
+plug on your router* still renders. Two latent serialization bugs
+that kept capabilities and peer names invisible in `/api/state` are
+fixed. Plus the full v0.8.3 E2E audit: Hypothesis fuzzing on the
+CONV envelope, a new concurrency test suite, a fixed TOCTOU race in
+`DedupCache`, and macOS added to the CI matrix. No wire-protocol
+changes — v0.8.2 peers stay on the mesh. Full write-up:
+[v0.8.3 release notes](docs/RELEASE_NOTES_v0.8.3.md).
+
+**v0.8.2:** structured multi-turn AI-to-AI dialogue, seven
 persona presets for LLM bridges, byte + time budgets, `[DONE]` smart
 termination, a one-click **Start A2A** panel in the dashboard, and an
 opt-in tool-use registry (`echo`, `http-get`, `file-read`). Fixes
@@ -517,8 +525,8 @@ Full list: [CHANGELOG.md](CHANGELOG.md). Planned work: [docs/ROADMAP.md](docs/RO
 
 Where to get it and what's still rough:
 
-- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport). Latest: **v0.8.2**.
-- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.8.2`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
+- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport). Latest: **v0.8.3**.
+- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.8.3`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
 - **GitHub releases** — signed tags, wheel + sdist attached: [releases page](https://github.com/WizTheAgent/IronMesh/releases).
 - **Go client** — `clients/go/` (reference implementation, crypto primitives verified against Python).
 - **LoRa end-to-end latency** — Measured live at 915 MHz SF8/BW125 between two RNode-equipped nodes (1 hop, strong signal): 16-byte probe 1.07 — 1.23 s, 64-byte probe 1.17 — 1.25 s, 256-byte probe 1.77 — 1.98 s, 100% delivery across 9 probes. Multi-hop + long-range interference sweeps are still pending — see [`docs/LORA_VALIDATION.md`](docs/LORA_VALIDATION.md).
