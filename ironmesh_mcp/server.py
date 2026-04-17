@@ -73,7 +73,7 @@ log = logging.getLogger("ironmesh.mcp")
 # --------------------------------------------------------------------------
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "ironmesh", "version": "0.8.3"}
+SERVER_INFO = {"name": "ironmesh", "version": "0.8.4"}
 
 
 def _read_frame(stream) -> Optional[dict]:

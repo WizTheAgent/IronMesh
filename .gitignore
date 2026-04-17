@@ -76,3 +76,8 @@ tests/harness/final_chaos*.csv
 # Internal / work-in-progress artifacts (audit prompts, deployment notes,
 # agent prompt fragments) — never ship in public releases
 .internal/
+
+# Node tooling — clients/ts/ has its own node_modules; npx invoked from
+# the repo root can also drop one here. clients/ts/package-lock.json
+# stays tracked for reproducible builds.
+node_modules/
