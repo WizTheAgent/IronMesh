@@ -130,4 +130,18 @@ describe("canonicalJson", () => {
       '{"channel_binding":"deadbeef","ephemeral_public":"AAAA","identity_public":"BBBB","name":"alice","protocol_version":"ironmesh/0.6"}',
     );
   });
+
+  it("escapes non-ASCII to match Python's ensure_ascii=True default", () => {
+    // Python repro:
+    //   json.dumps({"name": "Zoë"}, separators=(",", ":"), sort_keys=True)
+    //   -> '{"name": "Zo\\u00eb"}' — actually no space; verified:
+    //   '{"name":"Zo\\u00eb"}'
+    expect(canonicalJson({ name: "Zoë" })).toBe('{"name":"Zo\\u00eb"}');
+    // Emoji (BMP-adjacent — uses surrogate pair in UTF-16, both halves
+    // escape in Python; JSON.stringify produces the same surrogate pair
+    // so escaping each half matches).
+    //   json.dumps({"x": "🔐"}, separators=(",",":"), sort_keys=True)
+    //   -> '{"x":"\\ud83d\\udd10"}'
+    expect(canonicalJson({ x: "🔐" })).toBe('{"x":"\\ud83d\\udd10"}');
+  });
 });
