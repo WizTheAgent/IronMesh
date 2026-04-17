@@ -5,9 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v0.9.0-dev (OpenClaw bridge cycle)
+## [0.8.4] — OpenClaw bridge (Path A) + functional TS client
 
-In progress on `main` after v0.8.3 ship.
+Incremental release on top of v0.8.3. Lands the MCP-side OpenClaw
+integration (Path A complete) and a working TypeScript client that
+speaks the full IronMesh wire protocol against a live Python daemon.
+v0.9.0 stays reserved for when the OpenClaw Channel Plugin (Path B)
+also ships. No protocol changes — every v0.8.x peer stays on the mesh.
 
 ### Added
 
@@ -26,22 +30,39 @@ In progress on `main` after v0.8.3 ship.
     connect/disconnect + message arrivals)
   Setup walkthrough: [`docs/OPENCLAW_MCP_SETUP.md`](docs/OPENCLAW_MCP_SETUP.md).
   SOUL.md snippet: [`examples/openclaw/soul_mesh_snippet.md`](examples/openclaw/soul_mesh_snippet.md).
-- **TypeScript client scaffold** at [`clients/ts/`](clients/ts/) for the
-  upcoming OpenClaw Channel Plugin (Path B / M3) and any other native
-  consumer. Public type surface stable; wire protocol stubs throw with
-  explicit "not implemented (M2)" errors. Package name reserved as
-  `@wiztheagent/ironmesh-client@0.1.0-alpha.1`.
+- **TypeScript client — functional alpha.** `@wiztheagent/ironmesh-client@0.1.0-alpha.2`
+  in [`clients/ts/`](clients/ts/) implements the full wire protocol:
+  3-stage passphrase + ECDH + signed-HELLO handshake, binary frame v4
+  encode/decode, SecretBox + Ed25519 signing, WebSocket client with
+  reconnect. 37 vitest tests including a **live e2e** that spawns a real
+  Python `BridgeDaemon` and exchanges a MSG round-trip (~6 s).
 - **WS API gap analysis** at [`docs/OPENCLAW_WS_API_GAPS.md`](docs/OPENCLAW_WS_API_GAPS.md)
-  — five-gap audit concluding Path B is feasible with ~120 LOC of new
-  daemon code (under the spike's 200-LOC ceiling).
+  — five-gap audit concluding Path B (channel plugin) is feasible with
+  ~120 LOC of new daemon code (under the spike's 200-LOC ceiling).
+- **`__main__.py`** so `python -m ironmesh` works from a checkout (the
+  installed `ironmesh` script entry already worked).
 
 ### Fixed
 
-- **CI: collapsed dual pytest runs.** Every job since 04-17 was hitting
-  the 20-min cap because the second "Check coverage threshold" step
-  silently re-ran the entire suite under `-q`. Now a single pytest
-  invocation does both report + 60% floor enforcement, cutting CI time
-  by half and producing observable progress.
+- **`agent.py`: catch `concurrent.futures.TimeoutError` explicitly in
+  `Agent.stop()`.** PEP 616 unified `concurrent.futures.TimeoutError`
+  with `builtins.TimeoutError` in Python 3.11; on 3.10 they are
+  distinct classes, so a bare `except TimeoutError` missed the timeout
+  raised by `fut.result(timeout=5)` when daemon shutdown took longer
+  than 5 s on a slow runner. The exception leaked out of the
+  `finally:` block in `tests/test_concurrency_audit.py::
+  test_100_parallel_sends_no_drops` even though the test body had
+  already passed. Same widening applied defensively to `bridge.py`'s
+  handshake-failure handler. Full RCA at
+  [`docs/BUG-PY310-TIMEOUTERROR-CLASS-SPLIT.md`](docs/BUG-PY310-TIMEOUTERROR-CLASS-SPLIT.md).
+- **CI: collapsed dual pytest runs + `scripts/ci-pytest.sh` wrapper.**
+  Every job since 04-17 was hitting the 20-min cap because the second
+  "Check coverage threshold" step silently re-ran the entire suite
+  under `-q`, and pytest itself sometimes hung in atexit cleanup on
+  hosted runners despite reporting all tests passing. Now a single
+  pytest invocation handles both report + 60% floor, and the wrapper
+  exits 0 the moment a green-summary line appears (10 s grace then
+  SIGKILL on the hung interpreter).
 
 ## [0.8.3] — Operator console redesign, capability GUI fix, E2E audit
 

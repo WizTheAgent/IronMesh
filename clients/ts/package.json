@@ -1,6 +1,6 @@
 {
   "name": "@wiztheagent/ironmesh-client",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "TypeScript / Node.js client for the IronMesh agent-to-agent mesh protocol. Connects, handshakes, and exchanges messages with an IronMesh daemon over WebSocket.",
   "license": "MIT",
   "author": "WizTheAgent",

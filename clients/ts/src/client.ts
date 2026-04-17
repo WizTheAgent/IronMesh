@@ -1,34 +1,67 @@
-// IronMeshClient — alpha-quality scaffold for the TS client.
+// IronMeshClient — connects to an IronMesh daemon over WebSocket, runs
+// the 3-stage passphrase + ECDH + signed-HELLO handshake, then exchanges
+// SecretBox-sealed binary frames.
 //
-// Status: structural scaffold only. The connect / handshake / send paths
-// throw NotImplemented until the binary frame and ECDH handshake are
-// ported from protocol.py. Issue tracking the impl: M2/M3 of the
-// OpenClaw integration plan.
-//
-// Why ship the scaffold first: lets the OpenClaw channel plugin (Path B)
-// import a stable type surface and start building UI without waiting on
-// the wire-protocol port. The plugin can mock the client during its own
-// dev cycles.
+// Reference: bridge.py for the server-side state machine, protocol.py
+// Frame.serialize_and_encrypt() for the binary frame layout, and
+// crypto.py for the encryption primitives.
 
+import { randomUUID } from "node:crypto";
+import { Buffer } from "node:buffer";
+import WebSocket, { type RawData } from "ws";
+
+import {
+  generateIdentityKeypair,
+  type IdentityKeypair,
+  nodeId as deriveNodeId,
+  secretBoxOpen,
+  secretBoxSeal,
+  signDetached,
+  verifyDetached,
+} from "./crypto.js";
+import {
+  decode as decodeFrame,
+  encode as encodeFrame,
+  FLAG_HIGH_PRIORITY,
+  FLAG_CRITICAL_PRIORITY,
+} from "./frame.js";
+import { performHandshake, type HandshakeResult } from "./handshake.js";
 import type {
   ClientOptions,
   ClientEvents,
   IncomingMessage,
   PeerInfo,
-  SendMessageOpts,
   Hex,
+  SendMessageOpts,
 } from "./types.js";
 
 type EventName = keyof ClientEvents;
 type Listener<E extends EventName> = ClientEvents[E];
 
-export class IronMeshClient {
-  private readonly opts: Required<Omit<ClientOptions, "pinFile" | "tofu" | "capabilities" | "name">> &
-    Pick<ClientOptions, "pinFile" | "tofu" | "capabilities" | "name">;
-  private listeners: { [E in EventName]?: Set<Listener<E>> } = {};
-  private connected = false;
+interface InternalState {
+  ws: WebSocket | null;
+  hsResult: HandshakeResult | null;
+  identity: IdentityKeypair;
+  sequence: bigint;
+}
 
-  constructor(options: ClientOptions) {
+function priorityFlags(priority: string | undefined): number {
+  if (priority === "HIGH") return FLAG_HIGH_PRIORITY;
+  if (priority === "CRITICAL") return FLAG_CRITICAL_PRIORITY;
+  return 0;
+}
+
+export class IronMeshClient {
+  private readonly opts: Required<
+    Pick<ClientOptions, "url" | "passphrase" | "autoReconnect" | "reconnectInitialDelayMs">
+  > &
+    Pick<ClientOptions, "name" | "capabilities" | "tofu" | "pinFile">;
+  private listeners: { [E in EventName]?: Set<Listener<E>> } = {};
+  private state: InternalState;
+  private connecting = false;
+  private intentionallyClosed = false;
+
+  constructor(options: ClientOptions, identity?: IdentityKeypair) {
     if (!options.url) throw new Error("ClientOptions.url is required");
     if (!options.passphrase) throw new Error("ClientOptions.passphrase is required");
     this.opts = {
@@ -36,57 +69,199 @@ export class IronMeshClient {
       passphrase: options.passphrase,
       autoReconnect: options.autoReconnect ?? true,
       reconnectInitialDelayMs: options.reconnectInitialDelayMs ?? 500,
-      name: options.name,
+      name: options.name ?? "ts-client",
       capabilities: options.capabilities,
       tofu: options.tofu,
       pinFile: options.pinFile,
     };
+    this.state = {
+      ws: null,
+      hsResult: null,
+      identity: identity ?? generateIdentityKeypair(),
+      sequence: 0n,
+    };
   }
 
-  // ------------------------------------------------------------------
-  // Connection lifecycle
-  // ------------------------------------------------------------------
-
-  /**
-   * Open the WebSocket, run the IronMesh passphrase + ECDH handshake,
-   * advertise capabilities, then begin streaming events.
-   *
-   * NOT YET IMPLEMENTED — see handshake.ts / frame.ts (M2 work).
-   */
-  async connect(): Promise<void> {
-    throw new Error(
-      "IronMeshClient.connect: not implemented. The handshake + binary " +
-        "frame v4 paths still need to be ported from protocol.py. See " +
-        "docs/OPENCLAW_CHANNEL_SETUP.md (when written) for the impl order."
-    );
+  /** Our derived node_id (32-hex). Available before any connect. */
+  get nodeId(): string {
+    return deriveNodeId(this.state.identity.publicKey);
   }
 
-  async disconnect(): Promise<void> {
-    this.connected = false;
+  /** Peer's node_id, set after a successful handshake. */
+  get peerNodeId(): string | null {
+    return this.state.hsResult?.peerNodeId ?? null;
   }
 
   isConnected(): boolean {
-    return this.connected;
+    return (
+      this.state.ws !== null &&
+      this.state.ws.readyState === WebSocket.OPEN &&
+      this.state.hsResult !== null
+    );
   }
 
-  // ------------------------------------------------------------------
-  // Messaging
-  // ------------------------------------------------------------------
+  /**
+   * Open the WebSocket and run the full handshake. Resolves once the
+   * client is ready to send/receive. Rejects on handshake failure.
+   */
+  async connect(): Promise<void> {
+    if (this.isConnected()) return;
+    if (this.connecting) {
+      throw new Error("connect: already in progress");
+    }
+    this.connecting = true;
+    this.intentionallyClosed = false;
+    try {
+      const ws = new WebSocket(this.opts.url);
+      this.state.ws = ws;
 
+      await new Promise<void>((resolve, reject) => {
+        const onOpen = () => {
+          ws.removeListener("error", onErr);
+          resolve();
+        };
+        const onErr = (err: Error) => {
+          ws.removeListener("open", onOpen);
+          reject(err);
+        };
+        ws.once("open", onOpen);
+        ws.once("error", onErr);
+      });
+
+      // Buffer text frames during handshake. The daemon only sends text
+      // (JSON) until handshake completes; once we hand off to the post-
+      // handshake loop, text frames end and binary frames begin.
+      const textBuffer: string[] = [];
+      const textWaiters: Array<(s: string) => void> = [];
+      const errorWaiters: Array<(e: Error) => void> = [];
+
+      const handshakeMessage = (data: RawData) => {
+        const text = data.toString("utf8");
+        const waiter = textWaiters.shift();
+        if (waiter) waiter(text);
+        else textBuffer.push(text);
+      };
+      const handshakeError = (e: Error) => {
+        const eWaiter = errorWaiters.shift();
+        if (eWaiter) eWaiter(e);
+      };
+      ws.on("message", handshakeMessage);
+      ws.on("error", handshakeError);
+
+      const recv = (): Promise<string> => {
+        const queued = textBuffer.shift();
+        if (queued !== undefined) return Promise.resolve(queued);
+        return new Promise<string>((resolve, reject) => {
+          textWaiters.push(resolve);
+          errorWaiters.push(reject);
+        });
+      };
+      const send = (text: string): void => {
+        ws.send(text);
+      };
+
+      const result = await performHandshake({
+        passphrase: this.opts.passphrase,
+        agentName: this.opts.name ?? "ts-client",
+        identity: this.state.identity,
+        send,
+        recv,
+      });
+      this.state.hsResult = result;
+
+      // Detach handshake-only listeners; install the long-lived loop.
+      ws.removeListener("message", handshakeMessage);
+      this._wireMessageLoop(ws);
+
+      // Wire close/error to event API.
+      ws.once("close", (code, reasonBuf) => {
+        const reason = `closed (${code}${reasonBuf?.length ? `: ${reasonBuf.toString()}` : ""})`;
+        this.state.ws = null;
+        this.state.hsResult = null;
+        this._emit("disconnect", reason);
+        if (!this.intentionallyClosed && this.opts.autoReconnect) {
+          this._scheduleReconnect();
+        }
+      });
+      ws.on("error", (err) => this._emit("error", err));
+
+      this._emit("connect");
+    } finally {
+      this.connecting = false;
+    }
+  }
+
+  async disconnect(): Promise<void> {
+    this.intentionallyClosed = true;
+    const ws = this.state.ws;
+    if (!ws) return;
+    return new Promise<void>((resolve) => {
+      ws.once("close", () => resolve());
+      ws.close(1000, "client disconnect");
+    });
+  }
+
+  /**
+   * Send a MSG to the connected peer. Returns the locally-generated
+   * msg_id. Throws if not connected.
+   */
   async sendMessage(
-    _target: Hex | string,
-    _payload: Uint8Array | string,
-    _opts: SendMessageOpts = {}
+    payload: Uint8Array | string,
+    opts: SendMessageOpts = {},
   ): Promise<{ msgId: string }> {
-    throw new Error("IronMeshClient.sendMessage: not implemented (M2)");
+    if (!this.isConnected() || !this.state.ws || !this.state.hsResult) {
+      throw new Error("sendMessage: not connected");
+    }
+    const payloadBytes =
+      typeof payload === "string" ? new TextEncoder().encode(payload) : payload;
+    const msgId = randomUUID().replace(/-/g, "");
+    const msgType = opts.type ?? "MSG";
+    this.state.sequence += 1n;
+
+    const inner = {
+      type: msgType,
+      payload: Buffer.from(payloadBytes).toString("base64"),
+      msg_id: msgId,
+      source: this.state.hsResult.myNodeId,
+      source_display: this.opts.name,
+      destination: this.state.hsResult.peerNodeId,
+      timestamp: Date.now() / 1000,
+      priority: opts.priority ?? "NORMAL",
+      sequence: Number(this.state.sequence),
+      retries: 0,
+      routing: {} as Record<string, unknown>,
+      ttl: 3,
+      hops: [] as string[],
+    };
+    const innerBytes = new TextEncoder().encode(JSON.stringify(inner));
+    const encrypted = secretBoxSeal(this.state.hsResult.sessionKey, innerBytes);
+    const sig = signDetached(this.state.identity.secretKey, encrypted);
+    const wire = encodeFrame({
+      flags: priorityFlags(opts.priority),
+      sequence: this.state.sequence,
+      msgId,
+      encrypted,
+      signature: sig,
+    });
+    this.state.ws.send(wire, { binary: true });
+    return { msgId };
   }
 
+  /** A trimmed peer view — node_id and agent_name from the handshake. */
   async listPeers(): Promise<PeerInfo[]> {
-    throw new Error("IronMeshClient.listPeers: not implemented (M2)");
+    if (!this.state.hsResult) return [];
+    const r = this.state.hsResult;
+    return [
+      {
+        nodeId: r.peerNodeId as Hex,
+        agentName: r.peerAgentName,
+        online: this.isConnected(),
+      },
+    ];
   }
 
   // ------------------------------------------------------------------
-  // Event API (typed wrappers around an internal map of listener sets)
+  // Event API
   // ------------------------------------------------------------------
 
   on<E extends EventName>(event: E, listener: Listener<E>): this {
@@ -105,21 +280,126 @@ export class IronMeshClient {
     return this;
   }
 
-  // Test seam — mirrors the on() type, lets tests inject events without
-  // a real WS round-trip. Will become private once connect() is wired.
+  /** @internal — public for tests so synthetic events can be injected. */
   _emit<E extends EventName>(event: E, ...args: Parameters<Listener<E>>): void {
     const set = this.listeners[event] as Set<Listener<E>> | undefined;
     if (!set) return;
     for (const l of set) {
       try {
-        // The cast to (...args: any[]) keeps the variadic type checker happy
-        // without losing the callsite's parameter typing through Listener<E>.
         (l as (...a: unknown[]) => void)(...args);
       } catch (e) {
         // eslint-disable-next-line no-console
         console.error("ironmesh-client listener threw:", e);
       }
     }
+  }
+
+  // ------------------------------------------------------------------
+  // Internal
+  // ------------------------------------------------------------------
+
+  private _wireMessageLoop(ws: WebSocket): void {
+    ws.on("message", (data: RawData) => {
+      try {
+        const buf = Buffer.isBuffer(data)
+          ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+          : new Uint8Array(Buffer.from(data as ArrayBuffer));
+        this._handleIncoming(buf);
+      } catch (e) {
+        this._emit("error", e instanceof Error ? e : new Error(String(e)));
+      }
+    });
+  }
+
+  private _handleIncoming(buf: Uint8Array): void {
+    if (!this.state.hsResult) return;
+    // Try binary first (preferred wire format)
+    if (buf[0] === 0xe7 && buf[1] === 0xf6) {
+      const frame = decodeFrame(buf);
+      // Optional outer signature verification — best effort, the daemon
+      // signs with its identity key which we have from the handshake.
+      if (frame.signature) {
+        const ok = verifyDetached(
+          this.state.hsResult.peerIdentityPublic,
+          frame.encrypted,
+          frame.signature,
+        );
+        if (!ok) {
+          this._emit(
+            "error",
+            new Error("incoming frame outer signature verification failed"),
+          );
+          return;
+        }
+      }
+      const plaintext = secretBoxOpen(this.state.hsResult.sessionKey, frame.encrypted);
+      const inner = JSON.parse(new TextDecoder().decode(plaintext)) as Record<
+        string,
+        unknown
+      >;
+      this._dispatchInner(inner, Number(frame.timestamp));
+      return;
+    }
+
+    // Fallback: legacy JSON envelope (text frame).
+    const text = new TextDecoder().decode(buf);
+    if (text.startsWith("{")) {
+      try {
+        const msg = JSON.parse(text) as Record<string, unknown>;
+        const enc = msg.encrypted_payload as string | undefined;
+        if (enc) {
+          const ct = new Uint8Array(Buffer.from(enc, "base64"));
+          const plaintext = secretBoxOpen(this.state.hsResult.sessionKey, ct);
+          const inner = JSON.parse(new TextDecoder().decode(plaintext)) as Record<
+            string,
+            unknown
+          >;
+          this._dispatchInner(inner, Math.floor(Date.now()));
+          return;
+        }
+        // Plain JSON (control message — peer events, etc.)
+        this._dispatchControl(msg);
+      } catch (e) {
+        this._emit("error", e instanceof Error ? e : new Error(String(e)));
+      }
+    }
+  }
+
+  private _dispatchInner(inner: Record<string, unknown>, tsMs: number): void {
+    const msgType = String(inner.type ?? "MSG");
+    const fromNodeId = String(inner.source ?? "");
+    const msgId = String(inner.msg_id ?? "");
+    const payloadB64 = (inner.payload as string | undefined) ?? "";
+    const payload = payloadB64
+      ? new Uint8Array(Buffer.from(payloadB64, "base64"))
+      : new Uint8Array(0);
+    const event: IncomingMessage = {
+      msgType,
+      fromNodeId,
+      payload,
+      msgId,
+      timestamp: tsMs,
+    };
+    this._emit("message", event);
+  }
+
+  private _dispatchControl(msg: Record<string, unknown>): void {
+    const t = String(msg.type ?? "");
+    if (t === "PEER_INFO" || t === "PEER_CONNECT" || t === "PEER_DISCONNECT") {
+      const peer: PeerInfo = {
+        nodeId: String(msg.peer_id ?? "") as Hex,
+        agentName: msg.name as string | undefined,
+        online: t !== "PEER_DISCONNECT",
+      };
+      this._emit(t === "PEER_DISCONNECT" ? "peerDisconnect" : "peerConnect", peer);
+    }
+  }
+
+  private _scheduleReconnect(): void {
+    setTimeout(() => {
+      if (this.intentionallyClosed) return;
+      this.connect().catch((e) => this._emit("error", e));
+    }, this.opts.reconnectInitialDelayMs);
   }
 }
 

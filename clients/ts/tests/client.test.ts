@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { IronMeshClient, VERSION } from "../src/index.js";
+import { IronMeshClient, VERSION, generateIdentityKeypair, nodeId } from "../src/index.js";
 
-describe("IronMeshClient (scaffold)", () => {
+describe("IronMeshClient", () => {
   describe("constructor validation", () => {
     it("requires a url", () => {
       expect(() => new IronMeshClient({ url: "", passphrase: "x" })).toThrow(
@@ -23,14 +23,22 @@ describe("IronMeshClient (scaffold)", () => {
       expect(c).toBeInstanceOf(IronMeshClient);
       expect(c.isConnected()).toBe(false);
     });
+
+    it("derives a stable node_id from a fresh identity", () => {
+      const c = new IronMeshClient({ url: "ws://x", passphrase: "p" });
+      expect(c.nodeId).toMatch(/^[0-9a-f]{32}$/);
+    });
+
+    it("uses a caller-provided identity when given", () => {
+      const id = generateIdentityKeypair();
+      const c = new IronMeshClient({ url: "ws://x", passphrase: "p" }, id);
+      expect(c.nodeId).toBe(nodeId(id.publicKey));
+    });
   });
 
   describe("event API", () => {
     it("registers and fires listeners via the test seam", () => {
-      const c = new IronMeshClient({
-        url: "ws://x",
-        passphrase: "p",
-      });
+      const c = new IronMeshClient({ url: "ws://x", passphrase: "p" });
       const seen: string[] = [];
       c.on("disconnect", (reason) => seen.push(reason));
       c._emit("disconnect", "test");
@@ -38,10 +46,7 @@ describe("IronMeshClient (scaffold)", () => {
     });
 
     it("supports off() to unregister", () => {
-      const c = new IronMeshClient({
-        url: "ws://x",
-        passphrase: "p",
-      });
+      const c = new IronMeshClient({ url: "ws://x", passphrase: "p" });
       const seen: string[] = [];
       const fn = (r: string) => seen.push(r);
       c.on("disconnect", fn);
@@ -56,30 +61,31 @@ describe("IronMeshClient (scaffold)", () => {
     });
   });
 
-  describe("not-yet-implemented surface", () => {
-    // These tests are deliberately strict: they pin the surface that is
-    // SHIPPED (the throws) so a partial impl that silently no-ops doesn't
-    // sneak in. Replace each test as the underlying method lands.
-
-    it("connect() throws with a helpful message", async () => {
+  describe("pre-connect surface", () => {
+    it("isConnected() is false before connect", () => {
       const c = new IronMeshClient({ url: "ws://x", passphrase: "p" });
-      await expect(c.connect()).rejects.toThrow(/not implemented/);
+      expect(c.isConnected()).toBe(false);
     });
 
-    it("sendMessage() throws", async () => {
+    it("peerNodeId is null before handshake", () => {
       const c = new IronMeshClient({ url: "ws://x", passphrase: "p" });
-      await expect(c.sendMessage("peer", "hi")).rejects.toThrow(/not implemented/);
+      expect(c.peerNodeId).toBe(null);
     });
 
-    it("listPeers() throws", async () => {
+    it("sendMessage() throws when not connected", async () => {
       const c = new IronMeshClient({ url: "ws://x", passphrase: "p" });
-      await expect(c.listPeers()).rejects.toThrow(/not implemented/);
+      await expect(c.sendMessage("hi")).rejects.toThrow(/not connected/);
+    });
+
+    it("listPeers() returns [] before handshake", async () => {
+      const c = new IronMeshClient({ url: "ws://x", passphrase: "p" });
+      await expect(c.listPeers()).resolves.toEqual([]);
     });
   });
 });
 
 describe("module exports", () => {
-  it("exposes a VERSION constant matching package.json", () => {
+  it("exposes a VERSION constant matching package.json semver", () => {
     expect(VERSION).toMatch(/^\d+\.\d+\.\d+/);
   });
 });
