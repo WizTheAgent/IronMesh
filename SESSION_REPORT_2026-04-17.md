@@ -1,6 +1,6 @@
-# Overnight Report — 2026-04-17
+# Session Report — 2026-04-17
 
-Working session: ~12:30 → 13:35 UTC. Scope you handed me before bed:
+Scope you handed me at the start of this session:
 
 > continue with the open claw plan we discussed and after that is finished
 > please do an end to end audit of everything. look for out of date or
@@ -251,7 +251,7 @@ just no longer fatal. Run a separate session with `python -X faulthandler`
 .github/workflows/ci.yml                                — combined pytest, timeout, wrapper
 CHANGELOG.md                                            — [Unreleased]/v0.9.0-dev section
 CONTRIBUTING.md                                         — clients/ts/ mention
-OVERNIGHT_REPORT.md                                     — this file
+SESSION_REPORT_2026-04-17.md                            — this file
 README.md                                               — OpenClaw section + TS client section
 __main__.py                                             — NEW (python -m ironmesh)
 clients/ts/                                             — NEW (full scaffold, 12 files)
@@ -268,14 +268,12 @@ tools.py                                                — # nosec B310 on urll
 
 ## Bottom line
 
-You went to bed asking for OpenClaw integration progress + an audit. You
-woke up with M0 + M1 + M2-scaffold done, the audit performed and its
-findings closed, and a CI wrapper that mostly papers over a hairy
+You asked for OpenClaw integration progress + an audit. M0 + M1 +
+M2-scaffold are done, the audit was performed and its findings
+closed, and there's a CI wrapper that papers over a hairy
 post-pytest hang that was eating every job since yesterday. The
-underlying hang is the one item I deliberately did NOT try to root-cause
-overnight — it would have eaten too many cycles and produced uncertain
-results. Everything else on your list is ✅.
-
-Sleep well.
+underlying hang is the one item I deliberately did NOT try to
+root-cause this session — it would have eaten too many cycles and
+produced uncertain results. Everything else on your list is ✅.
 
 — Claude
