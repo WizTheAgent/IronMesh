@@ -270,10 +270,13 @@ class TestParallelMessaging:
             for t in threads:
                 t.join()
 
-            # Wait for all messages to arrive. Up to 30 s for 100 msgs
-            # over localhost should be plenty.
-            assert _wait(lambda: len(received) >= N, timeout=30), (
-                f"only {len(received)}/{N} messages arrived after 30 s"
+            # Wait for all messages to arrive. 60 s upper bound covers
+            # the slower hosted-runner combinations (Ubuntu / Python 3.10
+            # were observed to need ~30+ s for the full handshake plus
+            # 100-message drain on a shared GitHub-Actions runner). Local
+            # dev machines complete the same drain in 2-3 s.
+            assert _wait(lambda: len(received) >= N, timeout=60), (
+                f"only {len(received)}/{N} messages arrived after 60 s"
             )
             elapsed = time.monotonic() - t0
 
