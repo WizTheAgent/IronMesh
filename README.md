@@ -8,7 +8,7 @@
 
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **v0.8.2 — pre-1.0 release.** 559 tests green on Ubuntu + Windows across Python 3.10 – 3.13.
+> **v0.8.3 — pre-1.0 release.** 582 tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13.
 > Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -141,7 +141,7 @@ Requires Python 3.10 or newer. On Linux the firewall must allow UDP 5353
 
 ```bash
 pip install ironmesh            # PyPI
-# or: docker pull wiztheagent/ironmesh:0.8.2
+# or: docker pull wiztheagent/ironmesh:0.8.3
 # or: ./scripts/install.sh       (Linux / macOS systemd)
 # or: see docs/TERMUX.md         (Android)
 ```
