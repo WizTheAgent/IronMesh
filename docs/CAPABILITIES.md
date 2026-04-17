@@ -143,3 +143,21 @@ discovery sane:
 - The `find()` API does a linear scan over all known capabilities. This is
   O(n × patterns), fine for the dozens-to-low-thousands scale IronMesh
   targets — if you have 10⁶ capabilities you have a different problem.
+
+## Discovery from MCP hosts (v0.9.0+)
+
+Agents running under an MCP host (OpenClaw, Claude Desktop, Claude Code)
+can discover and use capabilities through the bundled `ironmesh_mcp`
+server without writing any Python:
+
+| MCP tool | Purpose |
+|---|---|
+| `ironmesh_discover_capabilities` | Glob-match capabilities across the mesh — `pattern: "llm:*"` returns every LLM peer |
+| `ironmesh_get_peer_capabilities` | Full capability set for one peer (by agent name or 32-hex node_id) |
+| `ironmesh_request_service` | REQ/RESP — send a prompt to a capable peer and wait for the matching reply (correlation-id over MSG, default 30 s timeout) |
+| `ironmesh_broadcast` | Send a message to every online peer at once |
+| `ironmesh_subscribe_events` | Cursor-based event poll (peer connect / disconnect / message arrivals) |
+
+Together these turn capability advertisement from "infrastructure
+plumbing" into "tools the agent itself reaches for." Setup:
+[`OPENCLAW_MCP_SETUP.md`](OPENCLAW_MCP_SETUP.md).

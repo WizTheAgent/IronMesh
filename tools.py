@@ -72,9 +72,9 @@ def _make_http_get(max_bytes: int) -> Callable[[str], str]:
         url = args.strip()
         if not (url.startswith("http://") or url.startswith("https://")):
             raise ToolError("http-get: URL must start with http:// or https://")
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible)"})
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible)"})  # nosec B310 — scheme allowlist enforced above
         try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urllib.request.urlopen(req, timeout=5) as resp:  # nosec B310 — scheme allowlist enforced above
                 data = resp.read(max_bytes + 1)
         except urllib.error.URLError as e:
             raise ToolError(f"http-get: {e.reason}") from e

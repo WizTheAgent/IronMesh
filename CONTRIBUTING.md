@@ -35,7 +35,7 @@ honest documentation, and conservative protocol changes.
   is a good template.
 - **Non-Python clients** — a Go or Rust implementation of the wire
   protocol would be great for embedded/mobile deployments. The
-  [PROTOCOL_SPEC.md](docs/PROTOCOL_SPEC.md) is the authoritative reference. A Go reference implementation lives in `clients/go/`.
+  [PROTOCOL_SPEC.md](docs/PROTOCOL_SPEC.md) is the authoritative reference. A Go reference implementation lives in `clients/go/`; a TypeScript client is scaffolded in `clients/ts/` for browser, Node.js, and the upcoming OpenClaw Channel Plugin (alpha — wire protocol port in progress).
 - **LoRa field measurements** — see [docs/LORA_VALIDATION.md](docs/LORA_VALIDATION.md).
   We have single-hop indoor numbers; multi-hop, outdoor, and high-interference
   sweeps would materially improve the project's credibility.
