@@ -5,6 +5,114 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.3] — Operator console redesign, capability GUI fix, E2E audit
+
+Polish release on top of v0.8.2. The dashboard is rebuilt from scratch
+to match the ironmesh.org visual identity — a monospace operator
+console with the site's 3-stage handshake diagram baked in, a TOFU
+trust tri-state column, concurrent WS/RNS transport view, stat-strip
+sparklines, regex-capable message feed with pause/export, bearer-token
+masked reveal, and a CSP meta tag that locks the page to same-origin
+so `pull the plug on your router` still renders. Two latent backend
+serialization bugs that kept capabilities and peer names invisible in
+`/api/state` are fixed. Plus the full v0.8.3 E2E audit:
+Hypothesis fuzzing, concurrency tests, crash matrix, macOS added to CI.
+No wire-protocol changes — any v0.8.2 peer stays on the mesh.
+Full write-up: [`docs/RELEASE_NOTES_v0.8.3.md`](docs/RELEASE_NOTES_v0.8.3.md).
+
+### Changed
+
+- **Dashboard rebuild.** `bridge.GUI_HTML` replaced end-to-end. New
+  layout: IRONMESH wordmark + `v0.8.3 · PRE-1.0` pill, truncated node
+  fingerprint (click-to-copy), mesh state pill (OPERATIONAL /
+  DEGRADED / ISOLATED), `OFFLINE-FIRST` badge, masked bearer token
+  with reveal / copy-URL / rotate icons. Six stat cards with inline
+  SVG sparklines rendered from a rolling client-side buffer (zero
+  charting libs). Peer table gains Transport (WS/RNS/BOTH), Trust
+  (`✓ TOFU-PINNED` / `… HANDSHAKING` / `✗ MISMATCH`), Last-contact
+  relative, Capabilities pills. Selecting a peer lights the stages
+  of the site's canonical ASCII handshake diagram. Transport panel
+  shows live WS LAN throughput + Reticulum status (disabled with
+  "install ironmesh[rns] to enable" hint when RNS is absent).
+  Hardened terminal-style feed: per-line severity gutter, pause-tail,
+  regex or substring search, CSV export, chatter-toggle for
+  PING/PONG. Footer ops row: Audit Log / Rotate Keys / Session Rekey
+  / Panic Wipe (2-step confirm). System fonts only — no Google Fonts
+  or CDN icons; all SVGs inlined as `<symbol>` sprites.
+- **Dashboard feed (pre-audit fix, carried forward from the
+  unreleased v0.8.2.1 branch):** CONV envelopes render as
+  `[response turn N/M] <body>`; peer name resolved from `state.peers`
+  rather than raw node_id; PING/PONG/ROUTE_ANNOUNCE/CAPABILITY_ANNOUNCE
+  filtered from the operator view by default, behind a chatter
+  toggle.
+- **Sent-message UX:** Enter-to-send (Shift+Enter for newline, chat
+  convention); `ws.send` failures now surface as an alarm row + red
+  statusline instead of vanishing. Empty-feed copy disambiguates
+  "cleared · waiting for traffic" from "no matching events".
+
+### Fixed
+
+- **`PeerState.to_dict()` never serialized `agent_name`.** v0.8.1
+  populated `peer_state.agent_name` from the HELLO exchange, but the
+  GUI serializer dropped it. Every peer in `/api/state` showed
+  `name: null`, so the dashboard rendered truncated hashes everywhere
+  a human name belonged. Now emitted as `"name"`.
+- **`_build_full_state()` never serialized the capability registry.**
+  Dashboard JS read `state.capabilities` for the A2A dropdown filter
+  and per-peer capability pills; the backend never set the key, so
+  the filter silently matched zero peers and pills were always empty.
+  Now inverted to `{capability -> [node_ids]}` — the shape every
+  consumer actually wants.
+- **`DedupCache` TOCTOU race.** `is_duplicate()` and `add()` were
+  separate lock acquisitions, leaving a window where two concurrent
+  handlers could both decide a message was novel and process it
+  twice. Replaced with atomic `check_and_add()`. Regression test
+  in `tests/test_concurrency.py`.
+- **Dashboard `<img>` tag was live with no file at the referenced
+  path**, producing a broken image icon on GitHub rendering. The tag
+  is now active and points at `docs/assets/dashboard.png`.
+- **Docker image was missing `adapters/`, `ironmesh_mcp/`,
+  `examples/`**, so `import ironmesh.adapters.langchain_adapter`
+  failed inside the container. `pyproject.toml` `[tool.setuptools]
+  package-dir` / `packages` re-declared to include every subpackage.
+- **User-Agent header leak in `reticulum_transport.py` HTTP probes.**
+  Replaced `urllib`'s default `Python-urllib/3.x` with
+  `ironmesh/<version>` so passive observers can't fingerprint the
+  Python version.
+- **Stale `LICENSE` year + author**, missing `NOTICE` file.
+
+### Added
+
+- **v0.8.3 E2E debugging audit.** Nine Hypothesis properties × 400
+  inputs on `ConvEnvelope` round-trip + invariants; 6 new concurrency
+  tests (`ReplayGuard`, `TokenBucket`, `DedupCache`); a 4-scenario
+  crash matrix (SIGKILL mid-handshake, corrupt trust store, corrupt
+  routes.json, disk-full on audit.log); 7 pathological payloads
+  fired at the dashboard. `pip-audit` + `bandit` clean. Full matrix
+  and findings in [`docs/AUDIT_v0.8.3.md`](docs/AUDIT_v0.8.3.md).
+- **Real-adapter integration tests.** `tests/integration/` exercises
+  `adapters/langchain_adapter.py`, `crewai_adapter.py`,
+  `autogen_adapter.py` against a `fake_ollama` stub so the adapters
+  can't silently drift.
+- **macOS in CI matrix** — now 12 jobs: Ubuntu / Windows / macOS ×
+  Python 3.10 / 3.11 / 3.12 / 3.13.
+- **Roadmap** at [`docs/ROADMAP.md`](docs/ROADMAP.md) (NAT traversal,
+  Android native, Rust port, plugin sandbox).
+- **NAT traversal design doc** at
+  [`docs/NAT_TRAVERSAL_DESIGN.md`](docs/NAT_TRAVERSAL_DESIGN.md)
+  (accepted, implementation deferred to v0.9).
+- **`docs/assets/dashboard.png`** — live 3-node mesh screenshot used
+  as the README hero.
+- **`NOTICE`** file with third-party attribution.
+
+### Verification
+
+582 tests pass (+3 GUI assertion tests for the redesign —
+`test_html_has_handshake_diagram`, `test_html_has_csp`,
+`test_html_has_trust_tri_state`), +9 Hypothesis fuzz properties,
++6 concurrency tests. ruff clean, mypy clean, bandit clean,
+pip-audit clean on Ubuntu + Windows + macOS across Python 3.10–3.13.
+
 ## [0.8.2] — Multi-turn AI dialogue, personas, tools, A2A dashboard
 
 Feature release on top of v0.8.1. Adds structured multi-turn

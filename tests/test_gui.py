@@ -42,16 +42,19 @@ class TestGUIHTML:
         assert "</body>" in GUI_HTML
 
     def test_html_has_title(self):
-        assert "<title>IronMesh Dashboard</title>" in GUI_HTML
+        # v0.8.3 rebrand: dashboard is the "Operator Console" to match ironmesh.org voice.
+        assert "<title>IRONMESH" in GUI_HTML
+        assert "Operator Console" in GUI_HTML
 
     def test_html_has_ws_connection(self):
         assert "/ws" in GUI_HTML
 
     def test_html_has_metrics_elements(self):
-        assert "m-uptime" in GUI_HTML
-        assert "m-peers" in GUI_HTML
-        assert "m-sent" in GUI_HTML
-        assert "m-recv" in GUI_HTML
+        # v0.8.3: stat strip IDs — peers, messages, handshakes, uptime.
+        assert 'id="uptime"' in GUI_HTML
+        assert 'id="s-peers"' in GUI_HTML
+        assert 'id="s-msgs"' in GUI_HTML
+        assert 'id="s-hs"' in GUI_HTML
 
     def test_html_has_send_form(self):
         assert "send-peer" in GUI_HTML
@@ -59,10 +62,28 @@ class TestGUIHTML:
         assert "send-btn" in GUI_HTML
 
     def test_html_has_peer_table(self):
-        assert "peer-table" in GUI_HTML
+        # v0.8.3: table body id renamed to peer-body.
+        assert 'id="peer-body"' in GUI_HTML
 
     def test_html_has_feed(self):
         assert 'id="feed"' in GUI_HTML
+
+    def test_html_has_handshake_diagram(self):
+        # v0.8.3: site's canonical handshake diagram is baked in as identity marker.
+        assert "PASSPHRASE_CHALLENGE" in GUI_HTML
+        assert "HMAC-SHA256" in GUI_HTML
+        assert "ECDH" in GUI_HTML
+        assert "id_pub_A" in GUI_HTML
+
+    def test_html_has_csp(self):
+        # v0.8.3: Content-Security-Policy locks dashboard to same-origin (offline-first).
+        assert "Content-Security-Policy" in GUI_HTML
+        assert "default-src 'self'" in GUI_HTML
+
+    def test_html_has_trust_tri_state(self):
+        # v0.8.3: TOFU-PINNED / MISMATCH / HANDSHAKING are first-class in the peer table.
+        assert "TOFU-PINNED" in GUI_HTML
+        assert "MISMATCH" in GUI_HTML
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +219,8 @@ class TestGUIProcessRequest:
         resp = await self._route(d, "/")
         assert resp is not None
         assert resp.status_code == 200
-        assert b"IronMesh Dashboard" in resp.body
+        assert b"IRONMESH" in resp.body
+        assert b"Operator Console" in resp.body
 
     async def test_index_html_returns_html(self):
         d = _make_daemon()
