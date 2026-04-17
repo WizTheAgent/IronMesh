@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — v0.9.0-dev (OpenClaw bridge cycle)
+
+In progress on `main` after v0.8.3 ship.
+
+### Added
+
+- **OpenClaw integration — Path A (MCP bridge).** Five new tools in
+  `ironmesh_mcp/server.py` make agent-to-agent collaboration first-class
+  for any MCP host (OpenClaw, Claude Desktop, Claude Code). The existing
+  8 tools are unchanged; total now 13:
+  - `ironmesh_discover_capabilities` — fnmatch glob across the mesh
+    (`llm:*`, `role:assistant`, etc.)
+  - `ironmesh_get_peer_capabilities` — full capability set for one peer
+  - `ironmesh_request_service` — REQ/RESP with correlation-id + timeout
+    (D5 envelope convention from the integration plan)
+  - `ironmesh_broadcast` — send to every online peer, returns
+    `{sent_to, failed}` lists
+  - `ironmesh_subscribe_events` — cursor-based event poll (peer
+    connect/disconnect + message arrivals)
+  Setup walkthrough: [`docs/OPENCLAW_MCP_SETUP.md`](docs/OPENCLAW_MCP_SETUP.md).
+  SOUL.md snippet: [`examples/openclaw/soul_mesh_snippet.md`](examples/openclaw/soul_mesh_snippet.md).
+- **TypeScript client scaffold** at [`clients/ts/`](clients/ts/) for the
+  upcoming OpenClaw Channel Plugin (Path B / M3) and any other native
+  consumer. Public type surface stable; wire protocol stubs throw with
+  explicit "not implemented (M2)" errors. Package name reserved as
+  `@wiztheagent/ironmesh-client@0.1.0-alpha.1`.
+- **WS API gap analysis** at [`docs/OPENCLAW_WS_API_GAPS.md`](docs/OPENCLAW_WS_API_GAPS.md)
+  — five-gap audit concluding Path B is feasible with ~120 LOC of new
+  daemon code (under the spike's 200-LOC ceiling).
+
+### Fixed
+
+- **CI: collapsed dual pytest runs.** Every job since 04-17 was hitting
+  the 20-min cap because the second "Check coverage threshold" step
+  silently re-ran the entire suite under `-q`. Now a single pytest
+  invocation does both report + 60% floor enforcement, cutting CI time
+  by half and producing observable progress.
+
 ## [0.8.3] — Operator console redesign, capability GUI fix, E2E audit
 
 Polish release on top of v0.8.2. The dashboard is rebuilt from scratch

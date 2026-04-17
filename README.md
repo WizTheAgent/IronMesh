@@ -310,6 +310,15 @@ export IRONMESH_PASSPHRASE='your-strong-secret-phrase-12-plus'
 
 See [`docs/PROTOCOL_SPEC.md`](docs/PROTOCOL_SPEC.md) for the formal wire specification.
 
+### TypeScript client (alpha)
+
+A TypeScript client lives at [`clients/ts/`](clients/ts/) — package
+name `@wiztheagent/ironmesh-client@0.1.0-alpha.1`. Public type surface
+is stable; the wire-protocol implementation is in progress (M2 of the
+OpenClaw integration plan). Browser dashboards, Node.js agents, and
+the upcoming OpenClaw Channel Plugin all depend on it. Status and
+implementation order: [`clients/ts/README.md`](clients/ts/README.md).
+
 ### Advanced: low-level BridgeDaemon API
 
 ```python
