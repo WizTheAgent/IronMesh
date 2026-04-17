@@ -83,9 +83,7 @@ jobs:
         # Integration tests (tests/integration/) run in the dedicated
         # `integration` job below with the real framework deps.
         run: |
-          pytest tests/ --ignore=tests/integration -v \
-            --cov=. --cov-report=term-missing --cov-report=xml \
-            --cov-fail-under=60
+          pytest tests/ --ignore=tests/integration -v --cov=. --cov-report=term-missing --cov-report=xml --cov-fail-under=60
 
   integration:
     # Real framework-adapter integration tests. Installs the actual
