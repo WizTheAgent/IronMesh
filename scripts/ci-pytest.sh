@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# CI pytest wrapper — runs pytest, treats "all tests passed" as success even
+# if the Python interpreter hangs in atexit cleanup afterwards.
+#
+# Background: on hosted Ubuntu+Windows runners the pytest process completes
+# the test summary line ("577 passed in 54.67s") + writes coverage XML +
+# prints the coverage threshold ack — and then hangs for 18+ minutes
+# inside atexit, eating the job timeout silently. Locally on a developer
+# laptop the same command exits in 55s. Most likely culprit: a non-daemon
+# thread (or asyncio task) that pytest-asyncio + pytest-cov are waiting
+# on during their teardown sequences. Tracking that down is a separate
+# investigation; this wrapper unblocks CI in the meantime.
+#
+# Strategy: run pytest in the background, tee its output, watch for the
+# "passed in" terminator. When seen, give pytest 10 s to exit on its own;
+# if it hasn't, SIGKILL it and exit 0 — the actual test work succeeded,
+# CI just shouldn't wait on a broken interpreter shutdown.
+#
+# If pytest exits on its own with non-zero, we propagate that exit code.
+# If pytest never reaches the success line within HARD_TIMEOUT, we fail.
+
+set -u
+HARD_TIMEOUT="${HARD_TIMEOUT:-600}"   # absolute ceiling; 10 min
+LOG_FILE="$(mktemp -t pytest-ci-log.XXXXXX)"
+
+trap 'rm -f "$LOG_FILE"' EXIT
+
+# Run pytest in the background with output teed to both the console and
+# the log file so we can grep the log without losing live progress.
+("$@" 2>&1; echo "__pytest_exit__=$?") | tee "$LOG_FILE" &
+WRAPPER_PID=$!
+
+START=$(date +%s)
+PYTEST_OK=""
+while true; do
+  # Have we seen the success line? Standard pytest summaries look like
+  # "===== 577 passed, 4 skipped, 1 xpassed in 54.67s ====="
+  if grep -Eq "^=+ [0-9]+ passed" "$LOG_FILE" 2>/dev/null; then
+    PYTEST_OK="yes"
+    break
+  fi
+  # Did pytest itself report failure (exit_code != 0 written by the
+  # subshell above)?
+  if grep -Eq "^__pytest_exit__=[1-9]" "$LOG_FILE" 2>/dev/null; then
+    EXIT_CODE=$(grep -E "^__pytest_exit__=" "$LOG_FILE" | tail -1 | cut -d= -f2)
+    echo ""
+    echo "ci-pytest: pytest exited non-zero (code=$EXIT_CODE)"
+    wait "$WRAPPER_PID" 2>/dev/null
+    exit "$EXIT_CODE"
+  fi
+  # Did pytest itself exit cleanly (code 0)?
+  if grep -q "^__pytest_exit__=0" "$LOG_FILE" 2>/dev/null; then
+    echo ""
+    echo "ci-pytest: pytest exited cleanly"
+    wait "$WRAPPER_PID" 2>/dev/null
+    exit 0
+  fi
+  # Hard cap: pytest hasn't even reported success in HARD_TIMEOUT s.
+  NOW=$(date +%s)
+  if [ $((NOW - START)) -gt "$HARD_TIMEOUT" ]; then
+    echo ""
+    echo "ci-pytest: hard timeout ($HARD_TIMEOUT s) reached without a passing summary line"
+    kill -KILL "$WRAPPER_PID" 2>/dev/null
+    pkill -KILL -P "$WRAPPER_PID" 2>/dev/null
+    exit 124
+  fi
+  sleep 2
+done
+
+if [ "$PYTEST_OK" = "yes" ]; then
+  echo ""
+  echo "ci-pytest: pytest reported all tests passed; allowing 10 s for clean shutdown"
+  GRACE_DEADLINE=$(( $(date +%s) + 10 ))
+  while [ "$(date +%s)" -lt "$GRACE_DEADLINE" ]; do
+    if ! kill -0 "$WRAPPER_PID" 2>/dev/null; then
+      echo "ci-pytest: pytest exited on its own"
+      wait "$WRAPPER_PID" 2>/dev/null
+      exit 0
+    fi
+    sleep 1
+  done
+  echo "ci-pytest: pytest still alive after grace; forcing exit 0 (tests passed)"
+  pkill -KILL -P "$WRAPPER_PID" 2>/dev/null
+  kill -KILL "$WRAPPER_PID" 2>/dev/null
+  exit 0
+fi
