@@ -239,8 +239,12 @@ def test_turn_cap_end_frame(fake_ollama):
         )
         client.send_sync("tc-bridge", cap_hit.encode(), msg_type="CONV")
 
+        # 10s, not 3s: CI runners under load need more headroom than a dev
+        # laptop for a full CONV round-trip (client encrypt → bridge decrypt
+        # → handler → bridge encrypt → client decrypt). Matches the 15s we
+        # use elsewhere for cross-agent operations.
         assert wait_for(lambda: got_end and got_end[0].kind == "end",
-                        timeout=3.0), f"no end frame: {got_end!r}"
+                        timeout=10.0), f"no end frame: {got_end!r}"
         assert got_end[0].end_reason == END_TURN_LIMIT
         assert call_count["n"] == 0, "model was called despite turn cap"
     finally:
