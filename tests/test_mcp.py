@@ -202,3 +202,246 @@ class TestJSONRPCLoop:
         ])
         assert len(responses) == 1  # only the ping got a reply
         assert responses[0]["id"] == 5
+
+
+# ---------------------------------------------------------------------------
+# M1 / OpenClaw bridge tools
+# ---------------------------------------------------------------------------
+
+from ironmesh.capabilities import CapabilityRegistry  # noqa: E402
+
+
+def _attach_registry(daemon):
+    """Daemon doesn't instantiate _capabilities until _start(); inject one
+    so the new MCP tools have something to talk to in unit tests."""
+    daemon._capabilities = CapabilityRegistry(my_node_id=daemon.node_id)
+    return daemon._capabilities
+
+
+def _add_peer(daemon, node_id, name, online=True, caps=None):
+    ps = PeerState(node_id=node_id, address="10.0.0.1:8765")
+    ps.agent_name = name
+    if online:
+        ps.transition(PeerState.Status.ONLINE)
+    daemon.peers[node_id] = ps
+    if caps and getattr(daemon, "_capabilities", None) is not None:
+        daemon._capabilities.learn_remote(node_id, caps)
+    return ps
+
+
+class TestDiscoverCapabilities:
+    def test_glob_matches_remote_caps(self, daemon, loop):
+        _attach_registry(daemon)
+        _add_peer(daemon, "a" * 32, "kingpi", caps=["llm:llama3", "role:assistant"])
+        _add_peer(daemon, "b" * 32, "gatekeeper", caps=["llm:hermes3", "tool:fs"])
+        mcp = IronMeshMCP(daemon, loop)
+        rows = mcp.tool_discover_capabilities({"pattern": "llm:*"})
+        caps = sorted(r["capability"] for r in rows)
+        assert caps == ["llm:hermes3", "llm:llama3"]
+        # Names propagate
+        assert {r["agent_name"] for r in rows} == {"kingpi", "gatekeeper"}
+
+    def test_empty_when_registry_empty(self, daemon, loop):
+        _attach_registry(daemon)
+        mcp = IronMeshMCP(daemon, loop)
+        assert mcp.tool_discover_capabilities({"pattern": "*"}) == []
+
+    def test_default_pattern_returns_everything(self, daemon, loop):
+        _attach_registry(daemon)
+        _add_peer(daemon, "c" * 32, "x", caps=["a", "b"])
+        mcp = IronMeshMCP(daemon, loop)
+        rows = mcp.tool_discover_capabilities({})
+        assert len(rows) == 2
+
+    def test_no_registry_does_not_crash(self, daemon, loop):
+        # Pre-_start daemons have no _capabilities — must not raise.
+        daemon._capabilities = None
+        mcp = IronMeshMCP(daemon, loop)
+        assert mcp.tool_discover_capabilities({"pattern": "*"}) == []
+
+
+class TestGetPeerCapabilities:
+    def test_known_peer_by_name(self, daemon, loop):
+        _attach_registry(daemon)
+        _add_peer(daemon, "d" * 32, "kingpi", caps=["llm:llama3", "role:assistant"])
+        mcp = IronMeshMCP(daemon, loop)
+        out = mcp.tool_get_peer_capabilities({"target": "kingpi"})
+        assert out["node_id"] == "d" * 32
+        assert out["capabilities"] == ["llm:llama3", "role:assistant"]
+
+    def test_known_peer_by_node_id(self, daemon, loop):
+        _attach_registry(daemon)
+        _add_peer(daemon, "e" * 32, "x", caps=["cap1"])
+        mcp = IronMeshMCP(daemon, loop)
+        out = mcp.tool_get_peer_capabilities({"target": "e" * 32})
+        assert out["capabilities"] == ["cap1"]
+
+    def test_unknown_peer(self, daemon, loop):
+        _attach_registry(daemon)
+        mcp = IronMeshMCP(daemon, loop)
+        out = mcp.tool_get_peer_capabilities({"target": "ghost"})
+        assert "error" in out
+
+    def test_missing_target(self, daemon, loop):
+        mcp = IronMeshMCP(daemon, loop)
+        assert "error" in mcp.tool_get_peer_capabilities({})
+
+
+class TestRequestService:
+    def test_unknown_peer(self, daemon, loop):
+        mcp = IronMeshMCP(daemon, loop)
+        out = mcp.tool_request_service({"target": "ghost", "prompt": "hi"})
+        assert "error" in out
+
+    def test_offline_peer(self, daemon, loop):
+        _add_peer(daemon, "f" * 32, "kingpi", online=False)
+        mcp = IronMeshMCP(daemon, loop)
+        out = mcp.tool_request_service({"target": "kingpi", "prompt": "hi"})
+        assert "error" in out and "online" in out["error"]
+
+    def test_missing_prompt(self, daemon, loop):
+        mcp = IronMeshMCP(daemon, loop)
+        out = mcp.tool_request_service({"target": "x"})
+        assert "error" in out
+
+    def test_correlation_id_routes_response(self, daemon, loop, monkeypatch):
+        """End-to-end: send_message returns; bus event with matching cid
+        wakes the waiter and the body is returned."""
+        _add_peer(daemon, "g" * 32, "kingpi")
+        mcp = IronMeshMCP(daemon, loop)
+
+        captured = {}
+        async def fake_send(node_id, msg_type, payload, priority):
+            captured["payload"] = payload
+            envelope = json.loads(payload.decode())
+            # Simulate the peer replying through the bus on a different thread
+            def _reply():
+                time.sleep(0.05)
+                daemon.bus.publish("MSG", {
+                    "peer_id": node_id,
+                    "msg_id": "reply-1",
+                    "payload": json.dumps({
+                        "correlation_id": envelope["correlation_id"],
+                        "body": "pong",
+                    }).encode("utf-8"),
+                })
+            threading.Thread(target=_reply, daemon=True).start()
+            return "msg-id-1"
+        monkeypatch.setattr(daemon, "send_message", fake_send)
+
+        out = mcp.tool_request_service({"target": "kingpi", "prompt": "ping",
+                                         "timeout": 5})
+        assert out.get("ok") is True
+        assert out["response"] == "pong"
+
+    def test_timeout_returns_timeout_marker(self, daemon, loop, monkeypatch):
+        _add_peer(daemon, "h" * 32, "kingpi")
+        mcp = IronMeshMCP(daemon, loop)
+        async def fake_send(*a, **k):
+            return "msg-id-2"
+        monkeypatch.setattr(daemon, "send_message", fake_send)
+        out = mcp.tool_request_service({"target": "kingpi", "prompt": "x",
+                                         "timeout": 0.2})
+        assert out.get("timeout") is True
+
+
+class TestBroadcast:
+    def test_skips_offline_and_self(self, daemon, loop, monkeypatch):
+        _add_peer(daemon, "i" * 32, "online_a")
+        _add_peer(daemon, "j" * 32, "online_b")
+        _add_peer(daemon, "k" * 32, "off", online=False)
+        # Self
+        _add_peer(daemon, daemon.node_id, "me")
+
+        sent = []
+        async def fake_send(node_id, *a, **k):
+            sent.append(node_id)
+            return f"mid-{node_id[:4]}"
+        monkeypatch.setattr(daemon, "send_message", fake_send)
+
+        mcp = IronMeshMCP(daemon, loop)
+        out = mcp.tool_broadcast({"payload": "hello"})
+        assert sorted(out["sent_to"]) == sorted(["i" * 32, "j" * 32])
+        assert out["count"] == 2
+        assert out["failed"] == []
+
+    def test_records_failures(self, daemon, loop, monkeypatch):
+        _add_peer(daemon, "l" * 32, "p")
+        async def fake_send(*a, **k):
+            raise RuntimeError("boom")
+        monkeypatch.setattr(daemon, "send_message", fake_send)
+        mcp = IronMeshMCP(daemon, loop)
+        out = mcp.tool_broadcast({"payload": "x"})
+        assert out["sent_to"] == []
+        assert out["failed"] and out["failed"][0]["error"] == "boom"
+
+    def test_missing_payload(self, daemon, loop):
+        mcp = IronMeshMCP(daemon, loop)
+        assert "error" in mcp.tool_broadcast({})
+
+
+class TestSubscribeEvents:
+    def test_cursor_advances(self, daemon, loop):
+        mcp = IronMeshMCP(daemon, loop)
+        # No events yet
+        out0 = mcp.tool_subscribe_events({})
+        assert out0["events"] == []
+        assert out0["next_cursor"] == 0
+
+        # Synthesize a couple bus events
+        daemon.bus.publish("MSG", {"peer_id": "pa", "msg_id": "m1", "payload": b"x"})
+        daemon.bus.publish("MSG", {"peer_id": "pb", "msg_id": "m2", "payload": b"y"})
+        out1 = mcp.tool_subscribe_events({})
+        assert len(out1["events"]) == 2
+        cursor = out1["next_cursor"]
+        # Subsequent poll with that cursor returns nothing
+        out2 = mcp.tool_subscribe_events({"cursor": cursor})
+        assert out2["events"] == []
+        # New event after cursor shows up
+        daemon.bus.publish("MSG", {"peer_id": "pc", "msg_id": "m3", "payload": b"z"})
+        out3 = mcp.tool_subscribe_events({"cursor": cursor})
+        assert len(out3["events"]) == 1
+
+    def test_buffer_evicts_oldest(self, daemon, loop):
+        mcp = IronMeshMCP(daemon, loop, event_buffer_size=5)
+        for i in range(10):
+            daemon.bus.publish("MSG", {"peer_id": f"p{i}", "msg_id": f"m{i}", "payload": b""})
+        out = mcp.tool_subscribe_events({"limit": 100})
+        assert len(out["events"]) == 5
+        # Oldest seq retained should be 6 (we pushed 10, kept the last 5)
+        seqs = [e["seq"] for e in out["events"]]
+        assert seqs == [6, 7, 8, 9, 10]
+
+    def test_kinds_filter(self, daemon, loop):
+        mcp = IronMeshMCP(daemon, loop)
+        daemon.bus.publish("MSG", {"peer_id": "p", "msg_id": "m", "payload": b""})
+        daemon.bus.publish("PING", {"peer_id": "p", "msg_id": "n", "payload": b""})
+        out = mcp.tool_subscribe_events({"kinds": ["msg:MSG"]})
+        kinds = {e["kind"] for e in out["events"]}
+        assert kinds == {"msg:MSG"}
+
+    def test_correlation_id_response_does_not_fail_parsing(self, daemon, loop):
+        """The bus listener decodes JSON envelopes for correlation routing.
+        Plain-bytes payloads must not crash that path."""
+        mcp = IronMeshMCP(daemon, loop)  # noqa: F841
+        # Non-JSON, non-decodable bytes
+        daemon.bus.publish("MSG", {"peer_id": "p", "msg_id": "m",
+                                    "payload": b"\xff\xfe\x00\x01"})
+        # Plain text that's not JSON
+        daemon.bus.publish("MSG", {"peer_id": "p", "msg_id": "m2",
+                                    "payload": b"hello"})
+        # Should still record both as events (no exception)
+        out = mcp.tool_subscribe_events({})
+        assert len(out["events"]) == 2
+
+
+class TestNewToolSpecs:
+    def test_new_tools_registered(self):
+        names = {s["name"] for s in TOOL_SPECS}
+        for n in ("ironmesh_discover_capabilities", "ironmesh_get_peer_capabilities",
+                  "ironmesh_request_service", "ironmesh_broadcast",
+                  "ironmesh_subscribe_events"):
+            assert n in names, f"{n} missing from TOOL_SPECS"
+
+    def test_total_tool_count_is_thirteen(self):
+        assert len(TOOL_SPECS) == 13

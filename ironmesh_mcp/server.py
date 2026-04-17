@@ -5,14 +5,19 @@ Protocol: Model Context Protocol (stdio transport by default).
 Client: any MCP host (Claude Desktop, Claude Code, VS Code MCP).
 
 Tools exposed:
-    ironmesh_list_peers         — enumerate connected + known peers with live metrics
-    ironmesh_send_message       — send a MSG to a named peer (by agent name or node_id)
-    ironmesh_get_mesh_stats     — full /api/mesh_stats snapshot (lifetime, bytes, retries)
-    ironmesh_list_messages      — query the local message store, optionally filtered by peer
-    ironmesh_get_audit_log      — read the tamper-evident audit log tail
-    ironmesh_get_peer_stats     — drill into one peer's latency/retries/rekey history
-    ironmesh_trust_list         — list pinned and revoked peers
-    ironmesh_revoke_peer        — revoke a peer (requires confirm parameter)
+    ironmesh_list_peers              — enumerate connected + known peers with live metrics
+    ironmesh_send_message            — send a MSG to a named peer (by agent name or node_id)
+    ironmesh_get_mesh_stats          — full /api/mesh_stats snapshot (lifetime, bytes, retries)
+    ironmesh_list_messages           — query the local message store, optionally filtered by peer
+    ironmesh_get_audit_log           — read the tamper-evident audit log tail
+    ironmesh_get_peer_stats          — drill into one peer's latency/retries/rekey history
+    ironmesh_trust_list              — list pinned and revoked peers
+    ironmesh_revoke_peer             — revoke a peer (requires confirm parameter)
+    ironmesh_discover_capabilities   — glob-match capabilities advertised across the mesh
+    ironmesh_get_peer_capabilities   — query one peer's advertised capability set
+    ironmesh_request_service         — REQ/RESP to a peer with correlation-id + timeout
+    ironmesh_broadcast               — send a message to all online peers
+    ironmesh_subscribe_events        — poll-based event queue with cursor
 
 Transport: spawns a local ``ironmesh run`` daemon if one isn't already running,
 then attaches as a read/write client via the IronMesh programmatic API. The
@@ -42,12 +47,14 @@ local-first mesh without wrapping the IronMesh CLI or parsing its JSON logs.
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import os
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -91,12 +98,129 @@ def _write_frame(stream, obj: dict) -> None:
 # --------------------------------------------------------------------------
 
 
+_EVENT_BUFFER_DEFAULT = 500
+_REQUEST_SERVICE_DEFAULT_TIMEOUT = 30.0
+
+
 class IronMeshMCP:
     """The MCP server state machine + tool implementations."""
 
-    def __init__(self, daemon: BridgeDaemon, loop: asyncio.AbstractEventLoop):
+    def __init__(self, daemon: BridgeDaemon, loop: asyncio.AbstractEventLoop,
+                 event_buffer_size: int = _EVENT_BUFFER_DEFAULT):
         self.daemon = daemon
         self.loop = loop
+
+        # Ring buffer for ironmesh_subscribe_events (M1, OpenClaw integration)
+        # Each entry: {"seq": int, "ts": float, "kind": str, "data": dict}
+        # Sequence is monotonic across the buffer's lifetime (cursor stable
+        # even after eviction — clients pick up from where they left off).
+        self._events: collections.deque = collections.deque(maxlen=event_buffer_size)
+        self._event_seq: int = 0
+        self._event_lock = threading.Lock()
+
+        # Correlation-id table for ironmesh_request_service (D5 in plan):
+        # in-flight UUID -> threading.Event + slot for response payload.
+        # We can't use asyncio.Future safely from the bus thread without
+        # going through call_soon_threadsafe, so a thread-Event is simpler
+        # and the MCP handler thread is the one that .wait()s anyway.
+        self._pending: dict = {}
+        self._pending_lock = threading.Lock()
+
+        self._wire_bus_hooks()
+
+    # --- wiring -------------------------------------------------------------
+
+    def _wire_bus_hooks(self) -> None:
+        """Subscribe to daemon bus + lifecycle hooks. Idempotent enough —
+        if the daemon is recreated under us, the new MCP instance wires fresh."""
+        try:
+            self.daemon.bus.on_any(self._on_bus_event)
+        except Exception:
+            log.warning("MCP could not attach to bus (daemon not started?)", exc_info=True)
+        # Peer lifecycle — register with hook manager if available
+        hooks = getattr(self.daemon, "_hooks", None)
+        if hooks is not None:
+            async def _on_connect(ctx):
+                self._record_event("peer_connected", {
+                    "peer_id": ctx.get("peer_id", ""),
+                })
+            async def _on_disconnect(ctx):
+                self._record_event("peer_disconnected", {
+                    "peer_id": ctx.get("peer_id", ""),
+                })
+            try:
+                hooks.register("on_peer_connect", _on_connect)
+                hooks.register("on_peer_disconnect", _on_disconnect)
+            except Exception:
+                log.debug("hook registration failed", exc_info=True)
+
+    def _on_bus_event(self, event_type: str, data) -> None:
+        """Catch-all listener: record into ring buffer, route correlation
+        responses back to ironmesh_request_service waiters."""
+        try:
+            from collections.abc import Mapping
+            payload_bytes = data.get("payload", b"") if isinstance(data, Mapping) else b""
+            peer_id = data.get("peer_id", "") if isinstance(data, Mapping) else ""
+
+            self._record_event(f"msg:{event_type}", {
+                "peer_id": peer_id,
+                "msg_id": data.get("msg_id", "") if isinstance(data, Mapping) else "",
+                "size": len(payload_bytes) if isinstance(payload_bytes, (bytes, str)) else 0,
+            })
+
+            # Try to decode JSON envelope for correlation_id matching.
+            if event_type == "MSG" and payload_bytes:
+                if isinstance(payload_bytes, bytes):
+                    try:
+                        text = payload_bytes.decode("utf-8")
+                    except UnicodeDecodeError:
+                        return
+                else:
+                    text = str(payload_bytes)
+                if not text or text[0] != "{":
+                    return
+                try:
+                    obj = json.loads(text)
+                except (json.JSONDecodeError, ValueError):
+                    return
+                cid = obj.get("correlation_id") if isinstance(obj, dict) else None
+                if not cid:
+                    return
+                with self._pending_lock:
+                    slot = self._pending.get(cid)
+                if slot is not None:
+                    slot["response"] = obj.get("body", obj)
+                    slot["from"] = peer_id
+                    slot["event"].set()
+        except Exception:
+            log.exception("MCP bus listener error")
+
+    def _record_event(self, kind: str, data: dict) -> None:
+        with self._event_lock:
+            self._event_seq += 1
+            self._events.append({
+                "seq": self._event_seq,
+                "ts": time.time(),
+                "kind": kind,
+                "data": data,
+            })
+
+    # --- helpers ------------------------------------------------------------
+
+    def _resolve_target(self, target: str) -> Optional[str]:
+        """Translate an agent name OR a 32-hex node_id into a node_id, or
+        None if it doesn't match any known peer. The daemon's own node_id
+        (sometimes useful for capability lookups) is also matched."""
+        if not target:
+            return None
+        if len(target) == 32 and all(c in "0123456789abcdef" for c in target):
+            return target
+        if getattr(self.daemon, "node_id", None) == target:
+            return target
+        for pid, p in self.daemon.peers.items():
+            if getattr(p, "agent_name", None) == target:
+                return pid
+        return None
 
     # --- tool: list_peers ---------------------------------------------------
 
@@ -292,6 +416,189 @@ class IronMeshMCP:
         except Exception as e:
             return {"error": f"revoke failed: {e}"}
 
+    # --- M1 / OpenClaw bridge tools ----------------------------------------
+
+    # tool: discover_capabilities
+    def tool_discover_capabilities(self, args: dict) -> list[dict]:
+        """Glob-match capabilities advertised across the mesh.
+
+        Args:
+            pattern: fnmatch glob, e.g. ``llm:*``, ``role:assistant``, ``*``
+        Returns: list of {node_id, agent_name, capability}.
+        """
+        pattern = args.get("pattern", "*")
+        try:
+            pairs = self.daemon.find_capability(pattern) or []
+        except Exception as e:
+            return [{"error": f"discovery failed: {e}"}]
+        out = []
+        for node_id, capability in pairs:
+            name = None
+            peer = self.daemon.peers.get(node_id)
+            if peer is not None:
+                name = getattr(peer, "agent_name", None)
+            elif node_id == getattr(self.daemon, "node_id", None):
+                name = getattr(self.daemon, "name", None)
+            out.append({
+                "node_id": node_id,
+                "agent_name": name,
+                "capability": capability,
+            })
+        return out
+
+    # tool: get_peer_capabilities
+    def tool_get_peer_capabilities(self, args: dict) -> dict:
+        """Return one peer's full advertised capability set."""
+        target = args.get("target") or args.get("node_id")
+        if not target:
+            return {"error": "target required (agent name or node_id)"}
+        node_id = self._resolve_target(target)
+        if node_id is None:
+            return {"error": f"unknown peer '{target}'"}
+        registry = getattr(self.daemon, "_capabilities", None)
+        if registry is None:
+            return {"error": "capability registry not available"}
+        try:
+            all_caps = registry.all()
+        except Exception as e:
+            return {"error": f"capability lookup failed: {e}"}
+        return {
+            "node_id": node_id,
+            "capabilities": sorted(all_caps.get(node_id, [])),
+        }
+
+    # tool: request_service
+    def tool_request_service(self, args: dict) -> dict:
+        """Send a prompt to a peer and block for the matching reply (D5).
+
+        Wire pattern: a JSON envelope ``{correlation_id, body}`` is sent as
+        a MSG. The bus listener watches for an inbound MSG carrying the same
+        correlation_id and unblocks this caller.
+        """
+        target = args.get("target")
+        prompt = args.get("prompt", args.get("body", ""))
+        timeout = float(args.get("timeout", _REQUEST_SERVICE_DEFAULT_TIMEOUT))
+        priority = args.get("priority", "NORMAL")
+        if not target:
+            return {"error": "target required"}
+        if not prompt:
+            return {"error": "prompt required"}
+        node_id = self._resolve_target(target)
+        if node_id is None:
+            return {"error": f"unknown peer '{target}'"}
+        peer = self.daemon.peers.get(node_id)
+        if peer is None or not getattr(peer, "is_online", False):
+            return {"error": f"peer {node_id} not online"}
+
+        cid = uuid.uuid4().hex
+        envelope = json.dumps({"correlation_id": cid, "body": prompt}).encode("utf-8")
+
+        slot = {"event": threading.Event(), "response": None, "from": None}
+        with self._pending_lock:
+            self._pending[cid] = slot
+
+        started = time.time()
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                self.daemon.send_message(node_id, "MSG", envelope, priority),
+                self.loop,
+            )
+            try:
+                msg_id = fut.result(timeout=10)
+            except Exception as e:
+                return {"error": f"send failed: {e}"}
+
+            if not slot["event"].wait(timeout=timeout):
+                return {
+                    "timeout": True,
+                    "correlation_id": cid,
+                    "elapsed_ms": int((time.time() - started) * 1000),
+                    "msg_id": msg_id,
+                }
+            return {
+                "ok": True,
+                "response": slot["response"],
+                "from": slot["from"],
+                "correlation_id": cid,
+                "elapsed_ms": int((time.time() - started) * 1000),
+                "msg_id": msg_id,
+            }
+        finally:
+            with self._pending_lock:
+                self._pending.pop(cid, None)
+
+    # tool: broadcast
+    def tool_broadcast(self, args: dict) -> dict:
+        """Send a MSG to every online peer (excluding self).
+
+        Returns: {sent_to: [...], failed: [{node_id, error}, ...]}
+        """
+        payload = args.get("payload", "")
+        priority = args.get("priority", "NORMAL")
+        msg_type = args.get("msg_type", "MSG")
+        if not payload:
+            return {"error": "payload required"}
+        payload_bytes = payload.encode("utf-8") if isinstance(payload, str) else bytes(payload)
+
+        sent_to: list[str] = []
+        failed: list[dict] = []
+        own = getattr(self.daemon, "node_id", None)
+        for pid, peer in list(self.daemon.peers.items()):
+            if pid == own:
+                continue
+            if not getattr(peer, "is_online", False):
+                continue
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self.daemon.send_message(pid, msg_type, payload_bytes, priority),
+                    self.loop,
+                )
+                fut.result(timeout=10)
+                sent_to.append(pid)
+            except Exception as e:
+                failed.append({"node_id": pid, "error": str(e)})
+        return {"sent_to": sent_to, "failed": failed, "count": len(sent_to)}
+
+    # tool: subscribe_events
+    def tool_subscribe_events(self, args: dict) -> dict:
+        """Cursor-based event poll (replaces the streaming subscribe pattern
+        that doesn't fit MCP's request/response model).
+
+        Args:
+            cursor: integer sequence to read after; omit for from-the-top
+            limit: max events to return (default 50)
+            kinds: optional list of event-kind prefixes to filter on
+                   (e.g. ["peer_connected", "msg:MSG"])
+        """
+        try:
+            cursor = int(args.get("cursor") or 0)
+        except (TypeError, ValueError):
+            return {"error": "cursor must be an integer"}
+        limit = int(args.get("limit") or 50)
+        kinds = args.get("kinds")
+        if kinds and not isinstance(kinds, list):
+            return {"error": "kinds must be a list of strings"}
+
+        with self._event_lock:
+            snapshot = list(self._events)
+            high = self._event_seq
+        events: list[dict] = []
+        for ev in snapshot:
+            if ev["seq"] <= cursor:
+                continue
+            if kinds and not any(ev["kind"].startswith(k) for k in kinds):
+                continue
+            events.append(ev)
+            if len(events) >= limit:
+                break
+        next_cursor = events[-1]["seq"] if events else cursor
+        return {
+            "events": events,
+            "next_cursor": next_cursor,
+            "high_water_mark": high,
+            "buffer_size": len(snapshot),
+        }
+
 
 # --------------------------------------------------------------------------
 # Tool registry — MCP "tools/list" + "tools/call" routing
@@ -366,6 +673,68 @@ TOOL_SPECS = [
                 "confirm": {"type": "boolean", "default": False},
             },
             "required": ["peer"],
+        },
+    },
+    {
+        "name": "ironmesh_discover_capabilities",
+        "description": "Glob-match capabilities advertised across the mesh. Use 'llm:*' to find LLM peers, 'role:assistant' for personas, '*' for everything.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "default": "*",
+                            "description": "fnmatch glob pattern (e.g. 'llm:*', 'tool:filesystem')"},
+            },
+        },
+    },
+    {
+        "name": "ironmesh_get_peer_capabilities",
+        "description": "Return the full advertised capability set for one peer (by agent name or 32-hex node_id).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "agent name or 32-hex node_id"},
+            },
+            "required": ["target"],
+        },
+    },
+    {
+        "name": "ironmesh_request_service",
+        "description": "Send a prompt to a peer and block for the matching reply. Implements REQ/RESP via correlation-id over MSG (timeout returns {timeout: true}).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "agent name or 32-hex node_id"},
+                "prompt": {"type": "string", "description": "request body"},
+                "timeout": {"type": "number", "default": 30, "description": "seconds to wait for response"},
+                "priority": {"type": "string", "enum": ["CRITICAL", "HIGH", "NORMAL", "LOW"], "default": "NORMAL"},
+            },
+            "required": ["target", "prompt"],
+        },
+    },
+    {
+        "name": "ironmesh_broadcast",
+        "description": "Send a MSG to every online peer (excluding self). Returns sent_to + failed lists.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "payload": {"type": "string"},
+                "priority": {"type": "string", "enum": ["CRITICAL", "HIGH", "NORMAL", "LOW"], "default": "NORMAL"},
+                "msg_type": {"type": "string", "default": "MSG"},
+            },
+            "required": ["payload"],
+        },
+    },
+    {
+        "name": "ironmesh_subscribe_events",
+        "description": "Cursor-based event poll: peer connects/disconnects + message arrivals. Keep the next_cursor and pass it back next call.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cursor": {"type": "integer", "default": 0},
+                "limit": {"type": "integer", "default": 50},
+                "kinds": {"type": "array", "items": {"type": "string"},
+                          "description": "optional event-kind prefixes to filter on"},
+            },
         },
     },
 ]
