@@ -269,9 +269,19 @@ agent = create_mesh_crew_agent(role="Coordinator", goal="...", llm=my_llm,
 from ironmesh.adapters.autogen_adapter import register_ironmesh
 register_ironmesh(my_agent, my_autogen_assistant)
 
-# MCP (Claude Desktop / Claude Code) — see ironmesh_mcp/
+# MCP (Claude Desktop / Claude Code / OpenClaw) — see ironmesh_mcp/
 ironmesh-mcp --passphrase-file ~/.ironmesh/passphrase
 ```
+
+### OpenClaw bridge (NEW in v0.9.0)
+
+OpenClaw agents can use IronMesh as a discovery + transport layer through
+the bundled MCP server. After registering `python -m ironmesh_mcp` as an
+MCP server in `~/.openclaw/openclaw.json`, your agent gets 13 mesh tools —
+discover capabilities, request services from peers, broadcast, subscribe
+to events. Drop the snippet at `examples/openclaw/soul_mesh_snippet.md`
+into the agent's `SOUL.md` so it knows when to reach for them. Full setup
+walkthrough: [`docs/OPENCLAW_MCP_SETUP.md`](docs/OPENCLAW_MCP_SETUP.md).
 
 ### Multi-mesh federation
 

@@ -1,0 +1,14 @@
+{
+  "_comment": "Drop this into ~/.openclaw/openclaw.json under mcp.servers (or merge into your existing servers map). Replace IRONMESH_PASSPHRASE with your mesh passphrase or use passphrase-file.",
+  "mcp": {
+    "servers": {
+      "ironmesh": {
+        "command": "python",
+        "args": ["-m", "ironmesh_mcp"],
+        "env": {
+          "IRONMESH_PASSPHRASE": "${IRONMESH_PASSPHRASE}"
+        }
+      }
+    }
+  }
+}
