@@ -72,22 +72,18 @@ jobs:
       - name: Run tests with coverage
         env:
           PYTHONIOENCODING: utf-8
-        # Single pytest invocation: collects coverage AND enforces the
-        # 60% floor. Locally this completes in ~55 s. Wrapped in `timeout`
-        # because we have observed cases on hosted runners where pytest
-        # finishes the test summary (writing its passing line + coverage
-        # XML) but the Python interpreter then hangs in atexit cleanup
-        # for 18+ minutes — likely a coverage.py / pytest-cov subprocess
-        # combiner waiting on a child that never reports done. The
-        # outer `timeout` guarantees the shell returns a definite exit
-        # code in bounded time; if pytest already finished its work, the
-        # 124 from timeout is benign — but we have not seen this fall
-        # back to that branch since the cap was added. shell: bash so
-        # the timeout binary is available on Windows runners (Git Bash
-        # ships with it).
+        # scripts/ci-pytest.sh runs pytest, watches its stdout for the
+        # passing-summary line, and exits 0 as soon as that line shows
+        # up — even if the Python interpreter then hangs in atexit. We
+        # observed an 18-minute post-success hang on hosted Ubuntu and
+        # Windows runners (likely a non-daemon thread held alive by
+        # pytest-asyncio's auto mode + pytest-cov's combiner). Locally
+        # the same command exits in ~55 s. Tracking the underlying leak
+        # is a separate investigation; the wrapper unblocks CI now.
+        # shell: bash so the wrapper runs uniformly on every runner.
         shell: bash
         run: |
-          timeout 600 pytest tests/ --ignore=tests/integration -v --cov=. --cov-report=term-missing --cov-report=xml --cov-fail-under=60
+          ./scripts/ci-pytest.sh pytest tests/ --ignore=tests/integration -v --cov=. --cov-report=term-missing --cov-report=xml --cov-fail-under=60
 
   integration:
     # Real framework-adapter integration tests. Installs the actual
