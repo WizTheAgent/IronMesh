@@ -72,19 +72,20 @@ jobs:
       - name: Run tests with coverage
         env:
           PYTHONIOENCODING: utf-8
-        run: |
-          pytest tests/ --ignore=tests/integration -v --cov=. --cov-report=term-missing --cov-report=xml
-
-      - name: Check coverage threshold
-        env:
-          PYTHONIOENCODING: utf-8
-        run: |
-          pytest tests/ --ignore=tests/integration --cov=. --cov-fail-under=60 -q
-        # 60% floor — the benchmark harness and example scripts aren't
-        # covered by tests, so 100% is unrealistic. The core bridge/
-        # protocol/store modules sit well above this.
+        # Single pytest invocation that does both: collect coverage *and*
+        # enforce the 60% floor. We previously had two back-to-back pytest
+        # runs (one for the report, one with --cov-fail-under) but the
+        # silent second run could hang for 17+ min on hosted runners
+        # (silent because of -q), eating the 20-min job cap. One run is
+        # cheaper and observable.  60% floor — benchmark harness +
+        # example scripts aren't covered by tests, so 100% is unrealistic;
+        # the core bridge/protocol/store modules sit well above 60%.
         # Integration tests (tests/integration/) run in the dedicated
         # `integration` job below with the real framework deps.
+        run: |
+          pytest tests/ --ignore=tests/integration -v \
+            --cov=. --cov-report=term-missing --cov-report=xml \
+            --cov-fail-under=60
 
   integration:
     # Real framework-adapter integration tests. Installs the actual
