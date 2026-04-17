@@ -33,27 +33,29 @@ WRAPPER_PID=$!
 START=$(date +%s)
 PYTEST_OK=""
 while true; do
-  # Have we seen the success line? Standard pytest summaries look like
-  # "===== 577 passed, 4 skipped, 1 xpassed in 54.67s ====="
-  if grep -Eq "^=+ [0-9]+ passed" "$LOG_FILE" 2>/dev/null; then
+  # Did pytest emit a final summary line? Two shapes to match:
+  #   "===== 577 passed, 4 skipped, 1 xpassed in 54.67s ====="    (all green)
+  #   "===== 1 failed, 598 passed, 4 skipped in 46.80s ====="     (any failure)
+  # Both end with "in N.Ns =====", so anchor on that.
+  SUMMARY_LINE=$(grep -E "^=+ .* in [0-9]+\.[0-9]+s =+$" "$LOG_FILE" 2>/dev/null | tail -1)
+  if [ -n "$SUMMARY_LINE" ]; then
+    if echo "$SUMMARY_LINE" | grep -qE "(failed|error)"; then
+      echo ""
+      echo "ci-pytest: pytest summary reported failures — $SUMMARY_LINE"
+      pkill -KILL -P "$WRAPPER_PID" 2>/dev/null
+      kill -KILL "$WRAPPER_PID" 2>/dev/null
+      exit 1
+    fi
     PYTEST_OK="yes"
     break
   fi
-  # Did pytest itself report failure (exit_code != 0 written by the
-  # subshell above)?
-  if grep -Eq "^__pytest_exit__=[1-9]" "$LOG_FILE" 2>/dev/null; then
+  # Did pytest itself exit (success or failure marker written by subshell)?
+  if grep -Eq "^__pytest_exit__=" "$LOG_FILE" 2>/dev/null; then
     EXIT_CODE=$(grep -E "^__pytest_exit__=" "$LOG_FILE" | tail -1 | cut -d= -f2)
     echo ""
-    echo "ci-pytest: pytest exited non-zero (code=$EXIT_CODE)"
+    echo "ci-pytest: pytest exited (code=$EXIT_CODE)"
     wait "$WRAPPER_PID" 2>/dev/null
     exit "$EXIT_CODE"
-  fi
-  # Did pytest itself exit cleanly (code 0)?
-  if grep -q "^__pytest_exit__=0" "$LOG_FILE" 2>/dev/null; then
-    echo ""
-    echo "ci-pytest: pytest exited cleanly"
-    wait "$WRAPPER_PID" 2>/dev/null
-    exit 0
   fi
   # Hard cap: pytest hasn't even reported success in HARD_TIMEOUT s.
   NOW=$(date +%s)
