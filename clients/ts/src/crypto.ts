@@ -153,21 +153,41 @@ export function secretBoxOpen(key: Uint8Array, box: Uint8Array): Uint8Array {
 }
 
 /**
- * Canonical JSON: keys sorted, no whitespace. Matches Python's
- * `json.dumps(obj, separators=(",", ":"), sort_keys=True)`. Used for
- * the channel-binding-bound HELLO signature.
+ * Canonical JSON: keys sorted, no whitespace, ASCII-only. Matches
+ * Python's `json.dumps(obj, separators=(",", ":"), sort_keys=True)`
+ * — which defaults to `ensure_ascii=True` and escapes every non-ASCII
+ * char as `\uXXXX`. JS `JSON.stringify` outputs raw UTF-8 by default,
+ * so an agent name with `é` or an emoji would produce a different
+ * byte string than Python and the HELLO signature verification would
+ * fail. This wrapper post-processes string output to escape any
+ * codepoint ≥ 0x80 in JSON's standard `\uXXXX` form (surrogate pairs
+ * are preserved as the UTF-16 code units `JSON.stringify` already
+ * produces, matching Python's behavior on the BMP). Used for the
+ * channel-binding-bound HELLO signature.
  *
- * NOTE: only handles flat objects with string/number/boolean/null
- * values. The HELLO body is exactly that shape.
+ * Handles flat objects with string/number/boolean/null values — which
+ * is exactly the HELLO body shape.
  */
 export function canonicalJson(obj: Record<string, unknown>): string {
   const keys = Object.keys(obj).sort();
   const parts: string[] = [];
   for (const k of keys) {
-    const v = obj[k];
-    parts.push(JSON.stringify(k) + ":" + JSON.stringify(v));
+    parts.push(escapeAscii(JSON.stringify(k)) + ":" + escapeAscii(JSON.stringify(obj[k])));
   }
   return "{" + parts.join(",") + "}";
+}
+
+function escapeAscii(s: string): string {
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code < 0x80) {
+      out += s[i];
+    } else {
+      out += "\\u" + code.toString(16).padStart(4, "0");
+    }
+  }
+  return out;
 }
 
 export { randomBytes };

@@ -494,7 +494,7 @@ footer.ops .legal{color:var(--text-faint);font-size:10px;letter-spacing:.5px}
 <!-- HEADER -->
 <header class="chrome">
  <div class="wordmark">IRONMESH</div>
- <span class="version-pill">v0.8.3 · PRE-1.0</span>
+ <span class="version-pill">v0.8.4 · PRE-1.0</span>
  <div class="node-fp" id="node-fp" title="click to copy full fingerprint">— · —</div>
  <div class="mesh-state" id="mesh-state" data-state="ISOLATED">
   <span class="dot"></span>

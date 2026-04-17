@@ -13,13 +13,15 @@ adds mesh awareness without any TypeScript channel-plugin work. Path B
 ## Prerequisites
 
 - OpenClaw 2026.3 or later (`openclaw --version`)
-- IronMesh ≥ 0.9.0 installed (`pip install ironmesh` or `pipx install ironmesh`)
+- IronMesh ≥ 0.8.4 installed (`pip install ironmesh` or `pipx install ironmesh`)
 - Your IronMesh passphrase available (in an env var or a file)
 
-If your daemon is already running on a node, MCP will attach to it. If not,
-the MCP server spins up an embedded daemon in-process — handy for laptop /
-ad-hoc usage but not what you want when there's already a long-lived daemon
-on the host.
+In v0.8.4 the MCP server **always spins up its own embedded `BridgeDaemon`
+in-process** when launched. There is no attach-to-existing-daemon path yet
+(tracked for v0.8.5+). For now: don't run a long-lived `ironmesh run`
+daemon and the MCP server on the same host with the same port — pick one
+or the other, or give MCP its own `--port`. Embedded mode is fine for
+laptop / ad-hoc usage; for a long-lived host daemon, use the regular CLI.
 
 ## 1. Add the MCP server to OpenClaw
 
@@ -81,7 +83,7 @@ The agent should call `ironmesh_discover_capabilities` with `pattern: "llm:*"`.
 ## Tool reference
 
 The `ironmesh` MCP server exposes 13 tools. Eight pre-existing core
-operations and five new bridge tools added in v0.9.0 specifically for
+operations and five new bridge tools added in v0.8.4 specifically for
 agent-to-agent collaboration.
 
 ### Core tools
@@ -97,7 +99,7 @@ agent-to-agent collaboration.
 | `ironmesh_trust_list` | List pinned (TOFU) and revoked peers |
 | `ironmesh_revoke_peer` | Revoke a peer (requires confirm=true) |
 
-### Agent-collaboration tools (new in v0.9.0)
+### Agent-collaboration tools (new in v0.8.4)
 
 | Tool | Purpose |
 |---|---|
@@ -124,7 +126,7 @@ discover them through `ironmesh_discover_capabilities`.
 ## REQ/RESP wire format
 
 `ironmesh_request_service` uses an MSG-with-correlation-id pattern (no new
-MessageType added in 0.9.0). On the wire:
+MessageType added in v0.8.4). On the wire:
 
 ```
 Request payload  (UTF-8 JSON):

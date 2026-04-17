@@ -73,7 +73,12 @@ log = logging.getLogger("ironmesh.mcp")
 # --------------------------------------------------------------------------
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "ironmesh", "version": "0.8.4"}
+# Read version dynamically so SERVER_INFO doesn't lie after the next bump.
+try:
+    from ironmesh import __version__ as _IRONMESH_VERSION
+except Exception:  # pragma: no cover — defensive only
+    _IRONMESH_VERSION = "unknown"
+SERVER_INFO = {"name": "ironmesh", "version": _IRONMESH_VERSION}
 
 
 def _read_frame(stream) -> Optional[dict]:
