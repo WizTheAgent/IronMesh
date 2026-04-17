@@ -9,10 +9,19 @@ on:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    # Cap job runtime so a hung background process (e.g. an orphaned
+    # responder from bench-smoke, or mDNS deadlock on a constrained runner)
+    # can never sit forever. Happy path is ~7 min; 20 gives comfortable
+    # headroom for cold macOS runners.
+    timeout-minutes: 20
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # Run the macOS slice only on pushes to main — GitHub's hosted
+        # macOS runner pool is much smaller than Ubuntu/Windows and four
+        # extra macOS jobs per PR starves the queue for everyone. Release
+        # pushes (which go to main) still get the full 3-OS matrix.
+        os: ${{ fromJSON((github.event_name == 'push' && github.ref == 'refs/heads/main') && '["ubuntu-latest", "windows-latest", "macos-latest"]' || '["ubuntu-latest", "windows-latest"]') }}
       fail-fast: false
 
     steps:
@@ -82,6 +91,9 @@ jobs:
     # in the Windows runners, and the adapters are OS-agnostic.
     runs-on: ubuntu-latest
     needs: test
+    # Step-level timeout-minutes: 10 already caps the pytest run.
+    # Job-level cap is slightly higher to cover install + teardown.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -112,6 +124,10 @@ jobs:
     needs: test
     continue-on-error: true
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Job-level cap kills the background responder process too, not just the
+    # harness step — this is the job that hung for ~6 hours overnight when
+    # only the step had a timeout.
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
