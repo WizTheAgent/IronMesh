@@ -258,7 +258,11 @@ class TestParallelMessaging:
 
             def send_one(i: int) -> None:
                 try:
-                    alice.send_sync("bob-conc", f"msg-{i:04d}".encode())
+                    # Explicit timeout=30 — send_sync defaults to 10 s,
+                    # which is tight on hosted Ubuntu/Windows runners
+                    # under 100-concurrent-send pressure. Python 3.10
+                    # was reliably tripping the default on GH Actions.
+                    alice.send_sync("bob-conc", f"msg-{i:04d}".encode(), timeout=30)
                 except Exception as e:
                     with err_lock:
                         send_errors.append(e)
