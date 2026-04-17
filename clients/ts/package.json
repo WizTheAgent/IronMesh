@@ -1,0 +1,59 @@
+{
+  "name": "@wiztheagent/ironmesh-client",
+  "version": "0.1.0-alpha.1",
+  "description": "TypeScript / Node.js client for the IronMesh agent-to-agent mesh protocol. Connects, handshakes, and exchanges messages with an IronMesh daemon over WebSocket.",
+  "license": "MIT",
+  "author": "WizTheAgent",
+  "homepage": "https://ironmesh.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WizTheAgent/IronMesh",
+    "directory": "clients/ts"
+  },
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "tweetnacl": "^1.0.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.0",
+    "@types/ws": "^8.5.10",
+    "rimraf": "^5.0.5",
+    "typescript": "^5.4.0",
+    "vitest": "^1.5.0"
+  },
+  "keywords": [
+    "ironmesh",
+    "mesh",
+    "agent",
+    "websocket",
+    "ed25519",
+    "ecdh",
+    "p2p",
+    "decentralized"
+  ]
+}
