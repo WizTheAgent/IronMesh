@@ -33,11 +33,17 @@ WRAPPER_PID=$!
 START=$(date +%s)
 PYTEST_OK=""
 while true; do
-  # Did pytest emit a final summary line? Two shapes to match:
-  #   "===== 577 passed, 4 skipped, 1 xpassed in 54.67s ====="    (all green)
-  #   "===== 1 failed, 598 passed, 4 skipped in 46.80s ====="     (any failure)
-  # Both end with "in N.Ns =====", so anchor on that.
-  SUMMARY_LINE=$(grep -E "^=+ .* in [0-9]+\.[0-9]+s =+$" "$LOG_FILE" 2>/dev/null | tail -1)
+  # Did pytest emit a final summary line? Three shapes seen in the wild:
+  #   "===== 577 passed, 4 skipped, 1 xpassed in 54.67s ====="           (<60 s, green)
+  #   "===== 1 failed, 598 passed, 4 skipped in 46.80s ====="            (<60 s, fail)
+  #   "===== 599 passed in 74.52s (0:01:14) ====="                       (≥60 s — pytest
+  #                                                                       appends H:MM:SS)
+  # Anchor on the "in <N>.<N>s" core; tolerate an optional " (h:mm:ss)"
+  # suffix before the trailing "=====" run.
+  SUMMARY_LINE=$(
+    grep -E "^=+ .* in [0-9]+(\.[0-9]+)?s( \([0-9:]+\))? =+$" "$LOG_FILE" 2>/dev/null \
+      | tail -1
+  )
   if [ -n "$SUMMARY_LINE" ]; then
     if echo "$SUMMARY_LINE" | grep -qE "(failed|error)"; then
       echo ""
