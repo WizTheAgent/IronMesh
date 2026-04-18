@@ -160,12 +160,6 @@ Twelve audit-driven fixes (all with regression tests):
 - `npm audit`: 0 vulnerabilities
 - Dependabot alerts: 0 open
 
-## Known limitations
-
-- OpenClaw **Channel Plugin** (Path B of the integration plan) is
-  not in v0.8.4; reserved for v0.9.0. The TS client is the
-  foundation for that work.
-
 ---
 
 _Full changelog:_ [`CHANGELOG.md`](../CHANGELOG.md)
