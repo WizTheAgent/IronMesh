@@ -114,6 +114,32 @@ describe("C2: relayed frame outer-sig", () => {
     expect(errors[0]).toMatch(/AEAD/);
   });
 
+  it("M5: drops a frame whose sequence is 0 with a warning", () => {
+    const messages: { msgType: string }[] = [];
+    const errors: string[] = [];
+    client.on("message", (m) => messages.push({ msgType: m.msgType }));
+    client.on("error", (e) => errors.push(e.message));
+
+    const frame = craftRelayFrame(
+      sessionKey,
+      {
+        type: "MSG",
+        payload: Buffer.from("seq-zero").toString("base64"),
+        msg_id: "x",
+        source: "1".repeat(32),
+        sequence: 0,
+      },
+      handshakePeerIdentity,
+      0n, // <-- the protocol violation
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any)._handleIncoming(frame);
+
+    expect(messages.length).toBe(0);
+    expect(errors.find((e) => /sequence=0/.test(e))).toBeDefined();
+  });
+
   it("dispatches a 1-hop frame (sig matches handshake peer) without warning", async () => {
     const messages: { msgType: string; body: string }[] = [];
     const errors: string[] = [];

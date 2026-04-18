@@ -104,12 +104,19 @@ class TestSendMessage:
 
 
 class TestMeshStats:
-    def test_schema_shape(self, daemon, loop):
-        mcp = IronMeshMCP(daemon, loop)
-        stats = mcp.tool_get_mesh_stats({})
-        for key in ("node_id", "name", "active_peers", "total_peers",
-                    "message_lifetime", "peers"):
-            assert key in stats
+    def test_schema_shape_when_daemon_running(self, daemon, loop):
+        # Force the M1 gate to pass — flip the running flag without
+        # actually opening sockets, then verify the existing snapshot
+        # schema is unchanged.
+        daemon._running = True
+        try:
+            mcp = IronMeshMCP(daemon, loop)
+            stats = mcp.tool_get_mesh_stats({})
+            for key in ("node_id", "name", "active_peers", "total_peers",
+                        "message_lifetime", "peers"):
+                assert key in stats
+        finally:
+            daemon._running = False
 
 
 class TestAuditLog:
@@ -522,6 +529,31 @@ class TestC1PeerDictThreadSafety:
         stop.set()
         m.join(timeout=2)
         assert not errors, f"_resolve_target raised under concurrent mutation: {errors[:3]}"
+
+
+class TestM1MeshStatsRequiresStartedDaemon:
+    def test_get_mesh_stats_errors_on_not_started(self, daemon, loop):
+        # Daemon fixture is non-started by design.
+        mcp = IronMeshMCP(daemon, loop)
+        out = mcp.tool_get_mesh_stats({})
+        assert "error" in out
+        assert "not running" in out["error"]
+
+
+class TestM3SubscribeEventsCursorClamp:
+    def test_cursor_above_high_water_mark_is_clamped(self, daemon, loop):
+        mcp = IronMeshMCP(daemon, loop)
+        # Push a couple events
+        daemon.bus.publish("MSG", {"peer_id": "p", "msg_id": "m1", "payload": b""})
+        daemon.bus.publish("MSG", {"peer_id": "p", "msg_id": "m2", "payload": b""})
+        # high_water_mark is now 2; ask for events past 99999
+        out = mcp.tool_subscribe_events({"cursor": 99_999})
+        assert out["cursor_clamped"] is True
+        assert out["events"] == []
+        # Subsequent poll picks up new events from the high-water mark
+        daemon.bus.publish("MSG", {"peer_id": "p", "msg_id": "m3", "payload": b""})
+        out2 = mcp.tool_subscribe_events({"cursor": out["next_cursor"]})
+        assert len(out2["events"]) == 1
 
 
 class TestH1CorrelationIdPeerKeyed:

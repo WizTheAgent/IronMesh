@@ -56,7 +56,13 @@ export class IronMeshClient {
     Pick<ClientOptions, "url" | "passphrase" | "autoReconnect" | "reconnectInitialDelayMs">
   > &
     Pick<ClientOptions, "name" | "capabilities" | "tofu" | "pinFile">;
-  private listeners: { [E in EventName]?: Set<Listener<E>> } = {};
+  // M7: typed-but-erased internal storage. The mapped-type record at
+  // the public surface (`{ [E in EventName]?: Set<Listener<E>> }`)
+  // can't be assigned-into without a cast because TS can't track the
+  // per-key Listener type through a write. Using `Set<unknown>` as the
+  // storage type and re-narrowing in on/off/_emit retires the
+  // `as Set<Listener<E>> as never` double-cast that read like a hack.
+  private listeners: Partial<Record<EventName, Set<unknown>>> = {};
   private state: InternalState;
   private connecting = false;
   private intentionallyClosed = false;
@@ -239,6 +245,12 @@ export class IronMeshClient {
       source: this.state.hsResult.myNodeId,
       source_display: this.opts.name,
       destination: this.state.hsResult.peerNodeId,
+      // M6: Date.now()/1000 gives ms-precision floats (e.g.
+      // 1729203847.123). Python's time.time() can return higher
+      // precision (μs). Both serialize identically through JSON, and
+      // the daemon's replay-guard windows are seconds-wide, so this
+      // is fine — but if you're comparing timestamps for deduplication
+      // across implementations, expect the TS side to be coarser.
       timestamp: Date.now() / 1000,
       priority: opts.priority ?? "NORMAL",
       sequence: Number(this.state.sequence),
@@ -279,24 +291,23 @@ export class IronMeshClient {
   // ------------------------------------------------------------------
 
   on<E extends EventName>(event: E, listener: Listener<E>): this {
-    let set = this.listeners[event] as Set<Listener<E>> | undefined;
+    let set = this.listeners[event];
     if (!set) {
       set = new Set();
-      this.listeners[event] = set as Set<Listener<E>> as never;
+      this.listeners[event] = set;
     }
-    set.add(listener);
+    set.add(listener as unknown);
     return this;
   }
 
   off<E extends EventName>(event: E, listener: Listener<E>): this {
-    const set = this.listeners[event] as Set<Listener<E>> | undefined;
-    set?.delete(listener);
+    this.listeners[event]?.delete(listener as unknown);
     return this;
   }
 
   /** @internal — public for tests so synthetic events can be injected. */
   _emit<E extends EventName>(event: E, ...args: Parameters<Listener<E>>): void {
-    const set = this.listeners[event] as Set<Listener<E>> | undefined;
+    const set = this.listeners[event];
     if (!set) return;
     for (const l of set) {
       try {
@@ -330,6 +341,18 @@ export class IronMeshClient {
     // Try binary first (preferred wire format)
     if (buf[0] === 0xe7 && buf[1] === 0xf6) {
       const frame = decodeFrame(buf);
+      // M5: drop seq=0 frames. The daemon enforces seq > 0 on inbound
+      // post-handshake messages (bridge.py:2216-2218); a peer that
+      // sends seq=0 is buggy or malicious. The SecretBox AEAD already
+      // rejects ciphertext that doesn't decrypt, but seq=0 lets a
+      // bug-by-construction frame through to the application layer.
+      if (frame.sequence === 0n) {
+        this._emit(
+          "error",
+          new Error("dropped inbound frame with sequence=0"),
+        );
+        return;
+      }
       // Outer signature verification — the daemon signs binary frames
       // with its hop-authentication identity. For 1-hop direct delivery
       // that key is the same as the handshake peer's identity. For
