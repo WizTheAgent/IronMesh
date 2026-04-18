@@ -168,6 +168,40 @@ MessageType in IronMesh v0.10+.
 | `Capability registry not available` | daemon was started before its own capability subsystem was wired in | restart the daemon; this is fixed in 0.8.3+ |
 | Tool call latency >5 s | the embedded daemon is racing to start mDNS in the same process | run `ironmesh run` separately (long-lived) and disable the embedded mode (TODO: future flag) |
 
+## Running alongside an existing IronMesh daemon
+
+A common deployment has a long-lived `ironmesh run` daemon already
+serving the host on port 8765. The MCP server spawns its **own**
+embedded `BridgeDaemon` (it does not attach to a running one), so
+configure it on a non-conflicting port and a distinct agent name to
+avoid two processes claiming the same identity:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "ironmesh-mesh": {
+        "command": "/path/to/python",
+        "args": [
+          "-m", "ironmesh_mcp",
+          "--name", "mcp-<host>",
+          "--port", "8767",
+          "--passphrase-file", "/home/<user>/.ironmesh/passphrase",
+          "--open-discovery"
+        ]
+      }
+    }
+  }
+}
+```
+
+The MCP-spawned daemon and the long-lived daemon will discover each
+other via mDNS (when `--open-discovery` is set on both) and appear as
+two separate peers on the mesh — each with its own identity key. That
+is the right behavior: the MCP server's view of the mesh is what the
+host's MCP tools call against, distinct from the long-lived daemon's
+operator-facing dashboard.
+
 ## Operational notes
 
 - The MCP server is **stdio**-only — it reads JSON-RPC frames from stdin and
