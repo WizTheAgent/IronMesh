@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import concurrent.futures
 import json
 import logging
 import os
@@ -323,6 +324,12 @@ class IronMeshMCP:
     # --- tool: get_mesh_stats -----------------------------------------------
 
     def tool_get_mesh_stats(self, args: dict) -> dict:
+        # M1: error explicitly when the daemon hasn't been started.
+        # _build_mesh_stats() will happily return a partial snapshot
+        # against a fresh BridgeDaemon (no peers, zero counters), which
+        # silently misleads callers into thinking the mesh is empty.
+        if not getattr(self.daemon, "_running", False):
+            return {"error": "daemon not running — start it before querying mesh stats"}
         return self.daemon._build_mesh_stats()
 
     # --- tool: get_peer_stats -----------------------------------------------
@@ -399,7 +406,10 @@ class IronMeshMCP:
         if not log_path or not os.path.exists(log_path):
             return []
         entries = []
-        with open(log_path) as f:
+        # M4: explicit utf-8. The audit writer emits UTF-8 JSONL; on
+        # Windows the platform default (cp1252) corrupts non-ASCII
+        # fields like agent names with diacritics or emoji.
+        with open(log_path, encoding="utf-8") as f:
             lines = f.readlines()[-limit:]
         for line in lines:
             try:
@@ -565,32 +575,52 @@ class IronMeshMCP:
     def tool_broadcast(self, args: dict) -> dict:
         """Send a MSG to every online peer (excluding self).
 
-        Returns: {sent_to: [...], failed: [{node_id, error}, ...]}
+        Returns: {sent_to: [...], failed: [{node_id, error}, ...]}.
         """
         payload = args.get("payload", "")
         priority = args.get("priority", "NORMAL")
         msg_type = args.get("msg_type", "MSG")
+        timeout = float(args.get("timeout", 10.0))
         if not payload:
             return {"error": "payload required"}
         payload_bytes = payload.encode("utf-8") if isinstance(payload, str) else bytes(payload)
 
-        sent_to: list[str] = []
-        failed: list[dict] = []
         own = getattr(self.daemon, "node_id", None)
+        targets: list[str] = []
         for pid, peer in list(self.daemon.peers.items()):
             if pid == own:
                 continue
             if not getattr(peer, "is_online", False):
                 continue
-            try:
-                fut = asyncio.run_coroutine_threadsafe(
-                    self.daemon.send_message(pid, msg_type, payload_bytes, priority),
-                    self.loop,
-                )
-                fut.result(timeout=10)
-                sent_to.append(pid)
-            except Exception as e:
-                failed.append({"node_id": pid, "error": str(e)})
+            targets.append(pid)
+
+        # M2: parallel fan-out via asyncio.gather. The previous
+        # implementation called fut.result(timeout=10) per peer in a
+        # loop — total deadline N×10s in the worst case. With gather,
+        # the slowest peer caps the whole call at ~timeout seconds.
+        async def _fanout() -> tuple[list[str], list[dict]]:
+            tasks = [
+                self.daemon.send_message(pid, msg_type, payload_bytes, priority)
+                for pid in targets
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            ok: list[str] = []
+            errs: list[dict] = []
+            for pid, res in zip(targets, results):
+                if isinstance(res, Exception):
+                    errs.append({"node_id": pid, "error": str(res)})
+                else:
+                    ok.append(pid)
+            return ok, errs
+
+        try:
+            fut = asyncio.run_coroutine_threadsafe(_fanout(), self.loop)
+            sent_to, failed = fut.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            # Some peers may have completed; we don't know which.
+            return {"error": f"broadcast exceeded {timeout}s deadline"}
+        except Exception as e:
+            return {"error": f"broadcast failed: {e}"}
         return {"sent_to": sent_to, "failed": failed, "count": len(sent_to)}
 
     # tool: subscribe_events
@@ -616,6 +646,15 @@ class IronMeshMCP:
         with self._event_lock:
             snapshot = list(self._events)
             high = self._event_seq
+        # M3: clamp cursor > high_water_mark to high_water_mark and warn
+        # via the response. Without this, a client that lost track of
+        # its cursor (or got one from a different MCP session that had
+        # higher counters) stays out of sync forever — `next_cursor`
+        # falls back to `cursor` itself when no events match.
+        clamped = False
+        if cursor > high:
+            cursor = high
+            clamped = True
         events: list[dict] = []
         for ev in snapshot:
             if ev["seq"] <= cursor:
@@ -626,12 +665,15 @@ class IronMeshMCP:
             if len(events) >= limit:
                 break
         next_cursor = events[-1]["seq"] if events else cursor
-        return {
+        result: dict = {
             "events": events,
             "next_cursor": next_cursor,
             "high_water_mark": high,
             "buffer_size": len(snapshot),
         }
+        if clamped:
+            result["cursor_clamped"] = True
+        return result
 
 
 # --------------------------------------------------------------------------
