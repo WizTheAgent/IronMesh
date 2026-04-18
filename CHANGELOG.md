@@ -15,27 +15,40 @@ also ships. No protocol changes — every v0.8.x peer stays on the mesh.
 
 ### Added
 
-- **OpenClaw integration — Path A (MCP bridge).** Five new tools in
+- **OpenClaw integration — Path A (MCP bridge).** Ten new tools in
   `ironmesh_mcp/server.py` make agent-to-agent collaboration first-class
   for any MCP host (OpenClaw, Claude Desktop, Claude Code). The existing
-  8 tools are unchanged; total now 13:
+  8 tools are unchanged; total is now 18 (8 core + 5 collaboration +
+  5 introspection/responder):
   - `ironmesh_discover_capabilities` — fnmatch glob across the mesh
     (`llm:*`, `role:assistant`, etc.)
   - `ironmesh_get_peer_capabilities` — full capability set for one peer
   - `ironmesh_request_service` — REQ/RESP with correlation-id + timeout
     (D5 envelope convention from the integration plan)
   - `ironmesh_broadcast` — send to every online peer, returns
-    `{sent_to, failed}` lists
+    `{sent_to, failed}` lists. Now uses `asyncio.gather` (M2 audit)
+    so one slow peer doesn't serialize the whole call N×10 s
   - `ironmesh_subscribe_events` — cursor-based event poll (peer
-    connect/disconnect + message arrivals)
+    connect/disconnect + message arrivals); cursors past
+    `high_water_mark` are clamped to keep desynced clients alive
+    (M3 audit)
+  - `ironmesh_advertise_capability` / `ironmesh_withdraw_capability` —
+    declare/retract capabilities mid-session without restarting
+  - `ironmesh_get_my_identity` — own `node_id` + name + advertised caps
+  - `ironmesh_pending_requests` — observability into in-flight
+    REQ/RESP correlation slots
+  - `ironmesh_reply_to_request` — first-class responder helper that
+    wraps the correlation-id JSON envelope
   Setup walkthrough: [`docs/OPENCLAW_MCP_SETUP.md`](docs/OPENCLAW_MCP_SETUP.md).
   SOUL.md snippet: [`examples/openclaw/soul_mesh_snippet.md`](examples/openclaw/soul_mesh_snippet.md).
 - **TypeScript client — functional alpha.** `@wiztheagent/ironmesh-client@0.1.0-alpha.2`
   in [`clients/ts/`](clients/ts/) implements the full wire protocol:
   3-stage passphrase + ECDH + signed-HELLO handshake, binary frame v4
   encode/decode, SecretBox + Ed25519 signing, WebSocket client with
-  reconnect. 37 vitest tests including a **live e2e** that spawns a real
-  Python `BridgeDaemon` and exchanges a MSG round-trip (~6 s).
+  reconnect (real exponential backoff + jitter, capped at 30 s).
+  51 vitest tests including a live e2e that spawns a real Python
+  `BridgeDaemon` and exchanges a MSG round-trip (~6 s), plus
+  parallel-send and large-payload (256 KiB) e2e coverage.
 - **WS API gap analysis** at [`docs/OPENCLAW_WS_API_GAPS.md`](docs/OPENCLAW_WS_API_GAPS.md)
   — five-gap audit concluding Path B (channel plugin) is feasible with
   ~120 LOC of new daemon code (under the spike's 200-LOC ceiling).
@@ -63,6 +76,47 @@ also ships. No protocol changes — every v0.8.x peer stays on the mesh.
   pytest invocation handles both report + 60% floor, and the wrapper
   exits 0 the moment a green-summary line appears (10 s grace then
   SIGKILL on the hung interpreter).
+- **MCP server peer-dict thread safety (C1 audit).** Wrapped every
+  `daemon.peers.items()` iteration in `list(...)` so concurrent
+  peer connect/disconnect on the daemon's loop thread can't raise
+  `RuntimeError: dictionary changed size during iteration` against
+  an in-flight MCP tool handler.
+- **TS client no longer drops mesh-relayed binary frames (C2 audit).**
+  Previously the outer Ed25519 verification used the handshake peer's
+  identity key; for relayed frames the outer sig is the relayer's
+  identity, so every relayed frame raised "verification failed" and
+  was dropped. Now treated as a soft warning — frame is dispatched on
+  AEAD authenticity alone (the inner end-to-end source signature,
+  when present, remains the originator's trust anchor).
+- **MCP correlation-id slots are peer-keyed (H1 audit).**
+  `ironmesh_request_service` now records the addressed peer and rejects
+  responses from any other peer that knows the cid, recording the spoof
+  as a `request_service:cross_peer_echo` observability event.
+- **TS client resets `state.sequence` on each `connect()` (H2 audit).**
+  Each session has its own sequence space; carrying a counter across
+  reconnect would tag the first frame of a new `session_key` with a
+  sequence number that has no meaning to the new session.
+- **TS client real exponential backoff with jitter (H3 audit).** Was
+  a fixed 500 ms delay despite types.ts advertising "doubles up to
+  30 s cap." Now `min(initial × 2^attempt, 30000)` ± 20% jitter,
+  reset to 0 on successful connect.
+- **`tool_get_mesh_stats` errors on a non-started daemon (M1).**
+  Was returning a misleading partial snapshot.
+- **`tool_get_audit_log` opens with `encoding="utf-8"` (M4).**
+  Windows cp1252 default would corrupt non-ASCII fields.
+- **TS client drops frames with `sequence == 0` (M5).** Daemon
+  already enforces; this catches buggy/malicious peers at the
+  application layer.
+- **TS `canonicalJson` ASCII-escapes non-BMP chars (audit follow-up).**
+  Matches Python's `json.dumps(ensure_ascii=True)` default; without
+  this, an agent named `Zoë` or carrying an emoji in a HELLO field
+  would fail signature verification.
+- **MCP `SERVER_INFO` reads version dynamically** from
+  `ironmesh.__version__` so future bumps can't leave it stale.
+- **Eleven inline doc / version-bump fixes** caught by the
+  v0.8.4 audit (README, Dockerfile, docker-compose, dashboard pill,
+  OpenClaw setup doc — all 0.8.3 → 0.8.4 references corrected).
+  Full audit report at [`docs/AUDIT_v0.8.4.md`](docs/AUDIT_v0.8.4.md).
 
 ## [0.8.3] — Operator console redesign, capability GUI fix, E2E audit
 
