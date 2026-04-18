@@ -4,20 +4,28 @@
 Protocol: Model Context Protocol (stdio transport by default).
 Client: any MCP host (Claude Desktop, Claude Code, VS Code MCP).
 
-Tools exposed:
-    ironmesh_list_peers              — enumerate connected + known peers with live metrics
-    ironmesh_send_message            — send a MSG to a named peer (by agent name or node_id)
-    ironmesh_get_mesh_stats          — full /api/mesh_stats snapshot (lifetime, bytes, retries)
-    ironmesh_list_messages           — query the local message store, optionally filtered by peer
-    ironmesh_get_audit_log           — read the tamper-evident audit log tail
-    ironmesh_get_peer_stats          — drill into one peer's latency/retries/rekey history
-    ironmesh_trust_list              — list pinned and revoked peers
-    ironmesh_revoke_peer             — revoke a peer (requires confirm parameter)
-    ironmesh_discover_capabilities   — glob-match capabilities advertised across the mesh
-    ironmesh_get_peer_capabilities   — query one peer's advertised capability set
-    ironmesh_request_service         — REQ/RESP to a peer with correlation-id + timeout
-    ironmesh_broadcast               — send a message to all online peers
-    ironmesh_subscribe_events        — poll-based event queue with cursor
+Tools exposed (18 total as of v0.8.4):
+    Core:
+        ironmesh_list_peers              — enumerate connected + known peers with live metrics
+        ironmesh_send_message            — send a MSG to a named peer (by agent name or node_id)
+        ironmesh_get_mesh_stats          — full /api/mesh_stats snapshot (lifetime, bytes, retries)
+        ironmesh_list_messages           — query the local message store, optionally filtered by peer
+        ironmesh_get_audit_log           — read the tamper-evident audit log tail
+        ironmesh_get_peer_stats          — drill into one peer's latency/retries/rekey history
+        ironmesh_trust_list              — list pinned and revoked peers
+        ironmesh_revoke_peer             — revoke a peer (requires confirm parameter)
+    OpenClaw bridge (Path A, v0.8.4):
+        ironmesh_discover_capabilities   — glob-match capabilities advertised across the mesh
+        ironmesh_get_peer_capabilities   — query one peer's advertised capability set
+        ironmesh_request_service         — REQ/RESP to a peer with correlation-id + timeout
+        ironmesh_broadcast               — send a message to all online peers
+        ironmesh_subscribe_events        — poll-based event queue with cursor
+    Audit-expansion (v0.8.4):
+        ironmesh_advertise_capability    — declare a new local capability without restarting
+        ironmesh_withdraw_capability     — stop advertising a local capability
+        ironmesh_get_my_identity         — return own node_id, name, advertised caps
+        ironmesh_pending_requests        — list in-flight REQ/RESP correlation slots
+        ironmesh_reply_to_request        — wrap a correlation-id reply so responders don't build envelopes manually
 
 Transport: spawns a local ``ironmesh run`` daemon if one isn't already running,
 then attaches as a read/write client via the IronMesh programmatic API. The
@@ -675,6 +683,127 @@ class IronMeshMCP:
             result["cursor_clamped"] = True
         return result
 
+    # --- Group 5 / v0.8.4 audit-expansion tools -----------------------------
+
+    # tool: advertise_capability
+    def tool_advertise_capability(self, args: dict) -> dict:
+        """Advertise a capability locally without restarting the daemon.
+
+        Args:
+            capability: short string id, by convention `namespace:name`
+                        (e.g. ``llm:hermes3``, ``role:assistant``,
+                        ``tool:filesystem``).
+        """
+        cap = args.get("capability")
+        if not isinstance(cap, str) or not cap:
+            return {"error": "capability (non-empty string) required"}
+        try:
+            self.daemon.advertise_capability(cap)
+        except Exception as e:
+            return {"error": f"advertise failed: {e}"}
+        registry = getattr(self.daemon, "_capabilities", None)
+        local = registry.local_capabilities() if registry is not None else []
+        return {"ok": True, "capability": cap, "local_capabilities": list(local)}
+
+    # tool: withdraw_capability
+    def tool_withdraw_capability(self, args: dict) -> dict:
+        """Stop advertising a previously-announced local capability."""
+        cap = args.get("capability")
+        if not isinstance(cap, str) or not cap:
+            return {"error": "capability (non-empty string) required"}
+        registry = getattr(self.daemon, "_capabilities", None)
+        if registry is None:
+            return {"error": "capability registry not available"}
+        try:
+            registry.remove_local(cap)
+            try:
+                registry.save()
+            except Exception:
+                pass
+        except Exception as e:
+            return {"error": f"withdraw failed: {e}"}
+        return {
+            "ok": True,
+            "capability": cap,
+            "local_capabilities": list(registry.local_capabilities()),
+        }
+
+    # tool: get_my_identity
+    def tool_get_my_identity(self, args: dict) -> dict:
+        """Return our own node_id, agent name, and advertised capabilities.
+
+        Trivial-but-useful — agents otherwise have no first-class way
+        to inspect their own mesh identity from inside the MCP host.
+        """
+        registry = getattr(self.daemon, "_capabilities", None)
+        local = list(registry.local_capabilities()) if registry is not None else []
+        return {
+            "node_id": getattr(self.daemon, "node_id", None),
+            "name": getattr(self.daemon, "name", None),
+            "capabilities": local,
+            "running": bool(getattr(self.daemon, "_running", False)),
+        }
+
+    # tool: pending_requests
+    def tool_pending_requests(self, args: dict) -> list[dict]:
+        """List in-flight ironmesh_request_service correlation slots.
+
+        Useful for observability — answers "is my agent waiting on
+        anything right now?" without touching internals.
+        """
+        out: list[dict] = []
+        with self._pending_lock:
+            for cid, slot in list(self._pending.items()):
+                out.append({
+                    "correlation_id": cid,
+                    "expected_peer": slot.get("expected_peer"),
+                    "waiting": not slot["event"].is_set(),
+                })
+        return out
+
+    # tool: reply_to_request
+    def tool_reply_to_request(self, args: dict) -> dict:
+        """First-class responder helper — reply to a peer's REQ/RESP request.
+
+        OpenClaw agents that act as responders previously had to
+        manually parse the inbound MSG envelope, extract the
+        correlation_id, build a JSON reply, and send it. This wraps
+        all of that in one call.
+
+        Args:
+            target: peer that sent the original request (agent name
+                    or 32-hex node_id)
+            correlation_id: cid from the inbound request envelope
+            body: response payload (string)
+            priority: optional, default NORMAL
+        """
+        target = args.get("target")
+        cid = args.get("correlation_id")
+        body = args.get("body", "")
+        priority = args.get("priority", "NORMAL")
+        if not target:
+            return {"error": "target required"}
+        if not cid:
+            return {"error": "correlation_id required"}
+        if body is None:
+            return {"error": "body required (use empty string for empty)"}
+        node_id = self._resolve_target(target)
+        if node_id is None:
+            return {"error": f"unknown peer '{target}'"}
+        peer = self.daemon.peers.get(node_id)
+        if peer is None or not getattr(peer, "is_online", False):
+            return {"error": f"peer {node_id} not online"}
+        envelope = json.dumps({"correlation_id": cid, "body": body}).encode("utf-8")
+        fut = asyncio.run_coroutine_threadsafe(
+            self.daemon.send_message(node_id, "MSG", envelope, priority),
+            self.loop,
+        )
+        try:
+            msg_id = fut.result(timeout=10)
+        except Exception as e:
+            return {"error": f"send failed: {e}"}
+        return {"ok": True, "msg_id": msg_id, "correlation_id": cid, "to": node_id}
+
 
 # --------------------------------------------------------------------------
 # Tool registry — MCP "tools/list" + "tools/call" routing
@@ -811,6 +940,52 @@ TOOL_SPECS = [
                 "kinds": {"type": "array", "items": {"type": "string"},
                           "description": "optional event-kind prefixes to filter on"},
             },
+        },
+    },
+    {
+        "name": "ironmesh_advertise_capability",
+        "description": "Advertise a capability locally (no daemon restart required). Use 'namespace:name' convention (e.g. 'llm:hermes3', 'role:assistant').",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "capability": {"type": "string", "description": "namespace:name capability identifier"},
+            },
+            "required": ["capability"],
+        },
+    },
+    {
+        "name": "ironmesh_withdraw_capability",
+        "description": "Stop advertising a previously-announced local capability.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "capability": {"type": "string"},
+            },
+            "required": ["capability"],
+        },
+    },
+    {
+        "name": "ironmesh_get_my_identity",
+        "description": "Return our own node_id, agent name, advertised capabilities, and running state. Useful for self-introspection from inside an MCP host.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "ironmesh_pending_requests",
+        "description": "List in-flight ironmesh_request_service correlation slots — observability into what the agent is currently waiting on.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "ironmesh_reply_to_request",
+        "description": "Reply to a peer's REQ/RESP request — wraps the correlation-id JSON envelope so responders don't have to build it manually.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "the peer that sent the request (agent name or 32-hex node_id)"},
+                "correlation_id": {"type": "string", "description": "correlation_id from the inbound request envelope"},
+                "body": {"type": "string", "description": "response payload"},
+                "priority": {"type": "string", "enum": ["CRITICAL", "HIGH", "NORMAL", "LOW"], "default": "NORMAL"},
+            },
+            "required": ["target", "correlation_id", "body"],
         },
     },
 ]
