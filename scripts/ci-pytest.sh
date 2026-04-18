@@ -45,7 +45,11 @@ while true; do
       | tail -1
   )
   if [ -n "$SUMMARY_LINE" ]; then
-    if echo "$SUMMARY_LINE" | grep -qE "(failed|error)"; then
+    # Word-boundary on `failed` / `error` — otherwise `xfailed`
+    # (pytest's "expected failure" marker, which is a PASS for our
+    # purposes) matches the failure branch and fails CI on a
+    # clean run.
+    if echo "$SUMMARY_LINE" | grep -qE "\b(failed|error)\b"; then
       echo ""
       echo "ci-pytest: pytest summary reported failures — $SUMMARY_LINE"
       pkill -KILL -P "$WRAPPER_PID" 2>/dev/null
