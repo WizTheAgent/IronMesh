@@ -109,6 +109,20 @@ agent-to-agent collaboration.
 | `ironmesh_broadcast` | Send to every online peer (with `sent_to` / `failed` lists) |
 | `ironmesh_subscribe_events` | Cursor-based poll of peer + message events |
 
+### Agent-introspection + responder tools (new in v0.8.4)
+
+These five rounded out the MCP surface based on the v0.8.4 audit of
+what an OpenClaw agent actually needs in practice. Total tool count
+is now 18.
+
+| Tool | Purpose |
+|---|---|
+| `ironmesh_advertise_capability` | Declare a new local capability (`namespace:name`) without restarting the daemon |
+| `ironmesh_withdraw_capability` | Stop advertising a previously-announced local capability |
+| `ironmesh_get_my_identity` | Return our own `node_id`, name, advertised caps, running state — self-introspection |
+| `ironmesh_pending_requests` | List in-flight `ironmesh_request_service` correlation slots — observability |
+| `ironmesh_reply_to_request` | First-class REQ/RESP responder — wraps the correlation-id JSON envelope so the agent doesn't build one manually |
+
 ## Capabilities your agent should advertise
 
 Capabilities are short `namespace:name` strings other agents discover via
