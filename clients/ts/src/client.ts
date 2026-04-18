@@ -316,8 +316,18 @@ export class IronMeshClient {
     // Try binary first (preferred wire format)
     if (buf[0] === 0xe7 && buf[1] === 0xf6) {
       const frame = decodeFrame(buf);
-      // Optional outer signature verification — best effort, the daemon
-      // signs with its identity key which we have from the handshake.
+      // Outer signature verification — the daemon signs binary frames
+      // with its hop-authentication identity. For 1-hop direct delivery
+      // that key is the same as the handshake peer's identity. For
+      // mesh-relayed frames, the outer sig is the relayer's identity,
+      // not the originator's — so verification against
+      // `peerIdentityPublic` will FAIL on every relayed frame even
+      // though the frame is legitimate. (C2 from docs/AUDIT_v0.8.4.md.)
+      //
+      // Treat outer-sig mismatch as a soft warning, not a drop. The
+      // SecretBox AEAD tag below provides authenticity for the
+      // ciphertext; an inner end-to-end source signature (when present)
+      // remains the authoritative trust anchor for the originator.
       if (frame.signature) {
         const ok = verifyDetached(
           this.state.hsResult.peerIdentityPublic,
@@ -327,9 +337,12 @@ export class IronMeshClient {
         if (!ok) {
           this._emit(
             "error",
-            new Error("incoming frame outer signature verification failed"),
+            new Error(
+              "incoming frame outer signature did not match handshake peer's " +
+                "identity — this is expected for mesh-relayed frames; " +
+                "frame is being dispatched on AEAD authenticity alone",
+            ),
           );
-          return;
         }
       }
       const plaintext = secretBoxOpen(this.state.hsResult.sessionKey, frame.encrypted);
