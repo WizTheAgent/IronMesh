@@ -2,7 +2,7 @@
 
 Args (from env):
   PORT                — TCP port to listen on (default 49321)
-  PASSPHRASE          — mesh passphrase (default 'e2e-overnight-passphrase-12345')
+  PASSPHRASE          — mesh passphrase (default 'e2e-test-passphrase-12345')
   NAME                — daemon agent name (default 'e2e-daemon')
 
 Behaviour:
@@ -29,7 +29,7 @@ from ironmesh.bridge import BridgeDaemon  # noqa: E402
 
 def main() -> int:
     port = int(os.environ.get("PORT", "49321"))
-    passphrase = os.environ.get("PASSPHRASE", "e2e-overnight-passphrase-12345")
+    passphrase = os.environ.get("PASSPHRASE", "e2e-test-passphrase-12345")
     name = os.environ.get("NAME", "e2e-daemon")
 
     daemon = BridgeDaemon(

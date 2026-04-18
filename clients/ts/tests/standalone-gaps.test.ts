@@ -21,7 +21,7 @@ const REPO_ROOT = join(__dirname, "..", "..", "..");
 const BOOTSTRAP = join(__dirname, "fixtures", "bootstrap_daemon.py");
 
 const PORT = Number(process.env.E2E_GAP_PORT ?? "49323");
-const PASSPHRASE = "gap-test-overnight-passphrase-12345";
+const PASSPHRASE = "gap-test-passphrase-12345";
 
 interface DaemonHandle {
   child: ChildProcessWithoutNullStreams;

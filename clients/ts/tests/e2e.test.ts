@@ -15,7 +15,7 @@ const REPO_ROOT = join(__dirname, "..", "..", "..");
 const BOOTSTRAP = join(__dirname, "fixtures", "bootstrap_daemon.py");
 
 const PORT = Number(process.env.E2E_PORT ?? "49321");
-const PASSPHRASE = "e2e-overnight-passphrase-12345";
+const PASSPHRASE = "e2e-test-passphrase-12345";
 
 interface DaemonHandle {
   child: ChildProcessWithoutNullStreams;
