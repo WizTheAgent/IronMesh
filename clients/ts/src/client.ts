@@ -60,6 +60,15 @@ export class IronMeshClient {
   private state: InternalState;
   private connecting = false;
   private intentionallyClosed = false;
+  // H3: exponential backoff state. Capped at 30s with ±20% jitter.
+  // Reset to 0 on successful connect.
+  private reconnectAttempt = 0;
+  // Test seam — vitest tests can stub these to verify backoff math
+  // without sleeping. Real callers leave defaults.
+  /** @internal */ _now: () => number = Date.now;
+  /** @internal */ _setTimeout: (fn: () => void, ms: number) => unknown =
+    (fn, ms) => setTimeout(fn, ms);
+  /** @internal */ _random: () => number = Math.random;
 
   constructor(options: ClientOptions, identity?: IdentityKeypair) {
     if (!options.url) throw new Error("ClientOptions.url is required");
@@ -111,6 +120,11 @@ export class IronMeshClient {
     }
     this.connecting = true;
     this.intentionallyClosed = false;
+    // H2: each session has its own sequence space. The daemon's replay
+    // guard is per-peer+session; if we carry an old counter across a
+    // reconnect, the first frame of the new session will use a seq
+    // number that has no meaning to the new session_key. Start fresh.
+    this.state.sequence = 0n;
     try {
       const ws = new WebSocket(this.opts.url);
       this.state.ws = ws;
@@ -408,11 +422,34 @@ export class IronMeshClient {
     }
   }
 
+  /**
+   * Compute the next reconnect delay (ms) given current attempt count.
+   * Schedule: initialDelay × 2^attempt, capped at 30 s, with ±20%
+   * jitter applied multiplicatively to break thundering-herd patterns
+   * across many clients reconnecting to the same daemon.
+   * Exposed for tests; not part of the public API.
+   * @internal
+   */
+  _nextBackoffDelayMs(): number {
+    const base = this.opts.reconnectInitialDelayMs * Math.pow(2, this.reconnectAttempt);
+    const capped = Math.min(base, 30_000);
+    const jitter = 1 + (this._random() * 0.4 - 0.2); // [-20%, +20%]
+    return Math.max(0, Math.floor(capped * jitter));
+  }
+
   private _scheduleReconnect(): void {
-    setTimeout(() => {
+    const delay = this._nextBackoffDelayMs();
+    this.reconnectAttempt += 1;
+    this._setTimeout(() => {
       if (this.intentionallyClosed) return;
-      this.connect().catch((e) => this._emit("error", e));
-    }, this.opts.reconnectInitialDelayMs);
+      this.connect()
+        .then(() => {
+          // Successful reconnect — reset the backoff so the next
+          // disconnect starts fresh from the initial delay.
+          this.reconnectAttempt = 0;
+        })
+        .catch((e) => this._emit("error", e));
+    }, delay);
   }
 }
 
