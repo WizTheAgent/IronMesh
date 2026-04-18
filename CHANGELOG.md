@@ -5,17 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.8.4] — OpenClaw bridge (Path A) + functional TS client
+## [0.8.4] — Expanded MCP surface + functional TypeScript client
 
 Incremental release on top of v0.8.3. Lands the MCP-side OpenClaw
-integration (Path A complete) and a working TypeScript client that
-speaks the full IronMesh wire protocol against a live Python daemon.
-v0.9.0 stays reserved for when the OpenClaw Channel Plugin (Path B)
-also ships. No protocol changes — every v0.8.x peer stays on the mesh.
+integration and a working TypeScript client that speaks the full
+IronMesh wire protocol against a live Python daemon. v0.9.0 stays
+reserved for when the OpenClaw Channel Plugin also ships. No protocol
+changes — every v0.8.x peer stays on the mesh.
 
 ### Added
 
-- **OpenClaw integration — Path A (MCP bridge).** Ten new tools in
+- **OpenClaw integration — MCP bridge.** Ten new tools in
   `ironmesh_mcp/server.py` make agent-to-agent collaboration first-class
   for any MCP host (OpenClaw, Claude Desktop, Claude Code). The existing
   8 tools are unchanged; total is now 18 (8 core + 5 collaboration +
@@ -50,7 +50,7 @@ also ships. No protocol changes — every v0.8.x peer stays on the mesh.
   `BridgeDaemon` and exchanges a MSG round-trip (~6 s), plus
   parallel-send and large-payload (256 KiB) e2e coverage.
 - **WS API gap analysis** at [`docs/OPENCLAW_WS_API_GAPS.md`](docs/OPENCLAW_WS_API_GAPS.md)
-  — five-gap audit concluding Path B (channel plugin) is feasible with
+  — five-gap audit concluding the channel plugin is feasible with
   ~120 LOC of new daemon code (under the spike's 200-LOC ceiling).
 - **`__main__.py`** so `python -m ironmesh` works from a checkout (the
   installed `ironmesh` script entry already worked).
@@ -66,7 +66,7 @@ also ships. No protocol changes — every v0.8.x peer stays on the mesh.
   `finally:` block in `tests/test_concurrency_audit.py::
   test_100_parallel_sends_no_drops` even though the test body had
   already passed. Same widening applied defensively to `bridge.py`'s
-  handshake-failure handler. Full RCA at
+  handshake-failure handler. Full analysis at
   [`docs/BUG-PY310-TIMEOUTERROR-CLASS-SPLIT.md`](docs/BUG-PY310-TIMEOUTERROR-CLASS-SPLIT.md).
 - **CI: collapsed dual pytest runs + `scripts/ci-pytest.sh` wrapper.**
   Every job since 04-17 was hitting the 20-min cap because the second
@@ -113,10 +113,9 @@ also ships. No protocol changes — every v0.8.x peer stays on the mesh.
   would fail signature verification.
 - **MCP `SERVER_INFO` reads version dynamically** from
   `ironmesh.__version__` so future bumps can't leave it stale.
-- **Eleven inline doc / version-bump fixes** caught by the
-  v0.8.4 audit (README, Dockerfile, docker-compose, dashboard pill,
-  OpenClaw setup doc — all 0.8.3 → 0.8.4 references corrected).
-  Full audit report at [`docs/AUDIT_v0.8.4.md`](docs/AUDIT_v0.8.4.md).
+- **Eleven inline doc / version-bump fixes** — README, Dockerfile,
+  docker-compose, dashboard pill, OpenClaw setup doc: all 0.8.3 →
+  0.8.4 references corrected.
 
 ## [0.8.3] — Operator console redesign, capability GUI fix, E2E audit
 

@@ -527,7 +527,7 @@ class TestNewToolSpecs:
             assert n in names, f"{n} missing from TOOL_SPECS"
 
     def test_total_tool_count_is_eighteen(self):
-        # 8 core + 5 OpenClaw bridge (Path A) + 5 audit-expansion = 18
+        # 8 core + 5 OpenClaw bridge + 5 introspection/responder = 18
         assert len(TOOL_SPECS) == 18
 
     def test_audit_expansion_tools_registered(self):

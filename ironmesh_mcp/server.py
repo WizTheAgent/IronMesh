@@ -14,7 +14,7 @@ Tools exposed (18 total as of v0.8.4):
         ironmesh_get_peer_stats          — drill into one peer's latency/retries/rekey history
         ironmesh_trust_list              — list pinned and revoked peers
         ironmesh_revoke_peer             — revoke a peer (requires confirm parameter)
-    OpenClaw bridge (Path A, v0.8.4):
+    OpenClaw bridge (v0.8.4):
         ironmesh_discover_capabilities   — glob-match capabilities advertised across the mesh
         ironmesh_get_peer_capabilities   — query one peer's advertised capability set
         ironmesh_request_service         — REQ/RESP to a peer with correlation-id + timeout

@@ -5,8 +5,8 @@
 Incremental release on top of [v0.8.3](RELEASE_NOTES_v0.8.3.md). Lands
 the expanded MCP surface that makes IronMesh a first-class substrate
 for cross-agent collaboration, introduces a functional TypeScript
-client library, and closes out a deep audit with twelve targeted
-fixes. No protocol changes — every v0.8.x peer stays on the mesh.
+client library, and ships twelve targeted stability fixes. No
+protocol changes — every v0.8.x peer stays on the mesh.
 
 ## Highlights
 
@@ -20,8 +20,6 @@ fixes. No protocol changes — every v0.8.x peer stays on the mesh.
 - **Python 3.10 compatibility bug fixed** at root. `concurrent.futures.TimeoutError`
   vs `builtins.TimeoutError` class split on 3.10 is documented in
   [`docs/BUG-PY310-TIMEOUTERROR-CLASS-SPLIT.md`](BUG-PY310-TIMEOUTERROR-CLASS-SPLIT.md).
-- **Full audit** of every commit since v0.8.3 — 12 fixes landed,
-  written up in [`docs/AUDIT_v0.8.4.md`](AUDIT_v0.8.4.md).
 
 ## What's new
 
@@ -92,13 +90,13 @@ from the GitHub repo or use as a workspace dependency until then.
 
 ### Fixes
 
-Twelve audit-driven fixes (all with regression tests):
+Twelve stability fixes (each with a regression test):
 
 - **Python 3.10 `TimeoutError` class split** (`agent.py:276`, `bridge.py:1810`)
   — PEP 616 unified `concurrent.futures.TimeoutError` with
   `builtins.TimeoutError` in 3.11. On 3.10 they're distinct classes,
   so `except TimeoutError` missed the timeout raised by
-  `fut.result(timeout=5)`. Full RCA at
+  `fut.result(timeout=5)`. Full analysis at
   [`docs/BUG-PY310-TIMEOUTERROR-CLASS-SPLIT.md`](BUG-PY310-TIMEOUTERROR-CLASS-SPLIT.md).
 - **MCP server peer-dict thread safety** — `daemon.peers` iterations
   now snapshot via `list(...)`. Previous code could crash with
@@ -163,4 +161,3 @@ Twelve audit-driven fixes (all with regression tests):
 ---
 
 _Full changelog:_ [`CHANGELOG.md`](../CHANGELOG.md)
-_Audit report:_ [`docs/AUDIT_v0.8.4.md`](AUDIT_v0.8.4.md)

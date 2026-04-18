@@ -5,9 +5,9 @@ the Model Context Protocol (MCP). After this 5-minute setup, your agent
 can discover, message, and request work from other agents on the mesh
 using natural-language tool calls.
 
-This is **Path A** of the integration plan — the lightweight option that
-adds mesh awareness without any TypeScript channel-plugin work. Path B
-(channel plugin, deeper UX integration) lives in
+This is the **MCP bridge** — the lightweight option that adds mesh
+awareness without any TypeScript channel-plugin work. The deeper
+chat-UX channel plugin will ship separately as
 `docs/OPENCLAW_CHANNEL_SETUP.md` once it's built.
 
 ## Prerequisites
