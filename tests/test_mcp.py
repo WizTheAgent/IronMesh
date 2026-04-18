@@ -442,6 +442,82 @@ class TestSubscribeEvents:
         assert len(out["events"]) == 2
 
 
+class TestGroup4StandaloneGaps:
+    """Behaviors documented in docs/AUDIT_v0.8.4.md as untested but
+    worth coverage independent of any specific fix."""
+
+    def test_large_payload_round_trips_through_send_message(self, daemon, loop, monkeypatch):
+        # 1 MiB payload — exercises the encode + send path without a
+        # real socket. Confirms no truncation / no crash on the size.
+        _add_peer(daemon, "a" * 32, "alice")
+        captured = {}
+        async def fake_send(node_id, msg_type, payload, priority):
+            captured["size"] = len(payload)
+            return "msg-1"
+        monkeypatch.setattr(daemon, "send_message", fake_send)
+        mcp = IronMeshMCP(daemon, loop)
+        big = "x" * (1024 * 1024)  # 1 MiB
+        out = mcp.tool_send_message({"target": "alice", "payload": big})
+        assert out.get("ok") is True
+        assert captured["size"] == 1024 * 1024
+
+    def test_jsonrpc_error_envelope_shape_on_handler_exception(self, daemon, loop, monkeypatch):
+        # The serve() loop wraps every tools/call in try/except and
+        # emits a JSON-RPC error envelope (code -32000) when the
+        # handler raises. Force the path explicitly.
+        from ironmesh_mcp.server import serve, _dispatch as orig_dispatch  # noqa: F401
+
+        def boom(*_a, **_k):
+            raise RuntimeError("synthetic handler failure")
+
+        # Monkeypatch _dispatch at import-site to force a raise
+        import ironmesh_mcp.server as srv
+        monkeypatch.setattr(srv, "_dispatch", boom)
+
+        stdin = io.StringIO(json.dumps({
+            "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": {"name": "ironmesh_list_peers", "arguments": {}},
+        }) + "\n")
+        stdout = io.StringIO()
+        serve(daemon, loop, stdin=stdin, stdout=stdout)
+        responses = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
+        assert len(responses) == 1
+        r = responses[0]
+        assert r["id"] == 9
+        assert "error" in r
+        assert r["error"]["code"] == -32000
+        assert "synthetic handler failure" in r["error"]["message"]
+
+    def test_kinds_filter_with_multiple_prefixes(self, daemon, loop):
+        mcp = IronMeshMCP(daemon, loop)
+        daemon.bus.publish("MSG", {"peer_id": "p", "msg_id": "m1", "payload": b""})
+        daemon.bus.publish("PING", {"peer_id": "p", "msg_id": "m2", "payload": b""})
+        daemon.bus.publish("ACK", {"peer_id": "p", "msg_id": "m3", "payload": b""})
+        out = mcp.tool_subscribe_events({"kinds": ["msg:MSG", "msg:ACK"]})
+        kinds = sorted(e["kind"] for e in out["events"])
+        assert kinds == ["msg:ACK", "msg:MSG"]
+
+    def test_broadcast_partial_failure_with_mixed_outcomes(self, daemon, loop, monkeypatch):
+        # Three peers — one succeeds, one raises sync, one raises async.
+        _add_peer(daemon, "a" * 32, "alice")
+        _add_peer(daemon, "b" * 32, "bob")
+        _add_peer(daemon, "c" * 32, "carol")
+        sent = []
+        async def fake_send(node_id, *a, **k):
+            if node_id == "b" * 32:
+                raise RuntimeError("bob is down")
+            if node_id == "c" * 32:
+                raise ValueError("carol channel closed")
+            sent.append(node_id)
+            return f"mid-{node_id[:4]}"
+        monkeypatch.setattr(daemon, "send_message", fake_send)
+        mcp = IronMeshMCP(daemon, loop)
+        out = mcp.tool_broadcast({"payload": "hi"})
+        assert out["sent_to"] == ["a" * 32]
+        assert {f["node_id"] for f in out["failed"]} == {"b" * 32, "c" * 32}
+        assert out["count"] == 1
+
+
 class TestNewToolSpecs:
     def test_new_tools_registered(self):
         names = {s["name"] for s in TOOL_SPECS}
