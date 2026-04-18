@@ -186,6 +186,11 @@ def test_turn_cap_end_frame(fake_ollama):
         os.makedirs(root, exist_ok=True)
         a = Agent(
             name, port=port, passphrase=INTEGRATION_PASSPHRASE,
+            # bind to 127.0.0.1 so external nodes on the LAN can't
+            # auth-flood the test ports (observed locally on a dev
+            # box that shares a subnet with the live mesh — the
+            # rate-limiter would block the legitimate test handshake).
+            bind="127.0.0.1",
             open_discovery=False, allow_plaintext=True,
             keys_path=os.path.join(root, "k"),
             db_path=os.path.join(root, "d"),
@@ -227,6 +232,16 @@ def test_turn_cap_end_frame(fake_ollama):
             pl = pl.encode()
         got_end.append(ConvEnvelope.decode(pl))
 
+    # @on() decorators registered AFTER agent.run() are added to
+    # self._handlers but NOT yet wired into the bus (run() called
+    # _wire_handlers() before the decorators existed). Re-wire so the
+    # handlers fire. The other test in this file (
+    # test_llm_bridge_round_trip_via_fake_ollama) registers handlers
+    # BEFORE run() and avoids this — but restructuring this test that
+    # way is more invasive than the explicit re-wire.
+    bridge._wire_handlers()
+    client._wire_handlers()
+
     assert wait_for(
         lambda: client.peer_by_name("tc-bridge") and bridge.peer_by_name("tc-client"),
         timeout=15.0,
@@ -239,12 +254,14 @@ def test_turn_cap_end_frame(fake_ollama):
         )
         client.send_sync("tc-bridge", cap_hit.encode(), msg_type="CONV")
 
-        # 10s, not 3s: CI runners under load need more headroom than a dev
-        # laptop for a full CONV round-trip (client encrypt → bridge decrypt
-        # → handler → bridge encrypt → client decrypt). Matches the 15s we
-        # use elsewhere for cross-agent operations.
+        # 30s on CI runners. Was 10s, observed flake on hosted Ubuntu where
+        # the full CONV round-trip (client encrypt → bridge decrypt →
+        # handler → bridge encrypt → client decrypt) plus the implicit
+        # asyncio.run_coroutine_threadsafe scheduling occasionally
+        # exceeded the prior cap. Local dev machines complete this in
+        # well under 1s.
         assert wait_for(lambda: got_end and got_end[0].kind == "end",
-                        timeout=10.0), f"no end frame: {got_end!r}"
+                        timeout=30.0), f"no end frame: {got_end!r}"
         assert got_end[0].end_reason == END_TURN_LIMIT
         assert call_count["n"] == 0, "model was called despite turn cap"
     finally:

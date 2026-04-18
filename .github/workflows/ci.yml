@@ -113,8 +113,14 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
         timeout-minutes: 10
+        # Same wrapper as the unit-test job — pytest occasionally hangs
+        # in atexit on hosted runners after reporting all tests done
+        # (likely a non-daemon thread held alive by pytest-asyncio's
+        # auto mode). Without the wrapper the integration job waits
+        # for the 10-min step cap even when every test passed.
+        shell: bash
         run: |
-          pytest tests/integration -v
+          ./scripts/ci-pytest.sh pytest tests/integration -v
 
 # bench-smoke removed 2026-04-17. The background-responder pattern it used
 # was the direct cause of a ~6-hour stuck CI run, and its multicast/mDNS
