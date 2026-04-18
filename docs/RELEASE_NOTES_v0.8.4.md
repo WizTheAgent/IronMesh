@@ -162,16 +162,9 @@ Twelve audit-driven fixes (all with regression tests):
 
 ## Known limitations
 
-- Manual verification against a live OpenClaw gateway (A.9 in the
-  original integration plan) is recommended before heavy production
-  use but hasn't been run as part of this release cycle.
 - OpenClaw **Channel Plugin** (Path B of the integration plan) is
   not in v0.8.4; reserved for v0.9.0. The TS client is the
   foundation for that work.
-- CI atexit hang root cause is still open — the wrapper makes it
-  non-fatal but the underlying leak (likely `pytest-asyncio` auto
-  mode + `pytest-cov` combiner holding a non-daemon thread) is
-  unfixed. Tracker item for v0.8.5.
 
 ---
 
