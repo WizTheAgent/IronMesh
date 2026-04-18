@@ -445,3 +445,150 @@ class TestNewToolSpecs:
 
     def test_total_tool_count_is_thirteen(self):
         assert len(TOOL_SPECS) == 13
+
+
+# ---------------------------------------------------------------------------
+# Audit Group 1 — safety fixes (v0.8.4 audit)
+# ---------------------------------------------------------------------------
+
+class TestC1PeerDictThreadSafety:
+    """C1: tool_list_peers / tool_send_message / _resolve_target must
+    snapshot daemon.peers before iterating, otherwise concurrent
+    connect/disconnect on the daemon's loop thread raises
+    `RuntimeError: dictionary changed size during iteration`."""
+
+    def test_list_peers_under_concurrent_mutation(self, daemon, loop):
+        import time as _t
+        mcp = IronMeshMCP(daemon, loop)
+        # Seed
+        for i in range(20):
+            _add_peer(daemon, format(i, "032x"), f"p{i}")
+
+        stop = threading.Event()
+        errors: list[Exception] = []
+
+        def mutate():
+            i = 100
+            while not stop.is_set():
+                pid = format(i, "032x")
+                _add_peer(daemon, pid, f"churn{i}")
+                _t.sleep(0.0001)
+                daemon.peers.pop(pid, None)
+                i += 1
+
+        def reader():
+            try:
+                for _ in range(500):
+                    mcp.tool_list_peers({})
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        m = threading.Thread(target=mutate, daemon=True)
+        r = threading.Thread(target=reader, daemon=True)
+        m.start(); r.start()
+        r.join(timeout=10)
+        stop.set()
+        m.join(timeout=2)
+        assert not errors, f"tool_list_peers raised under concurrent mutation: {errors[:3]}"
+
+    def test_resolve_target_under_concurrent_mutation(self, daemon, loop):
+        import time as _t
+        mcp = IronMeshMCP(daemon, loop)
+        _add_peer(daemon, "a" * 32, "alice")
+
+        stop = threading.Event()
+        errors: list[Exception] = []
+
+        def mutate():
+            i = 200
+            while not stop.is_set():
+                pid = format(i, "032x")
+                _add_peer(daemon, pid, f"churn{i}")
+                _t.sleep(0.0001)
+                daemon.peers.pop(pid, None)
+                i += 1
+
+        def reader():
+            try:
+                for _ in range(500):
+                    assert mcp._resolve_target("alice") == "a" * 32
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        m = threading.Thread(target=mutate, daemon=True)
+        r = threading.Thread(target=reader, daemon=True)
+        m.start(); r.start()
+        r.join(timeout=10)
+        stop.set()
+        m.join(timeout=2)
+        assert not errors, f"_resolve_target raised under concurrent mutation: {errors[:3]}"
+
+
+class TestH1CorrelationIdPeerKeyed:
+    """H1: only the addressed peer may close out a request_service slot.
+    Without this, any peer that knows the correlation_id can steal the
+    response slot."""
+
+    def test_cross_peer_echo_does_not_unblock_caller(self, daemon, loop, monkeypatch):
+        # Two online peers; we send to "alice" but "mallory" tries to echo
+        _add_peer(daemon, "a" * 32, "alice")
+        _add_peer(daemon, "m" * 32, "mallory")
+
+        captured = {}
+        async def fake_send(node_id, msg_type, payload, priority):
+            captured["sent_to"] = node_id
+            envelope = json.loads(payload.decode())
+            captured["cid"] = envelope["correlation_id"]
+            # mallory tries to steal the slot by echoing the cid
+            def _spoof():
+                time.sleep(0.05)
+                daemon.bus.publish("MSG", {
+                    "peer_id": "m" * 32,  # NOT the addressed peer
+                    "msg_id": "spoof-1",
+                    "payload": json.dumps({
+                        "correlation_id": captured["cid"],
+                        "body": "stolen",
+                    }).encode("utf-8"),
+                })
+            threading.Thread(target=_spoof, daemon=True).start()
+            return "msg-id-1"
+
+        monkeypatch.setattr(daemon, "send_message", fake_send)
+        mcp = IronMeshMCP(daemon, loop)
+
+        # With the timeout short, if the spoof had succeeded we'd see
+        # `ok: True, response: "stolen"`. With the fix, the spoof is
+        # filtered and the call times out.
+        out = mcp.tool_request_service({"target": "alice", "prompt": "hi",
+                                         "timeout": 0.5})
+        assert out.get("timeout") is True
+        # Cross-peer echo recorded as observability event
+        events = mcp.tool_subscribe_events({})["events"]
+        kinds = [e["kind"] for e in events]
+        assert "request_service:cross_peer_echo" in kinds
+
+    def test_correct_peer_response_still_resolves(self, daemon, loop, monkeypatch):
+        # Sanity check that H1 didn't break the happy path
+        _add_peer(daemon, "a" * 32, "alice")
+
+        async def fake_send(node_id, msg_type, payload, priority):
+            envelope = json.loads(payload.decode())
+            def _reply():
+                time.sleep(0.05)
+                daemon.bus.publish("MSG", {
+                    "peer_id": node_id,  # the addressed peer
+                    "msg_id": "reply-1",
+                    "payload": json.dumps({
+                        "correlation_id": envelope["correlation_id"],
+                        "body": "pong",
+                    }).encode("utf-8"),
+                })
+            threading.Thread(target=_reply, daemon=True).start()
+            return "msg-id-1"
+
+        monkeypatch.setattr(daemon, "send_message", fake_send)
+        mcp = IronMeshMCP(daemon, loop)
+        out = mcp.tool_request_service({"target": "alice", "prompt": "hi",
+                                         "timeout": 5})
+        assert out.get("ok") is True
+        assert out["response"] == "pong"

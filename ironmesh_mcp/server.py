@@ -194,6 +194,25 @@ class IronMeshMCP:
                 with self._pending_lock:
                     slot = self._pending.get(cid)
                 if slot is not None:
+                    # H1: only the peer the request was addressed to may
+                    # close out the slot. Without this, any peer that
+                    # observes the correlation_id (it travels in plaintext
+                    # inside the encrypted envelope, but a buggy/malicious
+                    # peer could still echo it) could steal another
+                    # peer's response slot. The wire protocol is
+                    # documented in OPENCLAW_MCP_SETUP.md so the cid is
+                    # not a secret; peer identity is the trust anchor.
+                    expected = slot.get("expected_peer")
+                    if expected and peer_id != expected:
+                        # Record as a regular event so observability
+                        # surfaces unexpected echoes; do not unblock
+                        # the waiter.
+                        self._record_event("request_service:cross_peer_echo", {
+                            "correlation_id": cid,
+                            "expected_peer": expected,
+                            "actual_peer": peer_id,
+                        })
+                        return
                     slot["response"] = obj.get("body", obj)
                     slot["from"] = peer_id
                     slot["event"].set()
@@ -222,7 +241,12 @@ class IronMeshMCP:
             return target
         if getattr(self.daemon, "node_id", None) == target:
             return target
-        for pid, p in self.daemon.peers.items():
+        # list(...) defensively snapshots the dict — the daemon's loop
+        # thread mutates self.daemon.peers on every connect/disconnect,
+        # and MCP handlers run on the stdio reader thread. Without the
+        # snapshot a concurrent mutation raises
+        # `RuntimeError: dictionary changed size during iteration`.
+        for pid, p in list(self.daemon.peers.items()):
             if getattr(p, "agent_name", None) == target:
                 return pid
         return None
@@ -232,7 +256,8 @@ class IronMeshMCP:
     def tool_list_peers(self, args: dict) -> list[dict]:
         """Return all currently tracked peers with live metrics."""
         out = []
-        for pid, p in self.daemon.peers.items():
+        # Snapshot — see _resolve_target for the why.
+        for pid, p in list(self.daemon.peers.items()):
             out.append({
                 "node_id": pid,
                 "name": getattr(p, "agent_name", None),
@@ -270,17 +295,13 @@ class IronMeshMCP:
         if not target:
             return {"error": "target required (agent name or node_id)"}
 
-        # Resolve name → node_id
-        target_node = target
-        if len(target) != 32 or not all(c in "0123456789abcdef" for c in target):
-            # Treat as name — search peers
-            for pid, p in self.daemon.peers.items():
-                if getattr(p, "agent_name", None) == target:
-                    target_node = pid
-                    break
-            else:
-                return {"error": f"peer '{target}' not found. Known: "
-                                 f"{[getattr(p, 'agent_name', pid[:12]) for pid, p in self.daemon.peers.items()]}"}
+        # Resolve name → node_id. Use _resolve_target so the snapshot
+        # discipline is centralized.
+        target_node = self._resolve_target(target)
+        if target_node is None:
+            known = [getattr(p, "agent_name", pid[:12])
+                     for pid, p in list(self.daemon.peers.items())]
+            return {"error": f"peer '{target}' not found. Known: {known}"}
 
         payload_bytes = payload.encode("utf-8") if isinstance(payload, str) else bytes(payload)
 
@@ -310,12 +331,13 @@ class IronMeshMCP:
         pid = args.get("node_id") or args.get("target")
         if not pid:
             return {"error": "node_id required"}
-        # Allow name lookup
+        # Allow name lookup — use _resolve_target for the snapshot
+        # discipline (avoids "dictionary changed size" under concurrent
+        # peer connect/disconnect on the daemon's loop thread).
         if len(pid) != 32:
-            for peer_id, p in self.daemon.peers.items():
-                if getattr(p, "agent_name", None) == pid:
-                    pid = peer_id
-                    break
+            resolved = self._resolve_target(pid)
+            if resolved is not None:
+                pid = resolved
         p = self.daemon.peers.get(pid)
         if p is None:
             return {"error": f"unknown peer {pid}"}
@@ -498,7 +520,14 @@ class IronMeshMCP:
         cid = uuid.uuid4().hex
         envelope = json.dumps({"correlation_id": cid, "body": prompt}).encode("utf-8")
 
-        slot = {"event": threading.Event(), "response": None, "from": None}
+        slot = {
+            "event": threading.Event(),
+            "response": None,
+            "from": None,
+            # H1: only the peer the request was addressed to may close
+            # the slot. Bus listener checks this.
+            "expected_peer": node_id,
+        }
         with self._pending_lock:
             self._pending[cid] = slot
 
