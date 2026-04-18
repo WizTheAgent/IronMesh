@@ -236,7 +236,7 @@ class ReticulumTransport:
         self._destination = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._active_adapters: list = []
-        # Audit H-07: protect _active_adapters — mutated from both the
+        # Protect _active_adapters — mutated from both the
         # RNS thread (link callbacks) and asyncio (connect/shutdown).
         self._adapters_lock = threading.Lock()
         self._announce_task: Optional[asyncio.Task] = None

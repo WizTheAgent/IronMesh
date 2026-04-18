@@ -47,13 +47,13 @@ class MessageStore:
         # Observability: evictions + refused admits, keyed by reason.
         self.pending_dropped = 0  # total dropped (never queued)
         self.pending_evicted = 0  # displaced by higher-priority admit
-        # Audit H-10: serialize open() against concurrent callers so
-        # migrations don't race.
+        # Serialize open() against concurrent callers so migrations
+        # don't race.
         self._open_lock = asyncio.Lock()
         self._opened = False
 
     async def open(self):
-        """Open the database and run migrations (audit H-10: idempotent)."""
+        """Open the database and run migrations. Idempotent."""
         async with self._open_lock:
             if self._opened:
                 return
@@ -189,9 +189,8 @@ class MessageStore:
     def _encrypt_payload(self, payload: bytes) -> bytes:
         """Encrypt payload before INSERT if storage_key is set.
 
-        Audit H-05: no plaintext fallback. Encryption failure is a hard
-        error — silent downgrade to plaintext would be a security
-        regression.
+        No plaintext fallback. Encryption failure is a hard error —
+        silent downgrade to plaintext would be a security regression.
         """
         if not self._storage_key or not payload:
             return payload

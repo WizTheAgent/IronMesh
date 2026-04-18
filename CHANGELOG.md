@@ -26,12 +26,11 @@ changes — every v0.8.x peer stays on the mesh.
   - `ironmesh_request_service` — REQ/RESP with correlation-id + timeout
     (D5 envelope convention from the integration plan)
   - `ironmesh_broadcast` — send to every online peer, returns
-    `{sent_to, failed}` lists. Now uses `asyncio.gather` (M2 audit)
+    `{sent_to, failed}` lists. Now uses `asyncio.gather`
     so one slow peer doesn't serialize the whole call N×10 s
   - `ironmesh_subscribe_events` — cursor-based event poll (peer
     connect/disconnect + message arrivals); cursors past
     `high_water_mark` are clamped to keep desynced clients alive
-    (M3 audit)
   - `ironmesh_advertise_capability` / `ironmesh_withdraw_capability` —
     declare/retract capabilities mid-session without restarting
   - `ironmesh_get_my_identity` — own `node_id` + name + advertised caps
@@ -76,35 +75,35 @@ changes — every v0.8.x peer stays on the mesh.
   pytest invocation handles both report + 60% floor, and the wrapper
   exits 0 the moment a green-summary line appears (10 s grace then
   SIGKILL on the hung interpreter).
-- **MCP server peer-dict thread safety (C1 audit).** Wrapped every
+- **MCP server peer-dict thread safety.** Wrapped every
   `daemon.peers.items()` iteration in `list(...)` so concurrent
   peer connect/disconnect on the daemon's loop thread can't raise
   `RuntimeError: dictionary changed size during iteration` against
   an in-flight MCP tool handler.
-- **TS client no longer drops mesh-relayed binary frames (C2 audit).**
+- **TS client no longer drops mesh-relayed binary frames.**
   Previously the outer Ed25519 verification used the handshake peer's
   identity key; for relayed frames the outer sig is the relayer's
   identity, so every relayed frame raised "verification failed" and
   was dropped. Now treated as a soft warning — frame is dispatched on
   AEAD authenticity alone (the inner end-to-end source signature,
   when present, remains the originator's trust anchor).
-- **MCP correlation-id slots are peer-keyed (H1 audit).**
+- **MCP correlation-id slots are peer-keyed.**
   `ironmesh_request_service` now records the addressed peer and rejects
   responses from any other peer that knows the cid, recording the spoof
   as a `request_service:cross_peer_echo` observability event.
-- **TS client resets `state.sequence` on each `connect()` (H2 audit).**
+- **TS client resets `state.sequence` on each `connect()`.**
   Each session has its own sequence space; carrying a counter across
   reconnect would tag the first frame of a new `session_key` with a
   sequence number that has no meaning to the new session.
-- **TS client real exponential backoff with jitter (H3 audit).** Was
+- **TS client real exponential backoff with jitter.** Was
   a fixed 500 ms delay despite types.ts advertising "doubles up to
   30 s cap." Now `min(initial × 2^attempt, 30000)` ± 20% jitter,
   reset to 0 on successful connect.
-- **`tool_get_mesh_stats` errors on a non-started daemon (M1).**
+- **`tool_get_mesh_stats` errors on a non-started daemon.**
   Was returning a misleading partial snapshot.
-- **`tool_get_audit_log` opens with `encoding="utf-8"` (M4).**
+- **`tool_get_audit_log` opens with `encoding="utf-8"`.**
   Windows cp1252 default would corrupt non-ASCII fields.
-- **TS client drops frames with `sequence == 0` (M5).** Daemon
+- **TS client drops frames with `sequence == 0`.** Daemon
   already enforces; this catches buggy/malicious peers at the
   application layer.
 - **TS `canonicalJson` ASCII-escapes non-BMP chars (audit follow-up).**

@@ -114,7 +114,7 @@ describe("C2: relayed frame outer-sig", () => {
     expect(errors[0]).toMatch(/AEAD/);
   });
 
-  it("M5: drops a frame whose sequence is 0 with a warning", () => {
+  it("drops a frame whose sequence is 0 with a warning", () => {
     const messages: { msgType: string }[] = [];
     const errors: string[] = [];
     client.on("message", (m) => messages.push({ msgType: m.msgType }));

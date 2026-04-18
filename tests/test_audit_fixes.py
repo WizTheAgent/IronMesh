@@ -33,7 +33,7 @@ STRONG_PASSPHRASE = "audit-test-passphrase-12"
 
 
 # -----------------------------------------------------------------------
-# #1: HELLO signature — wrong canonical must fail
+# HELLO signature — wrong canonical must fail
 # -----------------------------------------------------------------------
 
 class TestHelloSigCanonical:
@@ -93,7 +93,7 @@ class TestHelloSigCanonical:
 
 
 # -----------------------------------------------------------------------
-# #2: Detached signatures — verify rejects wrong message, accepts correct
+# Detached signatures — verify rejects wrong message, accepts correct
 # -----------------------------------------------------------------------
 
 class TestDetachedSignatures:
@@ -121,7 +121,7 @@ class TestDetachedSignatures:
 
 
 # -----------------------------------------------------------------------
-# #3: Encrypted PING roundtrip
+# Encrypted PING roundtrip
 # -----------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -161,7 +161,7 @@ class TestEncryptedPing:
 
 
 # -----------------------------------------------------------------------
-# #4: Encrypted GOODBYE roundtrip
+# Encrypted GOODBYE roundtrip
 # -----------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -195,7 +195,7 @@ class TestEncryptedGoodbye:
 
 
 # -----------------------------------------------------------------------
-# #5: mDNS allowlist blocks unapproved peer
+# mDNS allowlist blocks unapproved peer
 # -----------------------------------------------------------------------
 
 class TestMDNSAllowlist:
@@ -216,7 +216,7 @@ class TestMDNSAllowlist:
         assert "evil-agent" not in d._known_peer_addresses
 
     def test_no_allowlist_default_deny(self):
-        """RAZOR #4: Default-deny — no allowlist + no open_discovery blocks all."""
+        """Default-deny — no allowlist + no open_discovery blocks all."""
         d = BridgeDaemon(name="server", passphrase=STRONG_PASSPHRASE)
         d._on_peer_discovered("any-agent", {"ip": "1.2.3.4", "port": 8765})
         assert "any-agent" not in d._known_peer_addresses
@@ -230,7 +230,7 @@ class TestMDNSAllowlist:
 
 
 # -----------------------------------------------------------------------
-# #6: Auth failure IP blocking after 3 failures
+# Auth failure IP blocking after 3 failures
 # -----------------------------------------------------------------------
 
 class TestAuthFailureBlocking:
@@ -267,7 +267,7 @@ class TestAuthFailureBlocking:
 
 
 # -----------------------------------------------------------------------
-# #7: Trust store MAC with agent key
+# Trust store MAC with agent key
 # -----------------------------------------------------------------------
 
 class TestTrustStoreAgentMAC:
@@ -308,7 +308,7 @@ class TestTrustStoreAgentMAC:
 
 
 # -----------------------------------------------------------------------
-# #8: SQLite payload encryption roundtrip + migration
+# SQLite payload encryption roundtrip + migration
 # -----------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -366,7 +366,7 @@ class TestSQLiteEncryption:
 
 
 # -----------------------------------------------------------------------
-# #9: GUI token required for endpoints
+# GUI token required for endpoints
 # -----------------------------------------------------------------------
 
 class TestGUIToken:
@@ -405,7 +405,7 @@ class TestGUIToken:
 
 
 # -----------------------------------------------------------------------
-# #10: secure_wipe zeroes buffer
+# secure_wipe zeroes buffer
 # -----------------------------------------------------------------------
 
 class TestSecureWipe:
@@ -424,7 +424,7 @@ class TestSecureWipe:
 
 
 # -----------------------------------------------------------------------
-# #11: ReplayGuard docstring present
+# ReplayGuard docstring present
 # -----------------------------------------------------------------------
 
 class TestReplayGuardDocstring:
@@ -439,7 +439,7 @@ class TestReplayGuardDocstring:
 
 
 # -----------------------------------------------------------------------
-# #12: TOFU checked before peer dict population
+# TOFU checked before peer dict population
 # -----------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -465,7 +465,7 @@ class TestTOFUBeforePeerDict:
 
 
 # -----------------------------------------------------------------------
-# #13: Frame msg_id uses hash
+# Frame msg_id uses hash
 # -----------------------------------------------------------------------
 
 class TestFrameMsgIdHash:
@@ -487,7 +487,7 @@ class TestFrameMsgIdHash:
 
 
 # -----------------------------------------------------------------------
-# #14: Passphrase from file works
+# Passphrase from file works
 # -----------------------------------------------------------------------
 
 class TestPassphraseFile:
@@ -516,7 +516,7 @@ class TestPassphraseFile:
 
 
 # -----------------------------------------------------------------------
-# #15: _local_ip fallback works
+# _local_ip fallback works
 # -----------------------------------------------------------------------
 
 class TestLocalIPFallback:
@@ -543,7 +543,7 @@ class TestLocalIPFallback:
 
 
 # -----------------------------------------------------------------------
-# #16: Legacy metrics parses path
+# Legacy metrics parses path
 # -----------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -560,7 +560,7 @@ class TestLegacyMetricsParsing:
 
 
 # -----------------------------------------------------------------------
-# #17: Hook circuit breaker fires after 3 failures
+# Hook circuit breaker fires after 3 failures
 # -----------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -625,7 +625,7 @@ class TestHookCircuitBreaker:
 
 
 # -----------------------------------------------------------------------
-# #18: SQL uses parameterized queries
+# SQL uses parameterized queries
 # -----------------------------------------------------------------------
 
 class TestSQLParameterized:
@@ -643,12 +643,12 @@ class TestSQLParameterized:
 
 
 # =======================================================================
-# RAZOR ONLINE — Additional hardening tests
+# Additional hardening tests
 # =======================================================================
 
 
 # -----------------------------------------------------------------------
-# RAZOR #2: Identity keys must be encrypted by default
+# Identity keys must be encrypted by default
 # -----------------------------------------------------------------------
 
 class TestRazorKeyEncryption:
@@ -657,7 +657,7 @@ class TestRazorKeyEncryption:
         from ironmesh.keys import generate_keypair, save_keys
         keys = generate_keypair()
         with pytest.raises(ValueError, match="Passphrase is required"):
-            save_keys(keys, "/tmp/test-razor-keys.json")
+            save_keys(keys, "/tmp/test-keys.json")
 
     def test_save_keys_allow_plaintext_flag(self, tmp_path):
         """save_keys() with allow_plaintext=True should not raise."""
@@ -682,7 +682,7 @@ class TestRazorKeyEncryption:
 
 
 # -----------------------------------------------------------------------
-# RAZOR #3: CLI passphrase not in process list
+# CLI passphrase not in process list
 # -----------------------------------------------------------------------
 
 class TestRazorCLIPassphrase:
@@ -731,7 +731,7 @@ class TestRazorCLIPassphrase:
 
 
 # -----------------------------------------------------------------------
-# RAZOR #4: Default-deny mDNS discovery
+# Default-deny mDNS discovery
 # -----------------------------------------------------------------------
 
 class TestRazorMDNSDefaultDeny:
@@ -773,7 +773,7 @@ class TestRazorMDNSDefaultDeny:
 
 
 # -----------------------------------------------------------------------
-# RAZOR #5: Client-side TLS support
+# Client-side TLS support
 # -----------------------------------------------------------------------
 
 class TestRazorClientTLS:
@@ -840,7 +840,7 @@ class TestRazorClientTLS:
 
 
 # =======================================================================
-# RAZOR ONLINE Round 2 — Binary frames + bus immutability
+# Round 2 — Binary frames + bus immutability
 # =======================================================================
 
 
@@ -1055,7 +1055,7 @@ class TestBridgeBinaryFramePath:
 
 
 # =======================================================================
-# RAZOR ONLINE Round 3 — GUI default, key migration, mDNS pinning, audit
+# Round 3 — GUI default, key migration, mDNS pinning, audit
 # =======================================================================
 
 

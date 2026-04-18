@@ -1136,7 +1136,7 @@ class BridgeDaemon:
         self._running = False
         self._mdns_service = None
         self._mdns_listener = None
-        # #8: Derive storage key from passphrase for encrypting SQLite payloads at rest
+        # Derive storage key from passphrase for encrypting SQLite payloads at rest.
         storage_key = hashlib.sha256(
             (passphrase + "ironmesh-storage-v1").encode()
         ).digest()
@@ -1180,15 +1180,15 @@ class BridgeDaemon:
 
         # mDNS peer allowlist (#5) — if set, only connect to listed peers
         self._allowed_peers: Optional[list] = allowed_peers
-        # RAZOR #4: Default-deny mDNS — require explicit opt-in for open discovery
+        # Default-deny mDNS — require explicit opt-in for open discovery
         self._open_discovery: bool = open_discovery
-        # RAZOR #5: TLS preference for outbound connections
+        # TLS preference for outbound connections
         self._allow_plaintext_ws: bool = allow_plaintext_ws
 
-        # RAZOR3: Audit log — initialized after keys are loaded
+        # Audit log — initialized after keys are loaded
         self._audit: Optional[AuditLog] = None
 
-        # RAZOR3: Fingerprint pinning for mDNS — maps agent_name -> {fingerprint, address}
+        # Fingerprint pinning for mDNS — maps agent_name -> {fingerprint, address}
         # Populated after first successful handshake. mDNS announcements rejected if
         # cached fingerprint doesn't match a new address claim.
         self._pinned_peers: Dict[str, dict] = {}
@@ -1254,7 +1254,7 @@ class BridgeDaemon:
         # assignment + cleanup. Prevents identity hijacking when two
         # connections race to the same peer_id.
         self._peer_lock = asyncio.Lock()
-        # Audit H-02: serialize auth failure tracking to prevent rate-
+        # Serialize auth-failure tracking to prevent rate-
         # limit bypass via concurrent handshake attempts.
         self._auth_failures_lock = asyncio.Lock()
 
@@ -1440,7 +1440,7 @@ class BridgeDaemon:
     async def _is_ip_blocked(self, ip: str) -> bool:
         """Check if an IP is blocked due to too many auth failures.
 
-        Audit H-02: serialized access to ``_auth_failures`` to prevent
+        Serialized access to ``_auth_failures`` to prevent
         concurrent handshakes from bypassing the rate limit.
         """
         async with self._auth_failures_lock:
@@ -1456,7 +1456,7 @@ class BridgeDaemon:
             return False
 
     async def _record_auth_failure(self, ip: str):
-        """Record an auth failure for an IP address (audit H-02)."""
+        """Record an auth failure for an IP address."""
         async with self._auth_failures_lock:
             if ip not in self._auth_failures:
                 self._auth_failures[ip] = []
@@ -1503,7 +1503,7 @@ class BridgeDaemon:
             return
 
         try:
-            # #6: Check if IP is blocked due to auth failures
+            # Check if IP is blocked due to auth failures.
             if await self._is_ip_blocked(remote_ip):
                 logger.warning("Auth-blocked IP %s attempted connection", remote_ip)
                 try:
@@ -1668,7 +1668,7 @@ class BridgeDaemon:
                 "signature": base64.b64encode(signature).decode(),
             }))
 
-            # #12: TOFU check BEFORE adding peer to dicts
+            # TOFU check BEFORE adding peer to dicts.
             await self._check_tofu(peer_id, peer_identity_b64)
 
             # Set up peer state (only after TOFU passes)
@@ -1763,7 +1763,7 @@ class BridgeDaemon:
             logger.info("Peer %s (%s) online via %s — ephemeral ECDH complete",
                         peer_name, peer_id, peer_state.transport_type)
 
-            # RAZOR3: Pin peer fingerprint + address for mDNS verification
+            # Pin peer fingerprint + address for mDNS verification
             # Use the mDNS-known address (listening port) if available,
             # not the ephemeral source port from the inbound WebSocket.
             pin_address = self._known_peer_addresses.get(peer_name, peer_state.address)
@@ -1816,7 +1816,7 @@ class BridgeDaemon:
         except (ConnectionResetError, ConnectionError, OSError) as e:
             logger.warning("Peer %s connection error: %s", peer_id or "unknown", e)
         finally:
-            # Audit H-01: always close the websocket, even if peer_id
+            # Always close the websocket, even if peer_id
             # was never established (early handshake failure).
             try:
                 await websocket.close()
@@ -2904,7 +2904,7 @@ class BridgeDaemon:
         ew_crypto.secure_wipe(my_ephemeral_private)
         del my_ephemeral_private  # Forward secrecy
 
-        # #12: TOFU check BEFORE adding peer to dicts
+        # TOFU check BEFORE adding peer to dicts.
         await self._check_tofu(peer_id, peer_identity_b64)
 
         # Set up peer state (only after TOFU passes)
@@ -2986,7 +2986,7 @@ class BridgeDaemon:
         logger.info("Connected to peer %s at %s via %s", peer_id, label,
                     peer_state.transport_type)
 
-        # RAZOR3: Pin peer fingerprint + address for mDNS verification
+        # Pin peer fingerprint + address for mDNS verification
         if peer_identity_b64:
             fp = ew_keys.get_fingerprint(base64.b64decode(peer_identity_b64))
             if peer_name:
@@ -3040,7 +3040,7 @@ class BridgeDaemon:
     async def connect_to_peer(self, host: str, port: int) -> Optional[str]:
         """Connect to a remote peer as client, performing full handshake.
 
-        RAZOR #5: Attempts wss:// (TLS) first. Falls back to ws:// only if
+        Attempts wss:// (TLS) first. Falls back to ws:// only if
         _allow_plaintext_ws is True. This protects the handshake from
         passive eavesdropping.
         """
@@ -3198,16 +3198,16 @@ class BridgeDaemon:
         """Called by mDNS listener when a peer is found on the LAN."""
         if agent_name == self.name:
             return  # Skip self
-        # #5: If allowlist is set, skip peers not on it
+        # If allowlist is set, skip peers not on it.
         if self._allowed_peers is not None and agent_name not in self._allowed_peers:
             logger.info("mDNS: ignoring unlisted peer %s (not in allowed_peers)", agent_name)
             return
-        # RAZOR #4: Default-deny — if no allowlist and no open_discovery, reject all
+        # Default-deny — if no allowlist and no open_discovery, reject all
         if self._allowed_peers is None and not self._open_discovery:
             logger.info("mDNS: blocking auto-connect to %s (default-deny, use --allowed-peers or --open-discovery)", agent_name)
             return
         addr = f"{info['ip']}:{info['port']}"
-        # RAZOR3: If we've seen this peer before, log address changes.
+        # If we've seen this peer before, log address changes.
         # Identity is verified via Ed25519 key pinning in _check_tofu()
         # during the handshake — mDNS address changes are safe to accept.
         pinned = self._pinned_peers.get(agent_name)
@@ -3851,7 +3851,7 @@ class BridgeDaemon:
         clean_path = path.split("?")[0] if "?" in path else path
 
         if clean_path == "/ws":
-            # #9: Require token for WebSocket upgrade
+            # Require token for WebSocket upgrade.
             if not self._check_gui_token(request):
                 body = b"401 Unauthorized - token required"
                 headers = websockets.Headers()
@@ -3893,7 +3893,7 @@ class BridgeDaemon:
             headers["Content-Length"] = str(len(body))
             return websockets.http11.Response(200, "OK", headers, body)
 
-        # #9: All data endpoints require token
+        # All data endpoints require token.
         if clean_path in ("/metrics", "/api/state", "/api/mesh_stats"):
             if not self._check_gui_token(request):
                 body = b"401 Unauthorized - token required"
@@ -4231,7 +4231,7 @@ class BridgeDaemon:
         try:
             async def handle_metrics(reader, writer):
                 raw_request = await reader.read(4096)
-                # #16: Parse first line for method + path
+                # Parse first line for method + path.
                 request_line = raw_request.split(b"\r\n")[0].decode("ascii", errors="replace")
                 parts = request_line.split()
                 path = parts[1] if len(parts) >= 2 else "/"

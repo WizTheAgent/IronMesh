@@ -124,7 +124,7 @@ class IronMeshMCP:
         self.daemon = daemon
         self.loop = loop
 
-        # Ring buffer for ironmesh_subscribe_events (M1, OpenClaw integration)
+        # Ring buffer for ironmesh_subscribe_events.
         # Each entry: {"seq": int, "ts": float, "kind": str, "data": dict}
         # Sequence is monotonic across the buffer's lifetime (cursor stable
         # even after eviction — clients pick up from where they left off).
@@ -132,7 +132,7 @@ class IronMeshMCP:
         self._event_seq: int = 0
         self._event_lock = threading.Lock()
 
-        # Correlation-id table for ironmesh_request_service (D5 in plan):
+        # Correlation-id table for ironmesh_request_service:
         # in-flight UUID -> threading.Event + slot for response payload.
         # We can't use asyncio.Future safely from the bus thread without
         # going through call_soon_threadsafe, so a thread-Event is simpler
@@ -332,7 +332,7 @@ class IronMeshMCP:
     # --- tool: get_mesh_stats -----------------------------------------------
 
     def tool_get_mesh_stats(self, args: dict) -> dict:
-        # M1: error explicitly when the daemon hasn't been started.
+        # Error explicitly when the daemon hasn't been started.
         # _build_mesh_stats() will happily return a partial snapshot
         # against a fresh BridgeDaemon (no peers, zero counters), which
         # silently misleads callers into thinking the mesh is empty.
@@ -414,7 +414,7 @@ class IronMeshMCP:
         if not log_path or not os.path.exists(log_path):
             return []
         entries = []
-        # M4: explicit utf-8. The audit writer emits UTF-8 JSONL; on
+        # Explicit utf-8. The audit writer emits UTF-8 JSONL; on
         # Windows the platform default (cp1252) corrupts non-ASCII
         # fields like agent names with diacritics or emoji.
         with open(log_path, encoding="utf-8") as f:
@@ -461,7 +461,7 @@ class IronMeshMCP:
         except Exception as e:
             return {"error": f"revoke failed: {e}"}
 
-    # --- M1 / OpenClaw bridge tools ----------------------------------------
+    # --- Cross-agent collaboration tools ------------------------------------
 
     # tool: discover_capabilities
     def tool_discover_capabilities(self, args: dict) -> list[dict]:
@@ -602,7 +602,7 @@ class IronMeshMCP:
                 continue
             targets.append(pid)
 
-        # M2: parallel fan-out via asyncio.gather. The previous
+        # Parallel fan-out via asyncio.gather. The previous
         # implementation called fut.result(timeout=10) per peer in a
         # loop — total deadline N×10s in the worst case. With gather,
         # the slowest peer caps the whole call at ~timeout seconds.
@@ -654,7 +654,7 @@ class IronMeshMCP:
         with self._event_lock:
             snapshot = list(self._events)
             high = self._event_seq
-        # M3: clamp cursor > high_water_mark to high_water_mark and warn
+        # Clamp cursor > high_water_mark to high_water_mark and warn
         # via the response. Without this, a client that lost track of
         # its cursor (or got one from a different MCP session that had
         # higher counters) stays out of sync forever — `next_cursor`
@@ -683,7 +683,7 @@ class IronMeshMCP:
             result["cursor_clamped"] = True
         return result
 
-    # --- Group 5 / v0.8.4 audit-expansion tools -----------------------------
+    # --- Agent introspection + responder tools ------------------------------
 
     # tool: advertise_capability
     def tool_advertise_capability(self, args: dict) -> dict:

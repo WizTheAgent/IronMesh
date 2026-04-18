@@ -90,7 +90,7 @@ class HookManager:
                 count = self._failure_counts[cb_id]
                 logger.error("Hook %s error in %s: %s (failure %d/%d)",
                            hook_point, cb.__name__, e, count, self.CIRCUIT_BREAKER_THRESHOLD)
-                # #17: Circuit breaker — auto-unregister after threshold
+                # Circuit breaker — auto-unregister after threshold.
                 if count >= self.CIRCUIT_BREAKER_THRESHOLD:
                     logger.warning(
                         "Circuit breaker: auto-unregistering hook %s from %s after %d consecutive failures",

@@ -56,7 +56,7 @@ export class IronMeshClient {
     Pick<ClientOptions, "url" | "passphrase" | "autoReconnect" | "reconnectInitialDelayMs">
   > &
     Pick<ClientOptions, "name" | "capabilities" | "tofu" | "pinFile">;
-  // M7: typed-but-erased internal storage. The mapped-type record at
+  // Typed-but-erased internal storage. The mapped-type record at
   // the public surface (`{ [E in EventName]?: Set<Listener<E>> }`)
   // can't be assigned-into without a cast because TS can't track the
   // per-key Listener type through a write. Using `Set<unknown>` as the
@@ -66,7 +66,7 @@ export class IronMeshClient {
   private state: InternalState;
   private connecting = false;
   private intentionallyClosed = false;
-  // H3: exponential backoff state. Capped at 30s with ±20% jitter.
+  // Exponential backoff state. Capped at 30s with ±20% jitter.
   // Reset to 0 on successful connect.
   private reconnectAttempt = 0;
   // Test seam — vitest tests can stub these to verify backoff math
@@ -126,7 +126,7 @@ export class IronMeshClient {
     }
     this.connecting = true;
     this.intentionallyClosed = false;
-    // H2: each session has its own sequence space. The daemon's replay
+    // Each session has its own sequence space. The daemon's replay
     // guard is per-peer+session; if we carry an old counter across a
     // reconnect, the first frame of the new session will use a seq
     // number that has no meaning to the new session_key. Start fresh.
@@ -245,7 +245,7 @@ export class IronMeshClient {
       source: this.state.hsResult.myNodeId,
       source_display: this.opts.name,
       destination: this.state.hsResult.peerNodeId,
-      // M6: Date.now()/1000 gives ms-precision floats (e.g.
+      // Date.now()/1000 gives ms-precision floats (e.g.
       // 1729203847.123). Python's time.time() can return higher
       // precision (μs). Both serialize identically through JSON, and
       // the daemon's replay-guard windows are seconds-wide, so this
@@ -341,7 +341,7 @@ export class IronMeshClient {
     // Try binary first (preferred wire format)
     if (buf[0] === 0xe7 && buf[1] === 0xf6) {
       const frame = decodeFrame(buf);
-      // M5: drop seq=0 frames. The daemon enforces seq > 0 on inbound
+      // Drop seq=0 frames. The daemon enforces seq > 0 on inbound
       // post-handshake messages (bridge.py:2216-2218); a peer that
       // sends seq=0 is buggy or malicious. The SecretBox AEAD already
       // rejects ciphertext that doesn't decrypt, but seq=0 lets a
@@ -359,7 +359,7 @@ export class IronMeshClient {
       // mesh-relayed frames, the outer sig is the relayer's identity,
       // not the originator's — so verification against
       // `peerIdentityPublic` will FAIL on every relayed frame even
-      // though the frame is legitimate. (C2 from docs/AUDIT_v0.8.4.md.)
+      // though the frame is legitimate.
       //
       // Treat outer-sig mismatch as a soft warning, not a drop. The
       // SecretBox AEAD tag below provides authenticity for the

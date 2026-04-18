@@ -95,7 +95,7 @@ class AuditLog:
         # actual file write/rename aren't interleaved across threads.
         self._write_lock = threading.Lock()
         if not self._enabled:
-            # Audit H-03: never silently disable audit logging.
+            # Never silently disable audit logging.
             logger.critical(
                 "SECURITY: Audit log initialized without HMAC key — audit logging DISABLED. "
                 "Security events will NOT be recorded."

@@ -167,8 +167,8 @@ class AgentListener:
     Uses proper ServiceStateChange enum comparison and handles
     Added, Updated, and Removed events.
 
-    RAZOR #4: Includes rate limiting on discovery events to prevent
-    flood/DoS via mDNS announcements.
+    Includes rate limiting on discovery events to prevent flood/DoS
+    via mDNS announcements.
     """
 
     # Max discovery events per second before throttling
@@ -189,7 +189,7 @@ class AgentListener:
         self._on_removed = on_removed
         self._zc: Optional[Zeroconf] = None
         self._browser: Optional[ServiceBrowser] = None
-        # RAZOR #4: Discovery event rate limiting
+        # Discovery event rate limiting
         self._discovery_timestamps: list = []
         self._discovery_lock = threading.Lock()
 
@@ -227,7 +227,7 @@ class AgentListener:
         self._ready.clear()
 
     def _is_rate_limited(self) -> bool:
-        """Check if discovery events are being received too fast (RAZOR #4)."""
+        """Check if discovery events are being received too fast."""
         import time as _time
         now = _time.monotonic()
         with self._discovery_lock:
@@ -244,14 +244,14 @@ class AgentListener:
     def _on_service_state_change(self, zeroconf: Zeroconf, service_type: str,
                                   name: str, state_change: ServiceStateChange):
         """Handle mDNS service state changes using proper enum comparison."""
-        # RAZOR #4: Rate limit discovery events to prevent flood attacks
+        # Rate limit discovery events to prevent flood attacks
         if self._is_rate_limited():
             log.warning("mDNS discovery rate limit exceeded, dropping event for %s", name)
             return
         if state_change in (ServiceStateChange.Added, ServiceStateChange.Updated):
             info = zeroconf.get_service_info(service_type, name)
             if info:
-                # RAZOR #4: Reject oversized TXT records (DoS mitigation)
+                # Reject oversized TXT records (DoS mitigation)
                 total_props_size = sum(
                     len(k) + len(v) for k, v in info.properties.items()
                 )
@@ -260,7 +260,7 @@ class AgentListener:
                                 total_props_size, name)
                     return
                 addr = socket.inet_ntoa(info.addresses[0]) if info.addresses else None
-                # Audit H-08: validate mDNS TXT fields rigorously.
+                # Validate mDNS TXT fields rigorously.
                 # Malformed UTF-8, oversized strings, or unexpected
                 # characters must not reach the callback.
                 try:

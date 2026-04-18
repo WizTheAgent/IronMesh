@@ -305,7 +305,7 @@ A minimal Go implementation proves the wire protocol is language-independent:
 ```bash
 cd clients/go && go build ./cmd/ironmesh-go/
 export IRONMESH_PASSPHRASE='your-strong-secret-phrase-12-plus'
-./ironmesh-go --host 192.168.1.20 --port 8765 --name go-client
+./ironmesh-go --host <daemon-ip> --port 8765 --name go-client
 ```
 
 See [`docs/PROTOCOL_SPEC.md`](docs/PROTOCOL_SPEC.md) for the formal wire specification.

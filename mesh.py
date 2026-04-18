@@ -433,7 +433,7 @@ class MeshRouter:
     def __init__(self, daemon, config):
         self.daemon = daemon
         self.config = config
-        # Audit H-04: mesh routing emits signed route announcements and
+        # Mesh routing emits signed route announcements and
         # persists routes to an HMAC-protected file. Both require the
         # daemon's keypair to derive MAC keys. Refuse to start without it.
         if not getattr(daemon, "_keypair", None):

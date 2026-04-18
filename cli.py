@@ -190,7 +190,7 @@ def get_passphrase():
     Priority: --passphrase-file > IRONMESH_PASSPHRASE_FILE > IRONMESH_PASSPHRASE > getpass.
     Never accepts passphrase via CLI argv (visible in ps aux).
     """
-    # #14: Prefer IRONMESH_PASSPHRASE_FILE over env var (avoids /proc/environ exposure)
+    # Prefer IRONMESH_PASSPHRASE_FILE over env var (avoids /proc/environ exposure).
     passphrase_file = os.environ.get("IRONMESH_PASSPHRASE_FILE")
     if passphrase_file:
         try:
@@ -208,7 +208,7 @@ def get_passphrase():
         print("WARNING: Reading passphrase from IRONMESH_PASSPHRASE env var.")
         print("         Environment variables may be visible via /proc. Prefer IRONMESH_PASSPHRASE_FILE.\n")
         return env
-    # RAZOR #3: Interactive prompt via getpass (hidden input, not in process list)
+    # Interactive prompt via getpass (hidden input, not in process list)
     if sys.stdin.isatty():
         try:
             passphrase = getpass.getpass("Enter IronMesh passphrase: ")
@@ -324,14 +324,14 @@ def cmd_run(args):
     if allowed_peers_raw:
         allowed_peers = [p.strip() for p in allowed_peers_raw.split(",") if p.strip()]
 
-    # RAZOR #4: Default-deny mDNS — require --open-discovery or --allowed-peers
+    # Default-deny mDNS — require --open-discovery or --allowed-peers
     open_discovery = getattr(args, "open_discovery", False)
     if allowed_peers is None and not open_discovery:
         # Default-deny: disable mDNS auto-connect unless explicitly allowed
         log.warning("mDNS auto-connect disabled (default-deny). "
                     "Use --allowed-peers or --open-discovery to enable.")
 
-    # RAZOR #5: TLS preference
+    # TLS preference
     allow_plaintext_ws = getattr(args, "allow_plaintext_ws", False)
 
     daemon = BridgeDaemon(
@@ -480,7 +480,7 @@ def cmd_keys(args):
         from ironmesh.keys import generate_keypair, save_keys
         keypair = generate_keypair()
         key_passphrase = args.passphrase
-        # RAZOR #2: Force key encryption — prompt if no passphrase given
+        # Force key encryption — prompt if no passphrase given
         if not key_passphrase and sys.stdin.isatty():
             key_passphrase = getpass.getpass("Enter passphrase to encrypt key file: ")
             if key_passphrase:

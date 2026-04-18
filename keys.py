@@ -83,7 +83,7 @@ def ed25519_to_curve25519_public(ed25519_public: bytes) -> bytes:
 def ed25519_to_curve25519_secret(ed25519_secret: bytes) -> bytes:
     """Convert Ed25519 secret key to Curve25519 (X25519) secret key.
 
-    Audit H-09: the intermediate 64-byte buffer (seed+public) is held
+    The intermediate 64-byte buffer (seed+public) is held
     in a ``bytearray`` and zeroed after use so the secret half doesn't
     linger in the heap.
     """
