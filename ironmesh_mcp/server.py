@@ -1272,8 +1272,32 @@ def main() -> int:
         serve(daemon, loop)
     except KeyboardInterrupt:
         pass
-    loop.call_soon_threadsafe(loop.stop)
-    return 0
+    # v0.8.5.2-R4: graceful shutdown on stdio EOF. Previously main()
+    # only called loop.stop(), which doesn't cancel the many long-
+    # running background tasks (heartbeat, cleanup, reconnect,
+    # discovery, capability announce, audit rotation, mDNS zeroconf,
+    # websocket server). Non-daemon threads and asyncio timers kept
+    # the process alive for tens of seconds — or indefinitely —
+    # after Claude Desktop disconnected stdio. Every host disconnect
+    # would leak a zombie daemon.
+    #
+    # Fix: try graceful daemon.shutdown() with a short cap, then
+    # unconditionally os._exit to kill any surviving non-daemon
+    # threads. Stdio-based MCP has no meaningful work after its
+    # host disconnects; immediate exit is the right policy.
+    import concurrent.futures
+    try:
+        fut = asyncio.run_coroutine_threadsafe(daemon.shutdown(), loop)
+        fut.result(timeout=3)
+    except (concurrent.futures.TimeoutError, TimeoutError, RuntimeError, Exception):
+        pass
+    try:
+        loop.call_soon_threadsafe(loop.stop)
+    except Exception:
+        pass
+    # Force-exit: kills zombie non-daemon threads that would otherwise
+    # keep the process alive.
+    os._exit(0)
 
 
 if __name__ == "__main__":

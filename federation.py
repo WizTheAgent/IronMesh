@@ -100,35 +100,50 @@ class FederationGateway:
 
     def _forward_handler(self, source_agent: Agent, dest_agent: Agent,
                           direction: str):
-        """Create a bus handler that forwards matching messages."""
+        """Create a bus handler that forwards matching messages.
+
+        v0.8.5.2: targeted forwarding — only delivers to peers on the
+        destination mesh that actually advertise a policy-allowed
+        capability. Previously forwarded to ALL peers on the dest mesh
+        if ANY peer there advertised an allowed capability, which could
+        leak cross-mesh traffic to unrelated participants.
+        """
         def handler(peer_id: str, payload: bytes):
             if payload.startswith(FORWARD_PREFIX):
                 return
 
-            caps_on_dest = [
-                cap for _, cap in dest_agent.discover("*")
-            ]
+            # Map each dest-mesh peer to its advertised capabilities.
+            # discover("*") returns (node_id, capability) tuples.
+            peer_caps: Dict[str, List[str]] = {}
+            for nid, cap in dest_agent.discover("*"):
+                peer_caps.setdefault(nid, []).append(cap)
 
-            for cap in caps_on_dest:
-                if self.policy.should_forward(cap):
-                    for peer in dest_agent.peers:
-                        try:
-                            dest_agent.reply(
-                                peer["node_id"],
-                                FORWARD_PREFIX + payload,
-                            )
-                            self.stats[f"forwarded_{direction}"] += 1
-                            logger.info(
-                                "FED %s: %s → %s (%d bytes, cap=%s)",
-                                direction, peer_id[:12],
-                                peer["node_id"][:12], len(payload), cap,
-                            )
-                        except Exception as e:
-                            self.stats["errors"] += 1
-                            logger.warning("FED forward error: %s", e)
-                    return
+            # For each dest peer, forward only if AT LEAST ONE of its
+            # advertised capabilities passes the policy. A peer with no
+            # advertised capabilities never receives forwarded traffic.
+            forwarded_any = False
+            for target_nid, caps in peer_caps.items():
+                matched_cap = next(
+                    (c for c in caps if self.policy.should_forward(c)),
+                    None,
+                )
+                if matched_cap is None:
+                    continue
+                try:
+                    dest_agent.reply(target_nid, FORWARD_PREFIX + payload)
+                    self.stats[f"forwarded_{direction}"] += 1
+                    forwarded_any = True
+                    logger.info(
+                        "FED %s: %s → %s (%d bytes, cap=%s)",
+                        direction, peer_id[:12],
+                        target_nid[:12], len(payload), matched_cap,
+                    )
+                except Exception as e:
+                    self.stats["errors"] += 1
+                    logger.warning("FED forward error: %s", e)
 
-            self.stats["denied"] += 1
+            if not forwarded_any:
+                self.stats["denied"] += 1
 
         return handler
 
