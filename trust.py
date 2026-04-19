@@ -82,7 +82,22 @@ class TrustStore:
                             self._peers = raw.get("peers", raw)
                             self._save()  # Re-save with new key
                         else:
-                            logger.critical("Trust store integrity check FAILED — file may be tampered")
+                            # v0.8.5.2: include MAC context + multi-daemon hint.
+                            # The most common cause is two daemons on one host
+                            # writing the same trust file with different keypairs
+                            # (the v0.8.4 collision pattern fixed by --trust-path
+                            # in v0.8.5+). Tampering is the other possibility.
+                            logger.critical(
+                                "Trust store integrity check FAILED at %s — "
+                                "stored_mac=%s expected_mac=%s peers_in_file=%d. "
+                                "If you run multiple daemons on this host, give "
+                                "each its own --trust-path to avoid silent "
+                                "collisions; otherwise the file may be tampered.",
+                                self.path,
+                                stored_mac[:16] + "…",
+                                expected_mac[:16] + "…",
+                                len(raw.get("peers", {})) if isinstance(raw, dict) else 0,
+                            )
                             self._peers = {}
                             return
                 elif isinstance(raw, dict):

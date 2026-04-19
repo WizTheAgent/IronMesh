@@ -52,6 +52,13 @@ EVENT_CAPABILITY_LEARNED = "CAPABILITY_LEARNED"
 EVENT_E2E_DECRYPT_FAILURE = "E2E_DECRYPT_FAILURE"
 EVENT_LOG_ROTATED = "LOG_ROTATED"
 
+# v0.8.5.2: pending-trust gate decisions. Operator-driven flow surface
+# so audit history captures who promoted/blocked whom and when.
+EVENT_MSG_GATED_QUEUE = "MSG_GATED_QUEUE"
+EVENT_MSG_GATED_DROP = "MSG_GATED_DROP"
+EVENT_PEER_PROMOTED = "PEER_PROMOTED"
+EVENT_PEER_BLOCKED = "PEER_BLOCKED"
+
 
 class AuditLog:
     """Append-only audit log with HMAC chain for tamper evidence.

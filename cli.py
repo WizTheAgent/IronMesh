@@ -110,6 +110,9 @@ def parse_args():
                               help="Identity keys file (needed for trust store MAC)")
     trust_parser.add_argument("--keys-passphrase", default=None,
                               help="Passphrase to decrypt identity keys")
+    trust_parser.add_argument("--trust-path", default=None,
+                              help="Override trust store path (default ~/.ironmesh/known_peers.json). "
+                                   "Use when targeting a non-default daemon's trust file.")
     trust_sub = trust_parser.add_subparsers(dest="trust_command")
     trust_sub.add_parser("list", help="List trusted peers")
     revoke_parser = trust_sub.add_parser("revoke", help="Revoke trust for a peer")
@@ -123,6 +126,16 @@ def parse_args():
     revoke_parser.add_argument("--token", default=None,
                                help="GUI token (required for --broadcast)")
     trust_sub.add_parser("list-revoked", help="List revoked peers")
+
+    # v0.8.5.2: trust state mutation (matches the v0.8.5 trust gate states).
+    set_state_parser = trust_sub.add_parser(
+        "set-state",
+        help="Flip a peer's trust state (pending|trusted|blocked)",
+    )
+    set_state_parser.add_argument("node_id", help="Node ID to update")
+    set_state_parser.add_argument("state",
+                                   choices=["pending", "trusted", "blocked"],
+                                   help="New trust state")
 
     # --- keys ---
     keys_parser = sub.add_parser("keys", help="Key management")
@@ -172,6 +185,21 @@ def parse_args():
     sr.add_argument("--gui-url", default="ws://127.0.0.1:8767/ws",
                     help="Local bridge GUI WebSocket URL")
     sr.add_argument("--token", required=True, help="GUI token")
+
+    # --- doctor (v0.8.5.2) ---
+    doctor_parser = sub.add_parser(
+        "doctor",
+        help="One-shot diagnostic — trust file, schema, queues, gate flag, key file, port",
+    )
+    doctor_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json")
+    doctor_parser.add_argument("--keys-passphrase", default=None)
+    doctor_parser.add_argument("--db-path", default="~/.ironmesh/data.db")
+    doctor_parser.add_argument("--trust-path", default=None,
+                                help="Trust file path (default ~/.ironmesh/known_peers.json)")
+    doctor_parser.add_argument("--port", type=int, default=8765,
+                                help="Port the daemon binds to — checked for conflicts")
+    doctor_parser.add_argument("--bind", default="0.0.0.0",
+                                help="Bind address — checked alongside --port")
 
     # --- demo ---
     demo_parser = sub.add_parser(
@@ -420,7 +448,11 @@ def cmd_trust(args):
     except Exception as e:
         print(f"Error: failed to load identity keys: {e}")
         return 1
-    store = TrustStore(agent_key=keypair.ed25519_secret[:32])
+    trust_path = getattr(args, "trust_path", None)
+    if trust_path:
+        store = TrustStore(agent_key=keypair.ed25519_secret[:32], path=trust_path)
+    else:
+        store = TrustStore(agent_key=keypair.ed25519_secret[:32])
 
     trust_cmd = getattr(args, "trust_command", None)
     if trust_cmd == "list":
@@ -428,13 +460,14 @@ def cmd_trust(args):
         if not peers:
             print("No trusted peers.")
             return 0
-        print(f"{'Node ID':<20s} {'Fingerprint':<18s} {'First Seen':<24s} {'Last Seen':<24s}")
-        print("-" * 86)
+        print(f"{'Node ID':<20s} {'Fingerprint':<18s} {'State':<10s} {'First Seen':<24s} {'Last Seen':<24s}")
+        print("-" * 96)
         import time
         for p in peers:
             first = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(p["first_seen"])) if p["first_seen"] else "N/A"
             last = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(p["last_seen"])) if p["last_seen"] else "N/A"
-            print(f"{p['node_id']:<20s} {p['fingerprint']:<18s} {first:<24s} {last:<24s}")
+            state = p.get("trust_state", "trusted")
+            print(f"{p['node_id']:<20s} {p['fingerprint']:<18s} {state:<10s} {first:<24s} {last:<24s}")
     elif trust_cmd == "revoke":
         node_id = args.node_id
         broadcast = getattr(args, "broadcast", False)
@@ -486,8 +519,21 @@ def cmd_trust(args):
                                time.localtime(r.get("timestamp", 0)))
             print(f"{r['node_id']:<22s} {r.get('revoker','?'):<22s} "
                   f"{ts:<20s} {r.get('reason','')}")
+    elif trust_cmd == "set-state":
+        node_id = args.node_id
+        new_state = args.state
+        if store.set_trust_state(node_id, new_state):
+            print(f"Trust state for {node_id} -> {new_state}")
+            print("Note: a running daemon won't pick this up until it next "
+                  "constructs a TrustStore (every gate evaluation does this, "
+                  "so the change applies on the next inbound MSG).")
+            return 0
+        else:
+            print(f"Peer {node_id} not in trust store. Run 'ironmesh trust list' to see known peers.")
+            return 1
     else:
-        print("Usage: ironmesh trust [list|revoke <node_id>|list-revoked]")
+        print("Usage: ironmesh trust [list|revoke <node_id>|list-revoked|"
+              "set-state <node_id> <pending|trusted|blocked>]")
 
     return 0
 
@@ -636,6 +682,189 @@ def cmd_audit(args):
             return 1
 
     print("Usage: ironmesh audit [verify|export|verify-export]")
+    return 1
+
+
+def cmd_doctor(args):
+    """v0.8.5.2: one-shot diagnostic. Prints a checklist and exits non-zero
+    on any failed check. Designed to be safe to run on a host with a live
+    daemon (read-only, no mutations)."""
+    import socket
+    import sqlite3
+
+    keys_path = os.path.expanduser(args.keys_path)
+    db_path = os.path.expanduser(args.db_path)
+    trust_path = os.path.expanduser(
+        args.trust_path or "~/.ironmesh/known_peers.json"
+    )
+
+    failures = 0
+    print("ironmesh doctor — IronMesh installation diagnostic")
+    print("=" * 60)
+
+    # 1. Identity key file readable + decryptable.
+    print(f"[1/7] Identity key file: {keys_path}")
+    if not os.path.exists(keys_path):
+        print(f"      FAIL — file does not exist (run 'ironmesh keys generate')")
+        failures += 1
+        keypair = None
+    else:
+        keypair = None
+        try:
+            from ironmesh.keys import load_keys
+            pp = args.keys_passphrase or os.environ.get("IRONMESH_PASSPHRASE")
+            # Try in order: (a) the provided passphrase, (b) no passphrase
+            # (plaintext key file), (c) interactive prompt IF there's a tty.
+            # Never hang on a closed stdin — doctor is often run headless.
+            attempt_errors = []
+            for pp_try in (pp, None):
+                try:
+                    keypair = load_keys(keys_path, passphrase=pp_try)
+                    break
+                except Exception as e:
+                    attempt_errors.append(str(e))
+            if keypair is None and sys.stdin.isatty():
+                try:
+                    prompt_pp = getpass.getpass("      Identity key passphrase: ")
+                    keypair = load_keys(keys_path, passphrase=prompt_pp)
+                except Exception as e:
+                    attempt_errors.append(str(e))
+            if keypair is not None:
+                print(f"      OK — fingerprint {keypair.get_fingerprint()}")
+            else:
+                print(f"      FAIL — could not decrypt key file. "
+                      f"Set IRONMESH_PASSPHRASE or pass --keys-passphrase. "
+                      f"(tried errors: {attempt_errors[-1]})")
+                failures += 1
+        except Exception as e:
+            print(f"      FAIL — {e}")
+            failures += 1
+
+    # 2. Trust file readable + integrity check passes.
+    print(f"[2/7] Trust store: {trust_path}")
+    if not os.path.exists(trust_path):
+        print("      OK — file does not exist yet (will be created on first peer)")
+    elif keypair is None:
+        print("      SKIP — keys did not load")
+    else:
+        try:
+            from ironmesh.trust import TrustStore
+            ts = TrustStore(agent_key=keypair.ed25519_secret[:32], path=trust_path)
+            n = len(ts._peers)
+            n_pending = sum(1 for p in ts.list_peers() if p.get("trust_state") == "pending")
+            n_blocked = sum(1 for p in ts.list_peers() if p.get("trust_state") == "blocked")
+            if n == 0 and os.path.getsize(trust_path) > 100:
+                print("      WARN — trust file exists but loaded 0 peers (MAC failure?). "
+                      "Check the daemon's CRITICAL log lines, and consider --trust-path "
+                      "if multiple daemons share this host.")
+                failures += 1
+            else:
+                print(f"      OK — {n} pinned peers ({n_pending} pending, {n_blocked} blocked)")
+        except Exception as e:
+            print(f"      FAIL — {e}")
+            failures += 1
+
+    # 3. SQLite schema version.
+    print(f"[3/7] Message store: {db_path}")
+    if not os.path.exists(db_path):
+        print("      OK — DB does not exist yet (will be created at daemon startup)")
+    else:
+        try:
+            conn = sqlite3.connect(db_path)
+            try:
+                cur = conn.execute("SELECT value FROM _meta WHERE key='schema_version'")
+                row = cur.fetchone()
+                ver = int(row[0]) if row else 0
+            finally:
+                conn.close()
+            if ver < 3:
+                print(f"      WARN — schema v{ver} (latest is v3 in v0.8.5+). "
+                      f"Will auto-migrate on next daemon start.")
+            else:
+                print(f"      OK — schema v{ver}")
+        except Exception as e:
+            print(f"      FAIL — {e}")
+            failures += 1
+
+    # 4. Pending-trust queue health.
+    print(f"[4/7] Pending-trust queue (SQLite v3 only):")
+    if not os.path.exists(db_path):
+        print("      SKIP — DB not present")
+    else:
+        try:
+            conn = sqlite3.connect(db_path)
+            try:
+                # Table only exists at schema v3.
+                cur = conn.execute(
+                    "SELECT source_node_id, COUNT(*) FROM pending_trust_messages "
+                    "GROUP BY source_node_id"
+                )
+                rows = cur.fetchall()
+            except sqlite3.OperationalError:
+                rows = None
+            finally:
+                conn.close()
+            if rows is None:
+                print("      OK — table not present (schema pre-v3)")
+            elif not rows:
+                print("      OK — 0 messages awaiting promotion")
+            else:
+                total = sum(r[1] for r in rows)
+                print(f"      INFO — {total} message(s) queued across {len(rows)} peer(s):")
+                for nid, ct in rows[:5]:
+                    print(f"        {nid[:16]}…  count={ct}")
+        except Exception as e:
+            print(f"      FAIL — {e}")
+            failures += 1
+
+    # 5. Gate flag + queue cap from env (if a daemon were started now).
+    print(f"[5/7] Gate environment:")
+    gate_env = os.environ.get("IRONMESH_REQUIRE_MSG_PROMOTION", "").lower()
+    cap_env = os.environ.get("IRONMESH_PENDING_QUEUE_CAP")
+    trust_env = os.environ.get("IRONMESH_TRUST_PATH")
+    print(f"      IRONMESH_REQUIRE_MSG_PROMOTION = "
+          f"{'on' if gate_env in ('1','true','yes') else 'off'}{' (' + gate_env + ')' if gate_env else ''}")
+    print(f"      IRONMESH_PENDING_QUEUE_CAP     = {cap_env or '100 (default)'}")
+    print(f"      IRONMESH_TRUST_PATH            = {trust_env or '(default)'}")
+    print("      OK — env reported (informational; CLI flags override env)")
+
+    # 6. Port availability.
+    print(f"[6/7] Port {args.port} on {args.bind}:")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind((args.bind, args.port))
+        sock.close()
+        print("      OK — port is free (no daemon currently bound)")
+    except OSError as e:
+        sock.close()
+        # In-use can mean a healthy daemon — informational, not a failure.
+        print(f"      INFO — bind failed ({e}); a daemon may already be running here")
+
+    # 7. Audit log presence + chain integrity (light check).
+    audit_path = os.path.expanduser("~/.ironmesh/audit.log")
+    print(f"[7/7] Audit log: {audit_path}")
+    if not os.path.exists(audit_path):
+        print("      OK — audit log does not exist yet (will be created on daemon start)")
+    else:
+        try:
+            from ironmesh.audit import verify_chain
+            ok, msg = verify_chain(audit_path)
+            if ok:
+                print(f"      OK — {msg}")
+            else:
+                print(f"      WARN — {msg}")
+                failures += 1
+        except ImportError:
+            print("      SKIP — verify_chain not available in this build")
+        except Exception as e:
+            print(f"      FAIL — {e}")
+            failures += 1
+
+    print("=" * 60)
+    if failures == 0:
+        print("ALL CHECKS PASSED")
+        return 0
+    print(f"{failures} CHECK(S) FAILED — see above for remediation")
     return 1
 
 
@@ -828,6 +1057,8 @@ def main():
         return cmd_restore(args)
     elif command == "audit":
         return cmd_audit(args)
+    elif command == "doctor":
+        return cmd_doctor(args)
     elif command == "session":
         return cmd_session(args)
     elif command == "run":
@@ -851,6 +1082,7 @@ def main():
         print("  ironmesh audit verify [--path <path>] [--archives]")
         print("  ironmesh audit export --out <file>")
         print("  ironmesh audit verify-export <file>")
+        print("  ironmesh doctor [--port <port>] [--trust-path <path>]")
         print("  ironmesh session rotate <peer_id> --token <token>")
         return 0
 

@@ -41,8 +41,12 @@ from ironmesh.audit import (
     EVENT_AUTH_BLOCKED,
     EVENT_AUTH_FAILURE,
     EVENT_CAPABILITY_LEARNED,
+    EVENT_MSG_GATED_DROP,
+    EVENT_MSG_GATED_QUEUE,
+    EVENT_PEER_BLOCKED,
     EVENT_PEER_CONNECT,
     EVENT_PEER_DROPPED_LONG,
+    EVENT_PEER_PROMOTED,
     EVENT_STARTUP,
     EVENT_TOFU_MISMATCH,
     EVENT_TOFU_NEW,
@@ -992,6 +996,11 @@ footer.ops .legal{color:var(--text-faint);font-size:10px;letter-spacing:.5px}
   if(p.trust_state === 'mismatch' || p.mismatch === true) return { kind:'mismatch', cls:'trust-mismatch', label:'✗ MISMATCH' };
   if(p.status === 'handshaking')                          return { kind:'pending',  cls:'trust-pending',  label:'… HANDSHAKING' };
   if(!p.verified)                                          return { kind:'pending',  cls:'trust-pending',  label:'… UNVERIFIED' };
+  // v0.8.5.2: when the daemon ran with --require-message-promotion the trust
+  // store carries a tri-state (pending/trusted/blocked). Surface that here so
+  // operators see gate state in the main peers table, not only in PENDING TRUST.
+  if(p.trust_gate_state === 'blocked')                    return { kind:'blocked',  cls:'trust-mismatch', label:'⛔ BLOCKED' };
+  if(p.trust_gate_state === 'pending')                    return { kind:'pending',  cls:'trust-pending',  label:'… PENDING-PROMOTE' };
   // v0.8.3 backend pins on first sight (trust.py TOFU); fresh vs returning requires a new field.
   return { kind:'tofu', cls:'trust-verified', label:'✓ TOFU-PINNED' };
  }
@@ -2251,8 +2260,20 @@ class BridgeDaemon:
             self.metrics.messages_received_blocked = (
                 getattr(self.metrics, "messages_received_blocked", 0) + 1
             )
+            # v0.8.5.2: surface to operators via /api/mesh_stats.
+            self._db.pending_trust_dropped += 1
             logger.debug("Trust gate: dropping MSG from blocked peer %s",
                          originator[:12])
+            if self._audit:
+                try:
+                    self._audit.log(EVENT_MSG_GATED_DROP, {
+                        "peer_id": originator,
+                        "msg_id": frame.msg_id,
+                        "msg_type": frame.msg_type,
+                        "reason": "blocked",
+                    })
+                except Exception:
+                    pass
             return "drop"
 
         # state == "pending" — queue the wire payload for later drain.
@@ -2279,13 +2300,11 @@ class BridgeDaemon:
                     pass
                 if self._audit:
                     try:
-                        from ironmesh.audit import EVENT_TOFU_NEW
-                        # Reuse the TOFU-new event for queue-on-pending so
-                        # operators can grep audit logs for first-sight events.
-                        self._audit.log(EVENT_TOFU_NEW, {
+                        self._audit.log(EVENT_MSG_GATED_QUEUE, {
                             "peer_id": originator,
                             "trust_state": "pending",
-                            "queued_msg_id": frame.msg_id,
+                            "msg_id": frame.msg_id,
+                            "msg_type": frame.msg_type,
                             "queued_count": queued_count,
                         })
                     except Exception:
@@ -2338,12 +2357,9 @@ class BridgeDaemon:
                                target_node_id, m["msg_id"], e)
         if self._audit:
             try:
-                from ironmesh.audit import EVENT_TOFU_NEW
-                self._audit.log(EVENT_TOFU_NEW, {
+                self._audit.log(EVENT_PEER_PROMOTED, {
                     "peer_id": target_node_id,
-                    "trust_state": "trusted",
                     "drained": len(drained),
-                    "via": "operator_promote",
                 })
             except Exception:
                 pass
@@ -2369,6 +2385,14 @@ class BridgeDaemon:
             return {"ok": False, "discarded": 0,
                     "error": f"peer {target_node_id} not in trust store"}
         discarded = await self._db.discard_pending_trust(target_node_id)
+        if self._audit:
+            try:
+                self._audit.log(EVENT_PEER_BLOCKED, {
+                    "peer_id": target_node_id,
+                    "discarded": discarded,
+                })
+            except Exception:
+                pass
         logger.info("Blocked peer %s (discarded %d queued)",
                     target_node_id, discarded)
         return {"ok": True, "discarded": discarded, "error": None}
@@ -3896,6 +3920,12 @@ class BridgeDaemon:
         d["peer_long_drops"] = int(getattr(self, "_peer_long_drops_total", 0))
         # v0.7.2: bandwidth-throttle drops
         d["peer_bandwidth_drops"] = int(getattr(self, "_peer_bandwidth_drops_total", 0))
+        # v0.8.5.2: pending-trust gate counters (separate from offline queue
+        # so operators can tell which queue is under pressure).
+        d["pending_trust_evicted"] = int(getattr(self._db, "pending_trust_evicted", 0))
+        d["pending_trust_dropped"] = int(getattr(self._db, "pending_trust_dropped", 0))
+        d["messages_received_blocked"] = int(getattr(self.metrics, "messages_received_blocked", 0))
+        d["gate_enabled"] = bool(getattr(self.config, "require_message_promotion", False))
         return d
 
     def _format_metrics_prometheus(self, m: dict) -> str:
@@ -3969,6 +3999,13 @@ class BridgeDaemon:
             # v0.7.2: per-peer bandwidth throttle drops
             ("peer_bandwidth_drops", "ironmesh_peer_bandwidth_drops_total", "counter",
              "Frames dropped because per-peer bandwidth budget was exceeded"),
+            # v0.8.5.2: pending-trust gate counters
+            ("pending_trust_evicted", "ironmesh_pending_trust_evicted_total", "counter",
+             "MSGs evicted from a peer's pending-trust queue (FIFO at cap)"),
+            ("pending_trust_dropped", "ironmesh_pending_trust_dropped_total", "counter",
+             "MSGs silently dropped at the gate because the peer is blocked"),
+            ("messages_received_blocked", "ironmesh_messages_received_blocked_total", "counter",
+             "Inbound MSGs from blocked peers (subset of pending_trust_dropped from operator's view)"),
         ]
         lines = []
         for key, name, kind, help_text in spec:
@@ -4088,12 +4125,36 @@ class BridgeDaemon:
                         caps_by_name.setdefault(cap, []).append(node_id)
             except Exception:
                 caps_by_name = {}
+        # v0.8.5.2: enrich peers with their persisted trust_state so the
+        # dashboard's PEERS table can show pending/trusted/blocked at a
+        # glance instead of only in the separate PENDING TRUST subpanel.
+        trust_state_by_peer: dict = {}
+        try:
+            from ironmesh.trust import TrustStore
+            if self._keypair:
+                ts = TrustStore(
+                    agent_key=self._keypair.ed25519_secret[:32],
+                    path=self.trust_path,
+                )
+                for rec in ts.list_peers():
+                    trust_state_by_peer[rec["node_id"]] = rec.get(
+                        "trust_state", "trusted",
+                    )
+        except Exception:
+            pass  # GUI degrades gracefully if the trust file is unreadable
+        peer_dicts = []
+        for p in self.peers.values():
+            d = p.to_dict()
+            ts = trust_state_by_peer.get(d.get("node_id"))
+            if ts is not None:
+                d["trust_gate_state"] = ts
+            peer_dicts.append(d)
         return {
             "node_id": self.node_id,
             "name": self.name,
             "port": self.port,
             "metrics": self._build_metrics_dict(),
-            "peers": [p.to_dict() for p in self.peers.values()],
+            "peers": peer_dicts,
             "history": self.bus.history(50),
             "capabilities": caps_by_name,
         }

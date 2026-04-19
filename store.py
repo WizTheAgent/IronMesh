@@ -45,8 +45,14 @@ class MessageStore:
         self._storage_key: Optional[bytes] = storage_key
         self._max_pending_per_peer = max_pending_per_peer
         # Observability: evictions + refused admits, keyed by reason.
-        self.pending_dropped = 0  # total dropped (never queued)
-        self.pending_evicted = 0  # displaced by higher-priority admit
+        self.pending_dropped = 0  # offline queue: total dropped (never queued)
+        self.pending_evicted = 0  # offline queue: displaced by higher-priority admit
+        # v0.8.5.2: separate counters for the pending-trust queue (v0.8.5 gate).
+        # Conflating them with the offline-queue counters above hides which queue
+        # is under pressure — operators need different responses (promote vs.
+        # peer-online).
+        self.pending_trust_evicted = 0  # trust gate: cap eviction (oldest dropped)
+        self.pending_trust_dropped = 0  # trust gate: blocked-peer MSGs dropped at gate
         # Serialize open() against concurrent callers so migrations
         # don't race.
         self._open_lock = asyncio.Lock()
@@ -242,7 +248,7 @@ class MessageStore:
                        )""",
                     (source_node_id,),
                 )
-                self.pending_evicted += 1
+                self.pending_trust_evicted += 1
                 logger.warning(
                     "Pending-trust queue for %s at cap (%d); evicted oldest to admit %s",
                     source_node_id, cap, msg_id,
