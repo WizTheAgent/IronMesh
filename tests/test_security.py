@@ -212,7 +212,11 @@ class TestTOFUEnforcement:
 
         with patch("ironmesh.trust.TrustStore", return_value=mock_trust):
             await d._check_tofu("peer1", identity_b64)
-            mock_trust.pin_peer.assert_called_once_with("peer1", identity_b64)
+            # v0.8.5: pin_peer now takes a trust_state kwarg. Default-off
+            # gate ⇒ "trusted" (preserves pre-v0.8.5 behavior).
+            mock_trust.pin_peer.assert_called_once_with(
+                "peer1", identity_b64, trust_state="trusted",
+            )
 
     async def test_tofu_trusted_peer_passes(self, tmp_path):
         """Known peer with matching key should pass."""

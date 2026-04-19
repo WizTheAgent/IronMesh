@@ -21,4 +21,19 @@ export type { PeerRecord, PersistedState, PersistenceOptions } from "./persisten
 export { PeerMapper } from "./peer-mapper.js";
 export type { DirectoryContact, LivePeerObservation } from "./peer-mapper.js";
 
-export const VERSION = "0.1.0-alpha.4";
+export {
+  validateChannelConfig,
+  resolveChannelAccount,
+  listChannelAccountIds,
+  ChannelConfigSchema,
+} from "./config-schema.js";
+export type {
+  ChannelAccountConfig,
+  ChannelConfigTree,
+  ChannelValidationError,
+} from "./config-schema.js";
+
+export { defineIronMeshChannelEntry } from "./entry.js";
+export type { IronMeshChannelEntryOptions } from "./entry.js";
+
+export const VERSION = "0.1.0-alpha.5";

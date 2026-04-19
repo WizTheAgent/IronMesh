@@ -2427,7 +2427,7 @@ class BridgeDaemon:
                 # peers are pinned in "pending" state — their MSGs queue
                 # until an operator promotes. Default-off preserves the
                 # pre-v0.8.5 behavior (peers are immediately trusted).
-                gate_on = bool(getattr(self.cfg, "require_message_promotion", False))
+                gate_on = bool(getattr(self.config, "require_message_promotion", False))
                 initial_state = "pending" if gate_on else "trusted"
                 trust.pin_peer(peer_id, identity_public_b64,
                                trust_state=initial_state)
