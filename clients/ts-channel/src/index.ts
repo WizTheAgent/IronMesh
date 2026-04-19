@@ -21,4 +21,7 @@ export type { PeerRecord, PersistedState, PersistenceOptions } from "./persisten
 export { PeerMapper } from "./peer-mapper.js";
 export type { DirectoryContact, LivePeerObservation } from "./peer-mapper.js";
 
-export const VERSION = "0.1.0-alpha.2";
+export { TrustGate } from "./trust-gate.js";
+export type { GateAction, PendingTrustEvent, TrustGateOptions } from "./trust-gate.js";
+
+export const VERSION = "0.1.0-alpha.3";
