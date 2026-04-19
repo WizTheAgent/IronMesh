@@ -17,12 +17,15 @@ Requires: ``pip install langchain-core`` (or ``langchain``).
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from collections import deque
 from typing import Any, Dict, List, Optional, Type
 
 from ironmesh.agent import Agent
+
+logger = logging.getLogger(__name__)
 
 try:
     from langchain_core.tools import BaseTool
@@ -98,14 +101,19 @@ class IronMeshSendTool(BaseTool):
             )
             return json.dumps({"ok": True, "msg_id": msg_id, "target": target})
         except Exception as e:
-            return json.dumps({"error": str(e)})
+            # v0.8.5.2: don't leak internal details (paths, config, state)
+            # into the LLM's tool-result context. The full exception is
+            # still logged; only a sanitized category goes to the model.
+            logger.exception("ironmesh_send failed for target=%s", target)
+            return json.dumps({"error": f"{type(e).__name__}: send failed"})
 
     async def _arun(self, target: str, message: str, priority: str = "NORMAL") -> str:
         try:
             msg_id = await self.ctx.agent.send(target, message, priority=priority)
             return json.dumps({"ok": True, "msg_id": msg_id, "target": target})
         except Exception as e:
-            return json.dumps({"error": str(e)})
+            logger.exception("ironmesh_send (async) failed for target=%s", target)
+            return json.dumps({"error": f"{type(e).__name__}: send failed"})
 
 
 class IronMeshPeersTool(BaseTool):

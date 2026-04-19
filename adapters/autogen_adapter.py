@@ -21,12 +21,15 @@ Requires: ``pip install pyautogen`` (or ``autogen-agentchat``)
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from collections import deque
 from typing import Any, Dict, List
 
 from ironmesh.agent import Agent
+
+logger = logging.getLogger(__name__)
 
 
 class _InboxCollector:
@@ -85,7 +88,9 @@ def register_ironmesh(
             msg_id = agent.send_sync(target, message, priority=priority)
             return json.dumps({"ok": True, "msg_id": msg_id})
         except Exception as e:
-            return json.dumps({"error": str(e)})
+            # v0.8.5.2: don't leak internal details into LLM tool-result context.
+            logger.exception("autogen ironmesh_send failed for target=%s", target)
+            return json.dumps({"error": f"{type(e).__name__}: send failed"})
 
     def peers() -> str:
         return json.dumps(agent.peers, indent=2, default=str)
