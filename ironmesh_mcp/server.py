@@ -1213,11 +1213,23 @@ def main() -> int:
         print(f"ERROR: set --passphrase-file or {args.passphrase_env}", file=sys.stderr)
         return 2
 
+    # v0.8.5: opt into the pending-trust gate via env so MCP hosts
+    # (Claude Desktop, Claude Code) can flip the policy through their
+    # config without changing the spawn command.
+    require_promo = os.environ.get(
+        "IRONMESH_REQUIRE_MSG_PROMOTION", ""
+    ).lower() in ("1", "true", "yes")
+    queue_cap = int(os.environ.get("IRONMESH_PENDING_QUEUE_CAP", "100"))
+    trust_path_env = os.environ.get("IRONMESH_TRUST_PATH") or None
+
     daemon = BridgeDaemon(
         name=args.name, port=args.port, bind_address=args.bind,
         passphrase=passphrase,
         open_discovery=args.open_discovery,
         allow_plaintext_ws=args.allow_plaintext_ws,
+        require_message_promotion=require_promo,
+        pending_trust_queue_cap=queue_cap,
+        trust_path=trust_path_env,
     )
     loop = daemon.run(background=True)
     threading.Thread(target=loop.run_forever, name="mcp-loop",
