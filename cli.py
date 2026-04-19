@@ -753,7 +753,7 @@ def cmd_doctor(args):
     # 1. Identity key file readable + decryptable.
     print(f"[1/7] Identity key file: {keys_path}")
     if not os.path.exists(keys_path):
-        print(f"      FAIL — file does not exist (run 'ironmesh keys generate')")
+        print("      FAIL — file does not exist (run 'ironmesh keys generate')")
         failures += 1
         keypair = None
     else:
@@ -835,7 +835,7 @@ def cmd_doctor(args):
             failures += 1
 
     # 4. Pending-trust queue health.
-    print(f"[4/7] Pending-trust queue (SQLite v3 only):")
+    print("[4/7] Pending-trust queue (SQLite v3 only):")
     if not os.path.exists(db_path):
         print("      SKIP — DB not present")
     else:
@@ -866,7 +866,7 @@ def cmd_doctor(args):
             failures += 1
 
     # 5. Gate flag + queue cap from env (if a daemon were started now).
-    print(f"[5/7] Gate environment:")
+    print("[5/7] Gate environment:")
     gate_env = os.environ.get("IRONMESH_REQUIRE_MSG_PROMOTION", "").lower()
     cap_env = os.environ.get("IRONMESH_PENDING_QUEUE_CAP")
     trust_env = os.environ.get("IRONMESH_TRUST_PATH")
