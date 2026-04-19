@@ -104,6 +104,25 @@ No wire-protocol changes — every v0.8.x peer stays interoperable.
   trust UX. Removes ~400 lines of TS code that would have duplicated
   daemon state.
 
+### Security
+
+- **Pre-release audit caught + fixed**: the gate originally judged
+  trust against `frame.source`, an unauthenticated envelope field. A
+  pending peer could forge `source = self.node_id` and bypass the
+  self-loopback exemption. Trust judgement now keys on `peer_id`, the
+  wire-authenticated peer that signed the frame. Regression test
+  added (`test_pending_peer_cannot_bypass_via_forged_source`). Trade-
+  off: relayed messages now gate on the relay, not the originator —
+  documented limitation, may be revisited in v0.9.0.
+- **TrustStore failure is fail-closed**: a corrupted or unreadable
+  trust file drops gated traffic instead of silently delivering.
+- **Multi-daemon trust file collision fixed**: `BridgeDaemon` now
+  accepts an explicit `trust_path` (CLI: `--trust-path`). Previously
+  every daemon shared `~/.ironmesh/known_peers.json`, causing MAC
+  mismatches and silent trust resets when running two daemons on one
+  host. The default is unchanged, so single-daemon hosts see no
+  difference.
+
 ### Notes
 
 - Default behavior unchanged: `--require-message-promotion` is off, so

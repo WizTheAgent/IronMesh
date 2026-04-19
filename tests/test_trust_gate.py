@@ -421,10 +421,33 @@ class TestGateEndToEnd:
             await store.close()
 
     async def test_gate_does_not_gate_self(self, tmp_path, monkeypatch):
+        """Self-bypass keys on peer_id (wire-authenticated), NOT
+        frame.source (unauthenticated envelope field)."""
         daemon, ts, store = await self._build_daemon(tmp_path, monkeypatch, gate_on=True)
         try:
-            f = self._frame(source=daemon.node_id)
+            # A frame whose immediate peer == self bypasses (defensive
+            # loopback handling; in practice a daemon doesn't connect to
+            # itself over the wire).
+            f = self._frame(source=None)
             assert await daemon._gate_inbound_msg(daemon.node_id, f) == "deliver"
+        finally:
+            await store.close()
+
+    async def test_pending_peer_cannot_bypass_via_forged_source(self, tmp_path, monkeypatch):
+        """Security regression: a pending peer must not bypass the gate by
+        forging frame.source to claim it's our own node_id. The frame's
+        source field is not cryptographically bound to peer_id — only the
+        encrypted payload is signed. Trust judgement keys on peer_id."""
+        daemon, ts, store = await self._build_daemon(tmp_path, monkeypatch, gate_on=True)
+        try:
+            ts.pin_peer("attacker", "X" * 64, trust_state="pending")
+            # Attacker forges frame.source to look like it came from us.
+            f = self._frame(source=daemon.node_id)
+            action = await daemon._gate_inbound_msg("attacker", f)
+            assert action == "queue", (
+                f"forged-source bypass: pending peer delivered as 'self' (got {action})"
+            )
+            assert await store.pending_trust_count_for("attacker") == 1
         finally:
             await store.close()
 
@@ -492,6 +515,41 @@ class TestGateEndToEnd:
             by_id = {p["node_id"]: p for p in listing}
             assert by_id["peerA"]["queued_count"] == 2
             assert by_id["peerB"]["queued_count"] == 0
+        finally:
+            await store.close()
+
+    async def test_promote_then_inbound_delivers_no_loss(self, tmp_path, monkeypatch):
+        """Race window between promote() and a fresh inbound from the
+        same peer: drained messages publish in arrival order and the
+        new inbound delivers via the trusted fast path. No message is
+        lost or double-published."""
+        daemon, ts, store = await self._build_daemon(tmp_path, monkeypatch, gate_on=True)
+        try:
+            ts.pin_peer("racy", "R" * 64, trust_state="pending")
+            published: list[str] = []
+            daemon.bus = SimpleNamespace(
+                publish=lambda mt, env: published.append(env["msg_id"]),
+            )
+            # Queue 2 messages while pending.
+            await daemon._gate_inbound_msg("racy", self._frame(
+                source="racy", msg_id="q1"))
+            await daemon._gate_inbound_msg("racy", self._frame(
+                source="racy", msg_id="q2"))
+            # Concurrently: promote drains, and a fresh inbound arrives.
+            promote_task = asyncio.create_task(daemon.promote_pending_peer("racy"))
+            await asyncio.sleep(0)  # let promote start
+            new_action = await daemon._gate_inbound_msg("racy", self._frame(
+                source="racy", msg_id="post"))
+            result = await promote_task
+            assert result["ok"] is True
+            assert result["drained"] == 2
+            # New inbound must deliver (gate flipped to trusted by promote).
+            assert new_action == "deliver"
+            # Drained messages must be published in arrival order.
+            drained_ids = [m for m in published if m in ("q1", "q2")]
+            assert drained_ids == ["q1", "q2"]
+            # Pending queue empty afterwards.
+            assert await store.pending_trust_count_for("racy") == 0
         finally:
             await store.close()
 

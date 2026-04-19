@@ -96,11 +96,24 @@ storage-key flow — the queue inherits the same protection as the
 
 ## Originator vs. immediate peer
 
-Mesh routing means the peer that delivered the frame to us
-(`peer_id`) may not be the originator (`frame.source`). The gate
-judges trust against the originator: a relayed message from a pending
-peer still gets queued, even if the relay itself is a trusted hop.
-Falls back to `peer_id` when `frame.source` is unset (direct delivery).
+The gate judges trust against `peer_id` — the wire-authenticated peer
+whose identity key signed the frame. We deliberately do **not** key on
+`frame.source`: that field is unauthenticated metadata on both the
+JSON and binary paths (the peer's signature covers the encrypted
+payload, not the source field in the envelope). A pending peer could
+otherwise forge `source = self.node_id` and bypass the gate via the
+self-loopback exemption.
+
+For relayed messages, this means the gate evaluates the **relay**'s
+trust state, not the original source. A trusted relay can deliver
+messages from a pending peer. This is a known limitation of v0.8.5;
+v0.9.0 may add `source_signature` verification so relays gate on the
+originator. For deployments where this matters (multi-hop topologies
+with mixed trust), prefer direct connections over relays for now.
+
+Self-loopback (`peer_id == self.node_id`) bypasses the gate as a
+defensive measure; in practice daemons don't connect to themselves
+over the wire, so this branch is dormant.
 
 ## Operator surfaces
 
@@ -146,6 +159,14 @@ Subsequent inbound from this peer takes the `trusted` short path —
 no queueing.
 
 Idempotent on already-trusted peers (returns `drained: 0`).
+
+## Failure modes
+
+If `TrustStore` fails to open (corrupted file, permissions, missing
+keypair), the gate fails **closed** — drops all gated traffic with an
+error log. A broken trust store is a security event; better to refuse
+delivery than silently downgrade. The non-gated path (control frames,
+self-loopback) is unaffected, so the daemon stays manageable.
 
 ## What the gate does NOT do
 

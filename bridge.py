@@ -2212,16 +2212,23 @@ class BridgeDaemon:
           "drop"    — sender is blocked, silently dropped
 
         Gate is a no-op when ``require_message_promotion`` is False or the
-        frame is not a user-payload type. The originator is judged by
-        ``frame.source`` if set (so relayed messages from a pending peer
-        still gate), falling back to the immediate ``peer_id``.
+        frame is not a user-payload type.
+
+        Trust judgement keys on ``peer_id`` — the wire-authenticated peer
+        whose identity key signed the frame. ``frame.source`` looks
+        appealing for relayed messages but is unauthenticated metadata
+        on both the JSON and binary paths (the peer's signature covers
+        the encrypted payload, not the source field). A pending peer
+        could otherwise forge ``source = self.node_id`` and bypass the
+        gate via the self-loopback exemption below. v0.9.0 may add
+        source_signature verification so relays gate on the originator.
         """
         if not self.config.require_message_promotion:
             return "deliver"
         if frame.msg_type not in self._GATED_MSG_TYPES:
             return "deliver"
 
-        originator = frame.source or peer_id
+        originator = peer_id
         # Don't gate ourselves (loopback / self-test).
         if originator == self.node_id:
             return "deliver"
@@ -2231,8 +2238,11 @@ class BridgeDaemon:
             mac_key = self._keypair.ed25519_secret[:32]
             ts = TrustStore(agent_key=mac_key, path=self.trust_path)
         except Exception as e:
-            logger.warning("Trust gate: failed to open TrustStore (%s) — fail-open", e)
-            return "deliver"
+            # Fail closed: a broken trust store is a security event, not a
+            # reason to bypass the gate. Drop pending-class traffic until
+            # an operator fixes the file.
+            logger.error("Trust gate: failed to open TrustStore (%s) — failing closed (drop)", e)
+            return "drop"
 
         state = ts.get_trust_state(originator)
         if state == "trusted":
