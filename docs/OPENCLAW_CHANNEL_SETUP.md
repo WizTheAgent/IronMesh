@@ -110,14 +110,31 @@ Restart OpenClaw. On first inbound MSG from a peer, the plugin will
 deliver it to your agent's inbound channel. Replies go back to the
 handshake peer.
 
+## Recommended: enable the daemon trust gate
+
+For OpenClaw deployments specifically, run the IronMesh daemon with
+the v0.8.5 pending-trust gate enabled:
+
+```bash
+ironmesh run --passphrase-file <path> --gui --require-message-promotion
+```
+
+Without this, any peer that newly joins your mesh can immediately
+push messages into your OpenClaw agent. With it, new peers' messages
+queue at the daemon until you explicitly promote them — via the
+dashboard's PENDING TRUST panel, or via the agent itself using the
+`ironmesh_trust_peer` MCP tool. See
+[`OPERATOR_TRUST_RUNBOOK.md`](OPERATOR_TRUST_RUNBOOK.md).
+
+The gate lives in the daemon, not the channel plugin — once enabled,
+all clients connected to that daemon (the channel plugin, the Python
+CLI, future Go clients) get the same protection.
+
 ## What's not in the alpha
 
-These are tracked for the v0.9.0 cut:
+These are tracked for v0.8.6+:
 
 - **Setup wizard** — `openclaw channel setup ironmesh` flow
-- **Directory adapter** — peers appear in OpenClaw's contact list
-- **TOFU pending-trust UI** — first message from an unknown peer
-  prompts the operator before delivering
 - **Multi-peer rooms** — broadcast to a subset, group conversations
 - **Offline replay** — messages received while OpenClaw is off get
   replayed on next start

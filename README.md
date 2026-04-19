@@ -456,6 +456,15 @@ ironmesh keys info [--path <path>]
 # Trust management (TOFU)
 ironmesh trust list
 ironmesh trust revoke <node_id>
+
+# Pending-trust message gate (v0.8.5, opt-in default off)
+ironmesh run --passphrase-file <path> --require-message-promotion
+# Or via env: IRONMESH_REQUIRE_MSG_PROMOTION=true
+# When enabled, MSGs from any newly-pinned peer queue at the daemon
+# until an operator promotes via dashboard, MCP, or:
+#   ironmesh_trust_peer  (MCP)  — promote, drain queue
+#   ironmesh_block_peer  (MCP)  — block, discard queue
+# See docs/OPERATOR_TRUST_RUNBOOK.md.
 ```
 
 > **Note:** `--passphrase` was removed from the CLI (visible in `ps aux`). Use `--passphrase-file`, `IRONMESH_PASSPHRASE_FILE` env var, or interactive `getpass` prompt.
@@ -474,6 +483,7 @@ Environment variables:
 - **Encryption:** XSalsa20-Poly1305 authenticated encryption (NaCl SecretBox). Plaintext never accepted after handshake. Binary wire format.
 - **Key exchange:** X25519 ECDH with ephemeral keys (forward secrecy) + channel binding to auth stage
 - **Identity:** Ed25519 signing keys. Mandatory detached signatures on every binary frame. TOFU key pinning with tamper-resistant store.
+- **Pending-trust gate (v0.8.5, opt-in):** `--require-message-promotion` holds messages from newly-pinned peers in a per-peer queue until an operator promotes them via dashboard or MCP. Daemon-authoritative, all clients benefit. See `docs/TRUST_GATE_ARCHITECTURE.md`.
 - **Mutual auth:** HMAC-SHA256 passphrase proof — both sides prove knowledge. No default passphrase. Minimum 12 characters enforced.
 - **Peer identity:** peer_id derived from cryptographic fingerprint (128-bit), not self-reported
 - **Replay protection:** Monotonic sequence numbers (seq=0 rejected) + 30-second timestamp window

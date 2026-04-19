@@ -5,50 +5,118 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v0.8.5-dev (OpenClaw channel plugin)
+## [Unreleased] — v0.8.5-dev (Pending-trust gate + OpenClaw channel)
 
-In progress on `main` after v0.8.4. Adds the OpenClaw channel plugin
-alpha — IronMesh peers as a chat surface in OpenClaw, complementing
-the v0.8.4 MCP bridge (which exposes mesh ops as tools).
+In progress on `main` after v0.8.4. Two themes:
 
-### Added
+1. **Pending-trust message gate** — opt-in default-deny mode for new
+   peers. When enabled, MSG/REQ/RESP frames from peers awaiting
+   operator promotion queue at the daemon instead of reaching clients.
+   Closes the "any new TOFU-pinned peer can immediately push messages
+   into your agents" gap.
+2. **OpenClaw channel plugin** — IronMesh peers as a chat surface in
+   OpenClaw, complementing the v0.8.4 MCP bridge.
 
-- **OpenClaw channel plugin (alpha)** at [`clients/ts-channel/`](clients/ts-channel/),
-  package `@wiztheagent/openclaw-ironmesh-channel@0.1.0-alpha.2`. OpenClaw
-  agents now treat IronMesh peers as a chat channel: incoming peer
-  messages arrive as inbound chat, outbound replies go back over the
-  encrypted mesh. Adapters implemented: `id`, `meta`, `capabilities`,
-  `config`, `lifecycle.start/stop`, `outbound.send`, `messaging.subscribe`,
-  `directory.self/listPeers/listPeersLive`, `status.describe`. Setup
-  walkthrough: [`docs/OPENCLAW_CHANNEL_SETUP.md`](docs/OPENCLAW_CHANNEL_SETUP.md).
-- **Persistence layer** at `src/persistence.ts` — atomic JSON-per-account
+No wire-protocol changes — every v0.8.x peer stays interoperable.
+
+### Added — pending-trust message gate
+
+- **Daemon-side gate** at `bridge.py` `_gate_inbound_msg` — inbound
+  user-payload frames (MSG / REQ / RESP) from a peer in trust state
+  `pending` are queued in a new SQLite table; `blocked` peers are
+  silently dropped; `trusted` peers fall through to the existing
+  delivery path. Control frames (HEARTBEAT / REKEY / ROUTE_*) are
+  always delivered. Self-loopback bypasses the gate.
+- **Trust state machine** in `trust.py` — every pinned peer carries a
+  `trust_state` of `pending` | `trusted` | `blocked`. Pre-v0.8.5 stores
+  read missing field as `trusted` so existing operators see no
+  behavior change on upgrade. New methods: `get_trust_state`,
+  `set_trust_state`, `list_by_trust_state`. `pin_peer` accepts an
+  initial state (defaults to `trusted`).
+- **SQLite schema v3** in `store.py` — `pending_trust_messages` table
+  with per-peer FIFO queue (default cap 100/peer with eviction +
+  observability counter). New methods: `queue_pending_trust`,
+  `drain_pending_trust`, `discard_pending_trust`,
+  `list_pending_trust_summary`, `pending_trust_count_for`. Schema
+  migrates automatically from v2; existing message + peer data preserved.
+- **Operator API** on the daemon: `promote_pending_peer(node_id)` flips
+  to trusted and drains the queue back through the normal inbound
+  path (history + bus + GUI fanout) in arrival order;
+  `block_pending_peer(node_id)` flips to blocked and discards the queue;
+  `list_pending_trust()` returns one entry per peer awaiting promotion
+  with queued counts and identity metadata.
+- **Three new MCP tools** (`ironmesh_mcp/server.py`) — tool count
+  18 → 21:
+  - `ironmesh_list_pending_trust` — list peers awaiting promotion +
+    queued message counts; reports `gate_enabled` so the caller knows
+    whether the daemon is actually gating
+  - `ironmesh_trust_peer` — promote a pending peer, drain its queued
+    messages back through the normal inbound path (idempotent on
+    already-trusted peers)
+  - `ironmesh_block_peer` — local-only quiet block (requires
+    `confirm=true`); distinct from `ironmesh_revoke_peer`, which
+    propagates a signed REVOCATION across the mesh
+- **`/ws` operator actions** on the dashboard control channel —
+  `list_pending_trust`, `promote_peer`, `block_peer` (all guarded by
+  the existing GUI session token).
+- **Dashboard panel** — new "PENDING TRUST" section under PEERS shows
+  the queue at a glance with `PROMOTE` / `BLOCK` action buttons and a
+  `gate on` / `gate off` indicator. Auto-refreshes on every gate event.
+- **CLI flag** `--require-message-promotion` (env
+  `IRONMESH_REQUIRE_MSG_PROMOTION=true`). Default **off** for
+  backwards compatibility — opt-in security default for v0.8.5;
+  v0.9.0 is the natural place to flip the default with a release of
+  operator feedback. Companion knob:
+  `--pending-trust-queue-cap N` (default 100).
+- **34 hardened tests** in `tests/test_trust_gate.py` — state machine,
+  queue admit / cap eviction / drain order / discard / summary,
+  schema v2 → v3 migration with data preservation, MCP tool dispatch +
+  arg validation, end-to-end gate behavior, concurrent inbound
+  serialization, backwards-compat default for pre-v0.8.5 stores.
+
+### Added — OpenClaw channel plugin (alpha)
+
+- **OpenClaw channel plugin** at [`clients/ts-channel/`](clients/ts-channel/),
+  package `@wiztheagent/openclaw-ironmesh-channel@0.1.0-alpha.4`.
+  OpenClaw agents treat IronMesh peers as a chat channel: incoming
+  peer messages arrive as inbound chat, outbound replies go back over
+  the encrypted mesh. Adapters implemented: `id`, `meta`,
+  `capabilities`, `config`, `lifecycle.start/stop`, `outbound.send`,
+  `messaging.subscribe`, `directory.self/listPeers/listPeersLive`,
+  `status.describe`. Setup walkthrough:
+  [`docs/OPENCLAW_CHANNEL_SETUP.md`](docs/OPENCLAW_CHANNEL_SETUP.md).
+- **Persistence layer** (`src/persistence.ts`) — atomic JSON-per-account
   state file under `~/.openclaw/ironmesh-channel/`. Survives gateway
   restart. `PeerRecord` shape: `{nodeId, agentName, lastSeenMs,
-  pinnedFingerprint, trust: pending|trusted|blocked}`. TOFU fingerprint
-  pinned on first observation.
-- **Peer-mapper** at `src/peer-mapper.ts` — translates IronMesh node_id
+  pinnedFingerprint, trust}`. TOFU fingerprint pinned on first
+  observation.
+- **Peer-mapper** (`src/peer-mapper.ts`) — translates IronMesh node_id
   ↔ OpenClaw `ChannelDirectoryEntry`. Peers seen on the mesh appear in
   OpenClaw's contact list with their agent name + online status.
-- **A.9 manual verification** — `python -m ironmesh_mcp` registered
-  alongside the legacy custom MCP wrapper on the live `gatekeeper`
-  gateway (commit `14ee186`). Verified the openclaw-gateway spawns the
-  18-tool MCP server with the configured args + the embedded daemon
-  binds and serves. End-to-end ping-pong between wiz and gatekeeper
-  confirmed bidirectional MSG delivery over the mesh.
-- **Doc:** `docs/OPENCLAW_CHANNEL_SETUP.md` — operator-facing setup
-  walkthrough including channel-plugin-vs-MCP-bridge comparison.
-- **Doc update:** `docs/OPENCLAW_MCP_SETUP.md` gained a "Running
-  alongside an existing IronMesh daemon" section based on the A.9
-  rollout learnings (separate port, distinct agent name, both daemons
-  join the same mesh as separate peers).
+
+### Changed
+
+- **TS channel plugin no longer holds its own pending-trust queue.**
+  Initial alpha.3 shipped a TS-side gate; in alpha.4 trust gating is
+  daemon-authoritative. Pending peers' messages don't reach the plugin
+  at all when the daemon gate is on. Operators promote/block via the
+  daemon dashboard or the new MCP tools — there is no per-channel
+  trust UX. Removes ~400 lines of TS code that would have duplicated
+  daemon state.
 
 ### Notes
 
-- The channel plugin is **alpha** — single-peer DMs only, no setup
-  wizard, no TOFU operator-approval gate, no offline replay, no
-  multi-peer routing. Those remain on the v0.8.5 → v0.8.6 roadmap.
+- Default behavior unchanged: `--require-message-promotion` is off, so
+  upgrading a daemon does not change message delivery for any
+  existing peer. Operators opt in; v0.9.0 will revisit defaulting.
+- The pending-trust queue is **not encrypted at rest beyond the
+  daemon's existing `_encrypt_payload` storage key** — same protection
+  as `messages` and `pending_messages` tables.
+- The OpenClaw channel plugin remains alpha — single-peer DMs only,
+  no setup wizard, no offline replay, no multi-peer routing. Those
+  remain on the v0.8.6+ roadmap.
 - Python package version remains `0.8.4` until the v0.8.5 cut. The
-  channel plugin is npm-only and has its own version (`alpha.2`).
+  channel plugin is npm-only and has its own version (`alpha.4`).
 
 ## [0.8.4] — Expanded MCP surface + functional TypeScript client
 
