@@ -26,8 +26,11 @@ button, MCP tool, or CLI.
 5. [Blocking a peer](#blocking-a-peer)
 6. [Block vs. revoke](#block-vs-revoke)
 7. [Tuning the queue cap](#tuning-the-queue-cap)
-8. [Troubleshooting](#troubleshooting)
-9. [What changes for existing operators on upgrade](#what-changes-for-existing-operators-on-upgrade)
+8. [Running multiple daemons on one host (`--trust-path`)](#running-multiple-daemons-on-one-host)
+9. [Audit events you can grep for](#audit-events-you-can-grep-for)
+10. [`ironmesh doctor` diagnostic](#ironmesh-doctor-diagnostic)
+11. [Troubleshooting](#troubleshooting)
+12. [What changes for existing operators on upgrade](#what-changes-for-existing-operators-on-upgrade)
 
 ## Should I enable the gate?
 
@@ -212,8 +215,97 @@ Or env: `IRONMESH_PENDING_QUEUE_CAP=500`.
 Raise it if your peers are bursty and you don't promote often.
 Lower it if you want a tight upper bound on storage. Set to 0 to
 disable the cap (not recommended — a chatty pending peer can fill
-your DB). Eviction count is exposed as `pending_evicted` in
-`/api/mesh_stats`.
+your DB). Eviction count is exposed as `pending_trust_evicted` (v0.8.5.2+)
+in `/api/mesh_stats` and the Prometheus `/metrics` endpoint.
+
+## Running multiple daemons on one host
+
+If you run two IronMesh daemons on the same machine (e.g. a stock
+daemon plus a benchmark responder, or two configured personas),
+**each daemon needs its own trust-store path** or they will clobber
+each other's HMAC on every save and silently lose pinned peers on
+restart. Symptom in the daemon log:
+
+```
+CRITICAL: Trust store integrity check FAILED at ~/.ironmesh/known_peers.json —
+stored_mac=abc123…  expected_mac=def456…  peers_in_file=7. If you run multiple
+daemons on this host, give each its own --trust-path to avoid silent collisions…
+```
+
+Fix (v0.8.5+):
+
+```bash
+# daemon A
+ironmesh run --name alice --port 8765 \
+  --trust-path ~/.ironmesh/alice.known_peers.json ...
+# daemon B
+ironmesh run --name bob --port 8766 \
+  --trust-path ~/.ironmesh/bob.known_peers.json ...
+```
+
+The `trust` subcommand accepts `--trust-path` too, so you can
+inspect / edit a specific daemon's trust file:
+
+```bash
+ironmesh trust list --trust-path ~/.ironmesh/alice.known_peers.json
+```
+
+MCP hosts: set `IRONMESH_TRUST_PATH` in the server's env block.
+
+## Audit events you can grep for
+
+Every gate decision and operator action writes an HMAC-chained entry
+to `~/.ironmesh/audit.log` (v0.8.5.2+). The event types are:
+
+| Event | Fired when | Details keys |
+|---|---|---|
+| `MSG_GATED_QUEUE` | A MSG/REQ/RESP from a pending peer is queued | `peer_id`, `msg_id`, `msg_type`, `queued_count`, `trust_state` |
+| `MSG_GATED_DROP` | A MSG/REQ/RESP from a blocked peer is silently dropped | `peer_id`, `msg_id`, `msg_type`, `reason` |
+| `PEER_PROMOTED` | An operator promotes a pending peer to trusted | `peer_id`, `drained` (count of MSGs flushed from queue) |
+| `PEER_BLOCKED` | An operator blocks a peer | `peer_id`, `discarded` (count of queued MSGs discarded) |
+| `TOFU_NEW_PEER` | First-time TOFU pin | `peer_id`, `trust_state` |
+
+Grep recipe for forensic review after an incident:
+
+```bash
+grep -E '"event":"(MSG_GATED_QUEUE|MSG_GATED_DROP|PEER_PROMOTED|PEER_BLOCKED)"' ~/.ironmesh/audit.log
+```
+
+The chain is verifiable with `ironmesh audit verify`. Any break means
+an attacker edited or truncated the log — the daemon will detect it
+on next start.
+
+## `ironmesh doctor` diagnostic
+
+New in v0.8.5.2: one-shot self-check for the whole install.
+
+```bash
+ironmesh doctor
+```
+
+Runs seven checks and exits non-zero on any failure:
+
+1. Identity key file readable + decrypts with the configured passphrase
+2. Trust store MAC verifies (catches the multi-daemon collision pattern)
+3. SQLite schema version (v3 required for v0.8.5+ gate)
+4. Pending-trust queue depth (informational; warns if growing)
+5. Gate environment variables (`IRONMESH_REQUIRE_MSG_PROMOTION`,
+   `IRONMESH_PENDING_QUEUE_CAP`, `IRONMESH_TRUST_PATH`)
+6. Port availability (flags a conflict with another daemon)
+7. Audit chain integrity
+
+Flags:
+
+```bash
+ironmesh doctor \
+  --keys-path ~/.ironmesh/alice/keys.json \
+  --db-path ~/.ironmesh/alice/data.db \
+  --trust-path ~/.ironmesh/alice/known_peers.json \
+  --port 8765
+```
+
+Works headless — with no TTY, it tries env + plaintext key and skips
+the interactive passphrase prompt instead of hanging.
 
 ## Troubleshooting
 

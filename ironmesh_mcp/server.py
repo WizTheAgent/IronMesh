@@ -317,6 +317,11 @@ class IronMeshMCP:
             return {"error": f"peer '{target}' not found. Known: {known}"}
 
         payload_bytes = payload.encode("utf-8") if isinstance(payload, str) else bytes(payload)
+        # v0.8.5.2: cap payload size (16 MB) so a malicious MCP caller can't
+        # flood the wire. The daemon already enforces its own max via
+        # --max-message-size, but we want MCP-layer rejection to be fast.
+        if len(payload_bytes) > 16 * 1024 * 1024:
+            return {"error": f"payload exceeds 16 MB limit (got {len(payload_bytes)} bytes)"}
 
         fut = asyncio.run_coroutine_threadsafe(
             self.daemon.send_message(target_node, msg_type, payload_bytes, priority),
@@ -619,10 +624,19 @@ class IronMeshMCP:
         prompt = args.get("prompt", args.get("body", ""))
         timeout = float(args.get("timeout", _REQUEST_SERVICE_DEFAULT_TIMEOUT))
         priority = args.get("priority", "NORMAL")
+        # v0.8.5.2: clamp timeout so a malicious caller can't block the MCP
+        # handler indefinitely with timeout=99999. 300s is generous for any
+        # realistic LLM roundtrip.
+        timeout = max(1.0, min(timeout, 300.0))
         if not target:
             return {"error": "target required"}
         if not prompt:
             return {"error": "prompt required"}
+        # v0.8.5.2: cap prompt length so a malicious caller can't chunk
+        # gigabyte payloads through the MCP channel. 1 MB is already far
+        # above any reasonable LLM prompt.
+        if len(prompt) > 1_048_576:
+            return {"error": "prompt exceeds 1 MB limit"}
         node_id = self._resolve_target(target)
         if node_id is None:
             return {"error": f"unknown peer '{target}'"}
@@ -684,9 +698,16 @@ class IronMeshMCP:
         priority = args.get("priority", "NORMAL")
         msg_type = args.get("msg_type", "MSG")
         timeout = float(args.get("timeout", 10.0))
+        # v0.8.5.2: clamp fan-out timeout (per-peer) to prevent the MCP
+        # handler hanging if one peer is slow.
+        timeout = max(1.0, min(timeout, 60.0))
         if not payload:
             return {"error": "payload required"}
         payload_bytes = payload.encode("utf-8") if isinstance(payload, str) else bytes(payload)
+        # v0.8.5.2: cap broadcast payload size so a malicious caller can't
+        # amplify a large payload across N online peers.
+        if len(payload_bytes) > 16 * 1024 * 1024:
+            return {"error": f"payload exceeds 16 MB limit (got {len(payload_bytes)} bytes)"}
 
         own = getattr(self.daemon, "node_id", None)
         targets: list[str] = []
@@ -741,10 +762,21 @@ class IronMeshMCP:
             cursor = int(args.get("cursor") or 0)
         except (TypeError, ValueError):
             return {"error": "cursor must be an integer"}
-        limit = int(args.get("limit") or 50)
+        if cursor < 0:
+            return {"error": "cursor must be non-negative"}
+        try:
+            limit = int(args.get("limit") or 50)
+        except (TypeError, ValueError):
+            return {"error": "limit must be an integer"}
+        # v0.8.5.2: clamp limit so a malicious caller can't request 1M
+        # events and force a buffer-wide snapshot copy. The ring buffer
+        # holds at most _EVENT_BUFFER_DEFAULT (500) anyway.
+        limit = max(1, min(limit, 1000))
         kinds = args.get("kinds")
         if kinds and not isinstance(kinds, list):
             return {"error": "kinds must be a list of strings"}
+        if kinds is not None and len(kinds) > 64:
+            return {"error": "kinds filter cannot exceed 64 entries"}
 
         with self._event_lock:
             snapshot = list(self._events)

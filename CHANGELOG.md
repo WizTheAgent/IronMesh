@@ -5,6 +5,100 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.5.2] — Operator polish + security hardening
+
+Patch release on top of v0.8.5. Operator UX polish for the pending-
+trust gate + three security fixes from a pre-submission audit. No
+protocol or schema changes; every v0.8.x peer stays interoperable;
+default behavior is unchanged.
+
+### Added
+
+- **HMAC-chained audit events for gate decisions**: `MSG_GATED_QUEUE`,
+  `MSG_GATED_DROP`, `PEER_PROMOTED`, `PEER_BLOCKED`. Wired into
+  `_gate_inbound_msg`, `promote_pending_peer`, `block_pending_peer`.
+  Operators get a tamper-evident forensic trail instead of only
+  stderr logs.
+- **`ironmesh trust set-state <node_id> <pending|trusted|blocked>`**
+  CLI subcommand. Works offline against the trust file. Paired with
+  a new `--trust-path` flag on the `trust` subcommand for
+  multi-daemon operators.
+- **Trust-state column** in `ironmesh trust list` output.
+- **`trust_gate_state` in `/api/state`** — dashboard PEERS table now
+  surfaces the v0.8.5 trust enum in the main peer row alongside the
+  existing TOFU labels.
+- **Gate counters in `/api/mesh_stats` + `/metrics` Prometheus**:
+  `gate_enabled`, `pending_trust_evicted`, `pending_trust_dropped`,
+  `messages_received_blocked`.
+- **`ironmesh doctor`** — one-shot diagnostic subcommand. Checks
+  identity key, trust store MAC, SQLite schema, pending-trust queue,
+  gate env vars, port availability, audit chain integrity. Exit code
+  non-zero on failure.
+
+### Fixed (security)
+
+- **Constant-time GUI token comparison.** Both the `?token=`
+  query-param and `Authorization: Bearer` header paths in
+  `_is_gui_authorized` used variable-time `==`. A LAN attacker
+  could have recovered the 256-bit token via response-latency timing
+  on `/ws` upgrade. Now uses `hmac.compare_digest`.
+- **Atomic trust-file write.** `TrustStore._save` wrote
+  non-atomically with `open(path, "w") + json.dump`. SIGKILL or
+  power loss mid-write would leave an empty or truncated file, and
+  operators would lose every pinned peer on restart. Now writes
+  `path.tmp` + `fsync` + `os.replace` (atomic on POSIX and
+  same-drive NTFS).
+- **Strict `Frame.from_dict` type validation.** Previously accepted
+  malformed inputs like `{"type": 123}` and crashed deep in dispatch.
+  Now validates `type`, `msg_id`, `source`, `destination`, and
+  `sequence` at the deserialization boundary.
+
+### Fixed (observability)
+
+- **Conflated pending-queue counter.** My v0.8.5 trust-gate queue
+  eviction was incrementing `self.pending_evicted` on
+  `MessageStore`, which is also the offline-queue counter. Operators
+  looking at `/metrics` couldn't tell which queue was under
+  pressure. Split into separate fields: `pending_trust_evicted` and
+  `pending_trust_dropped` for the gate; `pending_evicted` /
+  `pending_dropped` remain the offline-queue fields.
+- **`/api/mesh_stats` was missing the new gate counters.** Only
+  `/metrics` Prometheus carried them. Fixed so both surfaces expose
+  `gate_enabled`, `pending_trust_evicted`, `pending_trust_dropped`,
+  `messages_received_blocked`.
+- **`ironmesh doctor` stdin-closed hang.** The tool previously
+  called `getpass.getpass()` unconditionally, blocking forever when
+  run from automation or `< /dev/null`. Now tries env + plaintext
+  key first and only prompts when `sys.stdin.isatty()`.
+
+### Fixed (operator-facing error messages)
+
+- **Trust integrity-check message.** Upgraded from the generic
+  "file may be tampered" to include the stored-vs-expected HMAC
+  prefix + file path + explicit pointer to `--trust-path` for the
+  multi-daemon collision pattern this release closes in v0.8.5.
+
+### Verification
+
+- **656 unit tests + 29 vitest tests green.**
+- **Deep adversarial security audit** — three real findings all
+  fixed, one false positive dismissed.
+- **Cross-version handshake** — v0.8.5.2 daemon interoperates with
+  v0.8.4 peers running on Raspberry Pi and NAS (verified on a live
+  3-node mesh).
+- **Malformed frame fuzz** — 11 payloads (garbage, oversized,
+  negative sequence, wrong types) all rejected cleanly. Daemon
+  survived.
+- **SIGKILL + restart** — trust file intact, SQLite
+  `PRAGMA integrity_check` returns `ok`, peers re-handshaken <1s.
+- **Trust file deletion mid-run** — daemon survives, file recreated
+  on next trust operation.
+- **Concurrent promote/block race** — final state consistent, both
+  operations captured in audit chain.
+- **Real-mesh gate flow** — live kingpi-llm → wiz MSG blocked at
+  the gate, `MSG_GATED_DROP` event fired with the real Ollama
+  response's msg_id, `pending_trust_dropped` counter incremented.
+
 ## [0.8.5] — Pending-trust gate + OpenClaw channel
 
 Two themes:

@@ -2,7 +2,7 @@
 // file layout so multiple accounts on the same host don't stomp on each
 // other. Single shape today (last-seen + TOFU pin); evolves additively.
 
-import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { readFile, mkdir, rename, open } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 /** Per-peer state remembered across restarts. */
@@ -126,13 +126,30 @@ export class PluginState {
     return { ...r };
   }
 
-  /** Atomic write — tmp file + rename. No-op if nothing changed since load/save. */
+  /** Atomic write — tmp file + fsync + rename. No-op if nothing changed
+   *  since load/save. ``fsync`` prevents a power-loss window where the
+   *  rename completes but the contents haven't hit disk (v0.8.5.2). */
   async save(): Promise<void> {
     if (!this.dirty) return;
     await mkdir(dirname(this.stateFile), { recursive: true });
     const tmp = `${this.stateFile}.tmp`;
     const body = JSON.stringify(this.state, null, 2);
-    await writeFile(tmp, body, "utf8");
+    // Write + fsync the temp file, then atomically rename. Without the
+    // fsync, the rename can complete with the new filename pointing at
+    // a partially-written inode on a crash-prone filesystem.
+    const fh = await open(tmp, "w");
+    try {
+      await fh.writeFile(body, "utf8");
+      try {
+        await fh.sync();
+      } catch {
+        // fsync not supported on some platforms (e.g. certain network
+        // mounts); fall through to the rename — still better than the
+        // pre-v0.8.5.2 non-atomic write.
+      }
+    } finally {
+      await fh.close();
+    }
     await rename(tmp, this.stateFile);
     this.dirty = false;
   }
