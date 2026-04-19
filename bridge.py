@@ -3882,6 +3882,13 @@ class BridgeDaemon:
             "total_peers": len(self.peers),
             "message_lifetime": lifetime_block,
             "peers": peers,
+            # v0.8.5.2: gate counters + flag so harness/Grafana probes
+            # can monitor queue pressure and blocked traffic without
+            # scraping the Prometheus /metrics endpoint.
+            "gate_enabled": bool(getattr(self.config, "require_message_promotion", False)),
+            "pending_trust_evicted": int(getattr(self._db, "pending_trust_evicted", 0)),
+            "pending_trust_dropped": int(getattr(self._db, "pending_trust_dropped", 0)),
+            "messages_received_blocked": int(getattr(self.metrics, "messages_received_blocked", 0)),
         }
 
     def _build_metrics_dict(self) -> dict:
