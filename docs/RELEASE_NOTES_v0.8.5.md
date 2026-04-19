@@ -39,7 +39,7 @@ No wire-protocol changes. Every v0.8.x peer stays interoperable.
 
 ### OpenClaw channel plugin
 
-- New package `@wiztheagent/openclaw-ironmesh-channel@0.1.0-alpha.4`
+- New package `@wiztheagent/openclaw-ironmesh-channel@0.1.0`
   at `clients/ts-channel/`. OpenClaw agents send and receive messages
   over IronMesh as a chat channel.
 - Implements: `id`, `meta`, `capabilities`, `config`,

@@ -4,7 +4,8 @@ OpenClaw channel plugin for IronMesh. Lets OpenClaw agents send and
 receive messages over the IronMesh peer-to-peer mesh — end-to-end
 encrypted, no cloud, your network only.
 
-> **Status:** alpha (`0.1.0-alpha.5`). Implements the lifecycle /
+> **Status:** `0.1.0` (first non-alpha cut, ships with IronMesh v0.8.5).
+> Implements the lifecycle /
 > outbound / messaging / directory / status / config surfaces of the
 > OpenClaw `ChannelPlugin` contract, plus a bundled-entry helper that
 > wires the package into OpenClaw's loader without glue code. Trust

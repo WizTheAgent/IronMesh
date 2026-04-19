@@ -1,6 +1,6 @@
 {
   "name": "@wiztheagent/openclaw-ironmesh-channel",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0",
   "description": "OpenClaw channel plugin that uses IronMesh as transport. Lets OpenClaw agents see other mesh peers as contacts and exchange messages over the encrypted local-first mesh.",
   "license": "MIT",
   "author": "WizTheAgent",

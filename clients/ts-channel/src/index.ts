@@ -36,4 +36,4 @@ export type {
 export { defineIronMeshChannelEntry } from "./entry.js";
 export type { IronMeshChannelEntryOptions } from "./entry.js";
 
-export const VERSION = "0.1.0-alpha.5";
+export const VERSION = "0.1.0";

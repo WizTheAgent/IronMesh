@@ -8,7 +8,7 @@
 
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **v0.8.4 — pre-1.0 release.** 603 tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13.
+> **v0.8.5 — pre-1.0 release.** 656 tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus a 3-node live-mesh validation pass.
 > Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -141,7 +141,7 @@ Requires Python 3.10 or newer. On Linux the firewall must allow UDP 5353
 
 ```bash
 pip install ironmesh            # PyPI
-# or: docker pull wiztheagent/ironmesh:0.8.4
+# or: docker pull wiztheagent/ironmesh:0.8.5
 # or: ./scripts/install.sh       (Linux / macOS systemd)
 # or: see docs/TERMUX.md         (Android)
 ```
@@ -511,11 +511,13 @@ pytest tests/ -v --cov=ironmesh
 
 ## Recent changes
 
-**v0.8.4 (current):** OpenClaw bridge — five new MCP tools wire mesh discovery
-and request/response into any MCP host (OpenClaw, Claude Desktop, Claude Code).
-The TypeScript client at `clients/ts/` becomes a functional alpha — full wire
-protocol port with a live e2e against a Python `BridgeDaemon`. See
-[`CHANGELOG.md`](CHANGELOG.md) for the full v0.8.4 entry.
+**v0.8.5 (current):** Pending-trust message gate — opt-in default-deny mode
+for new TOFU peers, with operator promote/block via dashboard, MCP, or `/ws`.
+Three new MCP tools (18 → 21). OpenClaw channel plugin reaches `0.1.0` with a
+bundled-entry helper + `configSchema`. See
+[`CHANGELOG.md`](CHANGELOG.md) for the full v0.8.5 entry and
+[`docs/RELEASE_NOTES_v0.8.5.md`](docs/RELEASE_NOTES_v0.8.5.md) for the
+release-cycle highlights.
 
 **v0.8.3:** the operator dashboard is rebuilt from scratch
 to match the ironmesh.org visual identity — a monospace operator
@@ -560,8 +562,8 @@ Full list: [CHANGELOG.md](CHANGELOG.md). Planned work: [docs/ROADMAP.md](docs/RO
 
 Where to get it and what's still rough:
 
-- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport). Latest: **v0.8.4**.
-- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.8.4`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
+- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport). Latest: **v0.8.5**.
+- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.8.5`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
 - **GitHub releases** — signed tags, wheel + sdist attached: [releases page](https://github.com/WizTheAgent/IronMesh/releases).
 - **Go client** — `clients/go/` (reference implementation, crypto primitives verified against Python).
 - **LoRa end-to-end latency** — Measured live at 915 MHz SF8/BW125 between two RNode-equipped nodes (1 hop, strong signal): 16-byte probe 1.07 — 1.23 s, 64-byte probe 1.17 — 1.25 s, 256-byte probe 1.77 — 1.98 s, 100% delivery across 9 probes. Multi-hop + long-range interference sweeps are still pending — see [`docs/LORA_VALIDATION.md`](docs/LORA_VALIDATION.md).
