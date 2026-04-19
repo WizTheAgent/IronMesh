@@ -115,8 +115,18 @@ class TrustStore:
             envelope = {"peers": self._peers, "revoked": self._revoked}
             data_str = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
             envelope["_mac"] = self._compute_mac(data_str)
-            with open(self.path, "w") as f:
+            # v0.8.5.2: atomic write via temp + rename so SIGKILL / power loss
+            # mid-write can't leave a truncated trust file. Operators would
+            # otherwise lose every pinned peer on an unclean shutdown.
+            tmp_path = self.path + ".tmp"
+            with open(tmp_path, "w") as f:
                 json.dump(envelope, f, indent=2)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except (OSError, AttributeError):
+                    pass  # fsync unavailable on some platforms (e.g. Windows on network drives)
+            os.replace(tmp_path, self.path)  # atomic on POSIX; atomic on same-drive NTFS
         except IOError as e:
             logger.error("Failed to save trust store: %s", e)
 

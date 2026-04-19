@@ -4237,15 +4237,20 @@ class BridgeDaemon:
             self._hooks.register("on_peer_disconnect", on_peer_disconnect)
 
     def _check_gui_token(self, request) -> bool:
-        """Check if the request has a valid GUI token via query param or Authorization header."""
-        path_str = request.path if hasattr(request, "path") else str(request)
+        """Check if the request has a valid GUI token via query param or Authorization header.
+
+        v0.8.5.2: uses constant-time comparison (``hmac.compare_digest``) to
+        prevent timing side-channel recovery of the token over the network.
+        """
+        import hmac as _hmac
+        expected = self._gui_token
         # Check ?token= query parameter
+        path_str = request.path if hasattr(request, "path") else str(request)
         if "?" in path_str:
             query = path_str.split("?", 1)[1]
             for part in query.split("&"):
                 if part.startswith("token="):
-                    token_val = part[6:]
-                    if token_val == self._gui_token:
+                    if _hmac.compare_digest(part[6:], expected):
                         return True
         # Check Authorization: Bearer header
         req_headers = getattr(request, "headers", None)
@@ -4254,7 +4259,7 @@ class BridgeDaemon:
             if hasattr(req_headers, "get"):
                 auth = req_headers.get("Authorization") or req_headers.get("authorization")
             if auth and auth.startswith("Bearer "):
-                if auth[7:] == self._gui_token:
+                if _hmac.compare_digest(auth[7:], expected):
                     return True
         return False
 

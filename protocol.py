@@ -293,15 +293,38 @@ class Frame:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Frame":
-        """Deserialize a frame from a dict."""
+        """Deserialize a frame from a dict.
+
+        v0.8.5.2: strict type checks on the required fields. Previously a
+        malformed payload with e.g. ``{"type": 123}`` (integer) would be
+        accepted here and then crash a downstream string operation; now
+        it rejects at the boundary with a clear error.
+        """
+        if not isinstance(data, dict):
+            raise ValueError(f"Frame.from_dict requires a dict, got {type(data).__name__}")
+        msg_type = data.get("type")
+        if not isinstance(msg_type, str) or not msg_type:
+            raise ValueError(f"Invalid or missing 'type' field: {msg_type!r}")
+        msg_id = data.get("msg_id")
+        if msg_id is not None and not isinstance(msg_id, str):
+            raise ValueError(f"msg_id must be a string, got {type(msg_id).__name__}")
+        source = data.get("source", "unknown")
+        if not isinstance(source, str):
+            raise ValueError(f"source must be a string, got {type(source).__name__}")
+        destination = data.get("destination", "*")
+        if not isinstance(destination, str):
+            raise ValueError(f"destination must be a string, got {type(destination).__name__}")
+        sequence = data.get("sequence", 0)
+        if not isinstance(sequence, int) or sequence < 0:
+            raise ValueError(f"sequence must be a non-negative integer, got {sequence!r}")
         obj = cls(
-            msg_type=data["type"],
+            msg_type=msg_type,
             payload=base64.b64decode(data["payload"]) if data.get("payload") else b"",
-            msg_id=data.get("msg_id"),
-            source=data.get("source", "unknown"),
-            destination=data.get("destination", "*"),
+            msg_id=msg_id,
+            source=source,
+            destination=destination,
             priority=data.get("priority", MessagePriority.NORMAL),
-            sequence=data.get("sequence", 0),
+            sequence=sequence,
         )
         obj.source_display = data.get("source_display", obj.source)
         obj.timestamp = float(data.get("timestamp", time.time()))
