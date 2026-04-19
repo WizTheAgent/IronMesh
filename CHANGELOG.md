@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — v0.8.5-dev (OpenClaw channel plugin)
+
+In progress on `main` after v0.8.4. Adds the OpenClaw channel plugin
+alpha — IronMesh peers as a chat surface in OpenClaw, complementing
+the v0.8.4 MCP bridge (which exposes mesh ops as tools).
+
+### Added
+
+- **OpenClaw channel plugin (alpha)** at [`clients/ts-channel/`](clients/ts-channel/),
+  package `@wiztheagent/openclaw-ironmesh-channel@0.1.0-alpha.2`. OpenClaw
+  agents now treat IronMesh peers as a chat channel: incoming peer
+  messages arrive as inbound chat, outbound replies go back over the
+  encrypted mesh. Adapters implemented: `id`, `meta`, `capabilities`,
+  `config`, `lifecycle.start/stop`, `outbound.send`, `messaging.subscribe`,
+  `directory.self/listPeers/listPeersLive`, `status.describe`. Setup
+  walkthrough: [`docs/OPENCLAW_CHANNEL_SETUP.md`](docs/OPENCLAW_CHANNEL_SETUP.md).
+- **Persistence layer** at `src/persistence.ts` — atomic JSON-per-account
+  state file under `~/.openclaw/ironmesh-channel/`. Survives gateway
+  restart. `PeerRecord` shape: `{nodeId, agentName, lastSeenMs,
+  pinnedFingerprint, trust: pending|trusted|blocked}`. TOFU fingerprint
+  pinned on first observation.
+- **Peer-mapper** at `src/peer-mapper.ts` — translates IronMesh node_id
+  ↔ OpenClaw `ChannelDirectoryEntry`. Peers seen on the mesh appear in
+  OpenClaw's contact list with their agent name + online status.
+- **A.9 manual verification** — `python -m ironmesh_mcp` registered
+  alongside the legacy custom MCP wrapper on the live `gatekeeper`
+  gateway (commit `14ee186`). Verified the openclaw-gateway spawns the
+  18-tool MCP server with the configured args + the embedded daemon
+  binds and serves. End-to-end ping-pong between wiz and gatekeeper
+  confirmed bidirectional MSG delivery over the mesh.
+- **Doc:** `docs/OPENCLAW_CHANNEL_SETUP.md` — operator-facing setup
+  walkthrough including channel-plugin-vs-MCP-bridge comparison.
+- **Doc update:** `docs/OPENCLAW_MCP_SETUP.md` gained a "Running
+  alongside an existing IronMesh daemon" section based on the A.9
+  rollout learnings (separate port, distinct agent name, both daemons
+  join the same mesh as separate peers).
+
+### Notes
+
+- The channel plugin is **alpha** — single-peer DMs only, no setup
+  wizard, no TOFU operator-approval gate, no offline replay, no
+  multi-peer routing. Those remain on the v0.8.5 → v0.8.6 roadmap.
+- Python package version remains `0.8.4` until the v0.8.5 cut. The
+  channel plugin is npm-only and has its own version (`alpha.2`).
+
 ## [0.8.4] — Expanded MCP surface + functional TypeScript client
 
 Incremental release on top of v0.8.3. Lands the MCP-side OpenClaw
