@@ -327,11 +327,12 @@ class TestGateEndToEnd:
         # Backing store with the v3 schema.
         store = MessageStore(str(tmp_path / "gate.db"))
         await store.open()
-        # Trust store: open without explicit path so it lands at
-        # ${tmp_path}/.ironmesh/known_peers.json — the same place the
-        # gate-internal TrustStore() will land.
+        # Trust store at an explicit per-test path. v0.8.5 piped trust_path
+        # through BridgeDaemon so the gate's internal TrustStore reads the
+        # same file we write the test's pinned peers to.
+        trust_path = str(tmp_path / "known_peers.json")
         agent_key = b"\xa5" * 32
-        ts = TrustStore(agent_key=agent_key)
+        ts = TrustStore(agent_key=agent_key, path=trust_path)
         # Stub keypair: gate code only reads .ed25519_secret[:32] for the MAC.
         keypair = SimpleNamespace(ed25519_secret=agent_key + b"\x00" * 32)
 
@@ -346,6 +347,7 @@ class TestGateEndToEnd:
             node_id="self-node-id-32-hex" + "0" * 14,
             metrics=SimpleNamespace(messages_received_blocked=0),
             bus=SimpleNamespace(publish=lambda *a, **k: None),
+            trust_path=trust_path,
         )
         # Bind the gate methods to our stub.
         from ironmesh.bridge import BridgeDaemon
@@ -443,7 +445,8 @@ class TestGateEndToEnd:
             assert result == {"ok": True, "drained": 3, "error": None}
             assert [p[1] for p in published] == ["m0", "m1", "m2"]
             # Re-read trust store from disk to bypass the test-local cache.
-            assert TrustStore(agent_key=b"\xa5" * 32).get_trust_state("noisy") == "trusted"
+            tp = str(tmp_path / "known_peers.json")
+            assert TrustStore(agent_key=b"\xa5" * 32, path=tp).get_trust_state("noisy") == "trusted"
             # And subsequent inbound delivers directly.
             new_action = await daemon._gate_inbound_msg("noisy", self._frame(
                 source="noisy", msg_id="post"))
@@ -471,7 +474,8 @@ class TestGateEndToEnd:
             result = await daemon.block_pending_peer("annoy")
             assert result == {"ok": True, "discarded": 2, "error": None}
             assert await store.pending_trust_count_for("annoy") == 0
-            assert TrustStore(agent_key=b"\xa5" * 32).get_trust_state("annoy") == "blocked"
+            tp = str(tmp_path / "known_peers.json")
+            assert TrustStore(agent_key=b"\xa5" * 32, path=tp).get_trust_state("annoy") == "blocked"
         finally:
             await store.close()
 

@@ -1196,7 +1196,13 @@ class BridgeDaemon:
                  min_protocol_version: str = "ironmesh/0.3",
                  # v0.8.5: pending-trust message gate
                  require_message_promotion: bool = False,
-                 pending_trust_queue_cap: int = 100):
+                 pending_trust_queue_cap: int = 100,
+                 # v0.8.5: explicit trust store path. Defaults to
+                 # DEFAULT_TRUST_PATH (~/.ironmesh/known_peers.json) for
+                 # backwards compatibility, but can be overridden so
+                 # integration tests + multi-daemon hosts don't clobber
+                 # each other's known_peers.json.
+                 trust_path: Optional[str] = None):
         self.name = name
         self.port = port
         self.bind_address = bind_address
@@ -1231,6 +1237,11 @@ class BridgeDaemon:
         self._db = MessageStore(db_path, storage_key=storage_key)
         self._keypair: Optional[ew_keys.AgentKeys] = None
         self._known_peer_addresses: Dict[str, str] = {}
+        # v0.8.5: per-instance trust store path. None ⇒ legacy default
+        # (~/.ironmesh/known_peers.json). Set explicitly so multi-daemon
+        # hosts don't collide.
+        from ironmesh.trust import DEFAULT_TRUST_PATH as _DEFAULT_TRUST_PATH
+        self.trust_path: str = trust_path or _DEFAULT_TRUST_PATH
 
         # Rate limiting — per-peer and per-IP
         self._peer_rate_limiters: Dict[str, ew_protocol.TokenBucket] = {}
@@ -2109,7 +2120,7 @@ class BridgeDaemon:
         }
         # Also mark locally
         mac_key = self._keypair.ed25519_secret[:32]
-        ts = TrustStore(agent_key=mac_key)
+        ts = TrustStore(agent_key=mac_key, path=self.trust_path)
         ts.mark_revoked(target_node_id, self.node_id, timestamp, reason)
         # Broadcast to all online peers
         for pid, state in list(self.peers.items()):
@@ -2166,7 +2177,7 @@ class BridgeDaemon:
         # Apply locally
         from ironmesh.trust import TrustStore
         mac_key = self._keypair.ed25519_secret[:32]
-        ts = TrustStore(agent_key=mac_key)
+        ts = TrustStore(agent_key=mac_key, path=self.trust_path)
         ts.mark_revoked(target, revoker, float(timestamp), reason)
         logger.warning("Accepted REVOCATION for %s from %s (reason: %s)",
                        target, revoker, reason or "none")
@@ -2218,7 +2229,7 @@ class BridgeDaemon:
         try:
             from ironmesh.trust import TrustStore
             mac_key = self._keypair.ed25519_secret[:32]
-            ts = TrustStore(agent_key=mac_key)
+            ts = TrustStore(agent_key=mac_key, path=self.trust_path)
         except Exception as e:
             logger.warning("Trust gate: failed to open TrustStore (%s) — fail-open", e)
             return "deliver"
@@ -2290,7 +2301,7 @@ class BridgeDaemon:
         from ironmesh.trust import TrustStore
         try:
             mac_key = self._keypair.ed25519_secret[:32]
-            ts = TrustStore(agent_key=mac_key)
+            ts = TrustStore(agent_key=mac_key, path=self.trust_path)
         except Exception as e:
             return {"ok": False, "drained": 0, "error": f"trust store: {e}"}
         if not ts.set_trust_state(target_node_id, "trusted"):
@@ -2341,7 +2352,7 @@ class BridgeDaemon:
         from ironmesh.trust import TrustStore
         try:
             mac_key = self._keypair.ed25519_secret[:32]
-            ts = TrustStore(agent_key=mac_key)
+            ts = TrustStore(agent_key=mac_key, path=self.trust_path)
         except Exception as e:
             return {"ok": False, "discarded": 0, "error": f"trust store: {e}"}
         if not ts.set_trust_state(target_node_id, "blocked"):
@@ -2358,7 +2369,7 @@ class BridgeDaemon:
         from ironmesh.trust import TrustStore
         try:
             mac_key = self._keypair.ed25519_secret[:32]
-            ts = TrustStore(agent_key=mac_key)
+            ts = TrustStore(agent_key=mac_key, path=self.trust_path)
         except Exception:
             return []
         # Union: peers in trust store with state=pending + peers with
@@ -2415,7 +2426,7 @@ class BridgeDaemon:
             if not self._keypair:
                 raise RuntimeError("TrustStore requires the daemon keypair to be loaded")
             mac_key = self._keypair.ed25519_secret[:32]
-            trust = TrustStore(agent_key=mac_key)
+            trust = TrustStore(agent_key=mac_key, path=self.trust_path)
             # v0.6: refuse connection from revoked peers
             if trust.is_revoked(peer_id):
                 logger.warning("REVOKED peer %s attempted to connect — refusing",

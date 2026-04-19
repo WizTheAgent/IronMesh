@@ -64,6 +64,10 @@ def two_node_mesh() -> Iterator[tuple[Agent, Agent]]:
             db_path=os.path.join(root, "data.db"),
             routes_path=os.path.join(root, "routes.json"),
             capabilities_path=os.path.join(root, "capabilities.json"),
+            # v0.8.5: per-agent trust file. Without this, alice and bob
+            # both write to ~/.ironmesh/known_peers.json with different
+            # MAC keys and clobber the user's real trust store.
+            trust_path=os.path.join(root, "known_peers.json"),
             allowed_peers=allowed,
         )
 

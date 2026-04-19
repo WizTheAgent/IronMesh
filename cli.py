@@ -98,6 +98,11 @@ def parse_args():
                             help="Per-peer cap on the pending-trust queue. "
                                  "Oldest message is evicted on overflow. "
                                  "Default: 100.")
+    run_parser.add_argument("--trust-path", default=None,
+                            help="Override the trust store JSON path. "
+                                 "Defaults to ~/.ironmesh/known_peers.json. "
+                                 "Set explicitly when running multiple "
+                                 "daemons on one host.")
 
     # --- trust ---
     trust_parser = sub.add_parser("trust", help="Manage peer trust (TOFU)")
@@ -386,6 +391,7 @@ def cmd_run(args):
         # v0.8.5: pending-trust message gate
         require_message_promotion=getattr(args, "require_message_promotion", False),
         pending_trust_queue_cap=getattr(args, "pending_trust_queue_cap", 100),
+        trust_path=getattr(args, "trust_path", None),
     )
 
     try:
