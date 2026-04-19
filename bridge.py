@@ -576,6 +576,24 @@ footer.ops .legal{color:var(--text-faint);font-size:10px;letter-spacing:.5px}
     <div class="tp-row"><span class="k">profile</span><span class="v" id="tp-rns-prof">—</span></div>
    </div>
   </div>
+
+  <!-- v0.8.5: pending-trust message gate -->
+  <div class="panel-hdr" style="border-top:1px solid var(--border)">
+   <span class="title">PENDING TRUST</span>
+   <span class="count" id="pending-trust-count">0</span>
+   <span class="tools">
+    <span id="pending-trust-status" style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.06em">gate off</span>
+   </span>
+  </div>
+  <div class="pending-trust-wrap" id="pending-trust-wrap" style="padding:6px 10px 12px">
+   <div class="empty" id="pending-trust-empty" style="font-size:11px;color:var(--text-dim);padding:6px 0">no peers awaiting promotion</div>
+   <table class="peers" id="pending-trust-table" style="display:none">
+    <thead><tr>
+     <th>Node</th><th>Fingerprint</th><th>Queued</th><th>First seen</th><th>Action</th>
+    </tr></thead>
+    <tbody id="pending-trust-body"></tbody>
+   </table>
+  </div>
  </section>
 
  <section class="panel">
@@ -688,7 +706,12 @@ footer.ops .legal{color:var(--text-faint);font-size:10px;letter-spacing:.5px}
  // WS
  function connect(){
   ws = new WebSocket(WS_URL);
-  ws.onopen    = () => { setMeshState('ISOLATED','control channel open'); statusline('control channel open · ephemeral ECDH complete'); };
+  ws.onopen    = () => {
+   setMeshState('ISOLATED','control channel open');
+   statusline('control channel open · ephemeral ECDH complete');
+   // v0.8.5: pull initial pending-trust state for the panel.
+   try{ ws.send(JSON.stringify({action:'list_pending_trust'})); }catch(e){}
+  };
   ws.onclose   = () => { setMeshState('ISOLATED','CONTROL CHANNEL CLOSED'); statusline('control channel closed · reconnecting…', 'warn'); setTimeout(connect, 2000); };
   ws.onerror   = () => { try{ ws.close(); }catch(e){} };
   ws.onmessage = e => { try{ handle(JSON.parse(e.data)); }catch(x){ console.error(x); } };
@@ -711,7 +734,66 @@ footer.ops .legal{color:var(--text-faint);font-size:10px;letter-spacing:.5px}
    pushFeed(toDialogueRow(msg));
   } else if(msg.type === 'auth_failure'){
    pushFeed({ t:Date.now()/1000, dir:'sys', sev:'alarm', type:'AUTHFAIL', peer:msg.ip||'', payload:msg.reason||'' });
+  } else if(msg.type === 'pending_trust_list'){
+   renderPendingTrust(msg.pending || [], !!msg.gate_enabled);
+  } else if(msg.type === 'pending_trust'){
+   // Incremental: a new MSG just got queued for a pending peer. Refresh the panel.
+   pushFeed({ t:Date.now()/1000, dir:'sys', sev:'warn', type:'PENDING',
+              peer:(msg.source_node_id||'').slice(0,12), payload:'queued · count='+msg.queued_count });
+   if(ws && ws.readyState === 1) ws.send(JSON.stringify({action:'list_pending_trust'}));
+  } else if(msg.type === 'promote_ack'){
+   statusline('promoted '+(msg.target||'').slice(0,12)+' · drained '+msg.drained, msg.ok?'ok':'alarm');
+   if(ws && ws.readyState === 1) ws.send(JSON.stringify({action:'list_pending_trust'}));
+  } else if(msg.type === 'block_ack'){
+   statusline('blocked '+(msg.target||'').slice(0,12)+' · discarded '+msg.discarded, msg.ok?'warn':'alarm');
+   if(ws && ws.readyState === 1) ws.send(JSON.stringify({action:'list_pending_trust'}));
   }
+ }
+
+ function renderPendingTrust(rows, gateEnabled){
+  $('pending-trust-status').textContent = gateEnabled ? 'gate on' : 'gate off';
+  $('pending-trust-status').style.color = gateEnabled ? 'var(--ok, #4ade80)' : 'var(--text-dim)';
+  $('pending-trust-count').textContent = rows.length;
+  const empty = $('pending-trust-empty');
+  const table = $('pending-trust-table');
+  if(!rows.length){
+   empty.style.display = '';
+   empty.textContent = gateEnabled ? 'no peers awaiting promotion' : 'gate disabled — start daemon with --require-message-promotion to gate new peers';
+   table.style.display = 'none';
+   return;
+  }
+  empty.style.display = 'none';
+  table.style.display = '';
+  $('pending-trust-body').innerHTML = rows.map(r => {
+   const nid = r.node_id || '';
+   const fp = r.fingerprint || '';
+   const queued = r.queued_count != null ? r.queued_count : 0;
+   const first = r.first_seen ? fmtRel(r.first_seen) + ' ago' : '—';
+   return '<tr>'
+    + '<td><code title="'+escHtml(nid)+'">'+escHtml(nid.slice(0,12))+'…</code></td>'
+    + '<td>'+escHtml(shortFp(fp))+'</td>'
+    + '<td style="text-align:right">'+queued+'</td>'
+    + '<td>'+escHtml(first)+'</td>'
+    + '<td>'
+    +  '<button class="btn-signal pending-promote" data-node="'+escHtml(nid)+'" style="padding:2px 8px;font-size:10px">PROMOTE</button> '
+    +  '<button class="btn-alarm pending-block" data-node="'+escHtml(nid)+'" style="padding:2px 8px;font-size:10px">BLOCK</button>'
+    + '</td>'
+    + '</tr>';
+  }).join('');
+  // Wire button handlers (delegated rebind on each render).
+  document.querySelectorAll('#pending-trust-body .pending-promote').forEach(b => {
+   b.addEventListener('click', () => {
+    const node = b.getAttribute('data-node');
+    if(ws && ws.readyState === 1) ws.send(JSON.stringify({action:'promote_peer', target_node_id:node}));
+   });
+  });
+  document.querySelectorAll('#pending-trust-body .pending-block').forEach(b => {
+   b.addEventListener('click', () => {
+    const node = b.getAttribute('data-node');
+    if(!confirm('Block peer '+node.slice(0,12)+'…? This drops queued messages and silences future MSGs from this peer.')) return;
+    if(ws && ws.readyState === 1) ws.send(JSON.stringify({action:'block_peer', target_node_id:node}));
+   });
+  });
  }
 
  function toFeedRow(msg){

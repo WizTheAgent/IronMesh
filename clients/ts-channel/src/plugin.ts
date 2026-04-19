@@ -12,7 +12,6 @@
 import { IronMeshConnection } from "./connection.js";
 import { PeerMapper } from "./peer-mapper.js";
 import { PluginState } from "./persistence.js";
-import { TrustGate, type PendingTrustEvent } from "./trust-gate.js";
 import type {
   ChannelCapabilities,
   ChannelInboundMessage,
@@ -86,10 +85,6 @@ export function ironMeshChannelPlugin(opts: IronMeshChannelPluginOptions) {
   const stateByAccount = new Map<string, PluginState>();
   // accountId -> set of inbound subscribers (OpenClaw runtime)
   const inboundSubscribers = new Map<string, Set<(m: ChannelInboundMessage) => void>>();
-  // accountId -> trust gate (TOFU pending-trust queue)
-  const trustGates = new Map<string, TrustGate>();
-  // accountId -> set of pendingTrust event listeners
-  const pendingTrustListeners = new Map<string, Set<(e: PendingTrustEvent) => void>>();
 
   async function getOrLoadState(accountId: string): Promise<PluginState> {
     const existing = stateByAccount.get(accountId);
@@ -126,28 +121,6 @@ export function ironMeshChannelPlugin(opts: IronMeshChannelPluginOptions) {
     }
   }
 
-  function getOrCreateTrustGate(accountId: string): TrustGate {
-    let g = trustGates.get(accountId);
-    if (g) return g;
-    const state = requireState(accountId);
-    g = new TrustGate({ accountId, state, logger });
-    trustGates.set(accountId, g);
-    g.onPendingTrust((evt) => {
-      const set = pendingTrustListeners.get(accountId);
-      if (!set) return;
-      for (const fn of set) {
-        try {
-          fn(evt);
-        } catch (e) {
-          logger.warn(
-            `[ironmesh-channel] pendingTrust listener threw: ${e instanceof Error ? e.message : String(e)}`,
-          );
-        }
-      }
-    });
-    return g;
-  }
-
   function getOrConnect(account: IronMeshChannelAccount): IronMeshConnection {
     let c = connections.get(account.accountId);
     if (c) return c;
@@ -155,13 +128,11 @@ export function ironMeshChannelPlugin(opts: IronMeshChannelPluginOptions) {
     const peers = new PeerMapper(state);
     c = new IronMeshConnection(account, peers, logger);
     connections.set(account.accountId, c);
-    const gate = getOrCreateTrustGate(account.accountId);
-    // Forward inbound to subscribers, gated by TOFU trust state.
-    c.onInbound((msg) => {
-      const action = gate.evaluate(msg);
-      if (action !== "deliver") return;
-      fanoutToSubscribers(account.accountId, msg);
-    });
+    // Inbound is daemon-gated as of v0.8.5 — when the daemon runs with
+    // --require-message-promotion, MSGs from pending peers never reach
+    // this point. Trust state is owned by the daemon; operators promote
+    // via the dashboard or the ironmesh_trust_peer MCP tool.
+    c.onInbound((msg) => fanoutToSubscribers(account.accountId, msg));
     return c;
   }
 
@@ -305,69 +276,6 @@ export function ironMeshChannelPlugin(opts: IronMeshChannelPluginOptions) {
       },
     },
 
-    /** Trust gate operator API: promote pending peers, block, list. */
-    trust: {
-      async promote(
-        accountId: string,
-        nodeId: string,
-      ): Promise<{ ok: boolean; drained: number }> {
-        const gate = trustGates.get(accountId);
-        if (!gate) return { ok: false, drained: 0 };
-        const result = gate.promote(nodeId, (m) => fanoutToSubscribers(accountId, m));
-        if (result.ok) {
-          const state = stateByAccount.get(accountId);
-          if (state) {
-            try {
-              await state.save();
-            } catch (e) {
-              logger.warn(
-                `[ironmesh-channel] state save after promote failed: ${e instanceof Error ? e.message : String(e)}`,
-              );
-            }
-          }
-        }
-        return result;
-      },
-      async block(accountId: string, nodeId: string): Promise<{ ok: boolean }> {
-        const gate = trustGates.get(accountId);
-        if (!gate) return { ok: false };
-        const result = gate.block(nodeId);
-        if (result.ok) {
-          const state = stateByAccount.get(accountId);
-          if (state) {
-            try {
-              await state.save();
-            } catch (e) {
-              logger.warn(
-                `[ironmesh-channel] state save after block failed: ${e instanceof Error ? e.message : String(e)}`,
-              );
-            }
-          }
-        }
-        return result;
-      },
-      listPending(accountId: string) {
-        const gate = trustGates.get(accountId);
-        if (!gate) return [];
-        return gate.listPending();
-      },
-    },
-
-    /** Event subscriptions outside the messaging path (e.g. operator UI). */
-    events: {
-      onPendingTrust(
-        accountId: string,
-        fn: (evt: PendingTrustEvent) => void,
-      ): { close: () => void } {
-        const set =
-          pendingTrustListeners.get(accountId) ??
-          new Set<(e: PendingTrustEvent) => void>();
-        set.add(fn);
-        pendingTrustListeners.set(accountId, set);
-        return { close: () => set.delete(fn) };
-      },
-    },
-
     /** Status: thin health check. */
     status: {
       async describe(params: { account: IronMeshChannelAccount }) {
@@ -388,8 +296,6 @@ export function ironMeshChannelPlugin(opts: IronMeshChannelPluginOptions) {
       getOrConnect,
       loadState: getOrLoadState,
       stateByAccount,
-      trustGates,
-      pendingTrustListeners,
     },
   };
 }

@@ -128,7 +128,7 @@ describe("messaging", () => {
     expect(plugin.__test__.inboundSubscribers.get(account.accountId)?.size).toBe(0);
   });
 
-  it("inbound MSG events from a trusted peer become ChannelInboundMessage AND refresh peer-mapper", async () => {
+  it("inbound MSG events become ChannelInboundMessage AND refresh peer-mapper", async () => {
     const { plugin, account } = buildPlugin();
     await plugin.__test__.loadState(account.accountId);
     const conn = plugin.__test__.getOrConnect(account);
@@ -139,9 +139,9 @@ describe("messaging", () => {
     });
     const payload = new TextEncoder().encode("hello from peer");
     const peerNodeId = "f".repeat(32);
-    // Pre-seed the peer with a name and promote past the TOFU gate.
+    // Pre-seed the peer with a name. As of v0.8.5 the daemon owns trust
+    // gating — anything that reaches the TS plugin is already trusted.
     conn.peers.observe({ nodeId: peerNodeId, agentName: "alice", online: true, observedAtMs: Date.now() });
-    await plugin.trust.promote(account.accountId, peerNodeId);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (conn.client as any)._emit("message", {
       msgType: "MSG",
@@ -219,124 +219,6 @@ describe("directory adapter", () => {
     // Don't connect — self should bail.
     const self = await plugin.directory.self({ account });
     expect(self).toBe(null);
-  });
-});
-
-describe("TOFU pending-trust gate", () => {
-  function emitMsg(
-    conn: ReturnType<ReturnType<typeof buildPlugin>["plugin"]["__test__"]["getOrConnect"]>,
-    fromNodeId: string,
-    text: string,
-    msgId: string,
-  ): void {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (conn.client as any)._emit("message", {
-      msgType: "MSG",
-      fromNodeId,
-      payload: new TextEncoder().encode(text),
-      msgId,
-      timestamp: Date.now(),
-    });
-  }
-
-  it("does not deliver MSGs from a pending peer to subscribers", async () => {
-    const { plugin, account } = buildPlugin();
-    await plugin.__test__.loadState(account.accountId);
-    const conn = plugin.__test__.getOrConnect(account);
-    const received: string[] = [];
-    plugin.messaging.subscribe({ account, onMessage: (m) => received.push(m.text) });
-    const peer = "a".repeat(32);
-    conn.peers.observe({ nodeId: peer, agentName: "stranger", online: true, observedAtMs: Date.now() });
-    emitMsg(conn, peer, "knock knock", "m1");
-    expect(received).toEqual([]);
-    expect(plugin.trust.listPending(account.accountId)).toHaveLength(1);
-  });
-
-  it("after promote, queue drains in order and subsequent MSGs flow through", async () => {
-    const { plugin, account } = buildPlugin();
-    await plugin.__test__.loadState(account.accountId);
-    const conn = plugin.__test__.getOrConnect(account);
-    const received: string[] = [];
-    plugin.messaging.subscribe({ account, onMessage: (m) => received.push(m.text) });
-    const peer = "b".repeat(32);
-    conn.peers.observe({ nodeId: peer, agentName: "stranger", online: true, observedAtMs: Date.now() });
-    emitMsg(conn, peer, "first",  "m1");
-    emitMsg(conn, peer, "second", "m2");
-    emitMsg(conn, peer, "third",  "m3");
-    expect(received).toEqual([]);
-    const result = await plugin.trust.promote(account.accountId, peer);
-    expect(result).toEqual({ ok: true, drained: 3 });
-    expect(received).toEqual(["first", "second", "third"]);
-    // Subsequent MSGs deliver immediately, not via the queue.
-    emitMsg(conn, peer, "fourth", "m4");
-    expect(received).toEqual(["first", "second", "third", "fourth"]);
-  });
-
-  it("block drops new MSGs and increments the blocked-drop counter", async () => {
-    const { plugin, account } = buildPlugin();
-    await plugin.__test__.loadState(account.accountId);
-    const conn = plugin.__test__.getOrConnect(account);
-    const received: string[] = [];
-    plugin.messaging.subscribe({ account, onMessage: (m) => received.push(m.text) });
-    const peer = "c".repeat(32);
-    conn.peers.observe({ nodeId: peer, agentName: "spammer", online: true, observedAtMs: Date.now() });
-    const result = await plugin.trust.block(account.accountId, peer);
-    expect(result).toEqual({ ok: true });
-    emitMsg(conn, peer, "ignored 1", "m1");
-    emitMsg(conn, peer, "ignored 2", "m2");
-    expect(received).toEqual([]);
-    const gate = plugin.__test__.trustGates.get(account.accountId)!;
-    expect(gate._blockedDropCount(peer)).toBe(2);
-  });
-
-  it("queue cap evicts the oldest pending message when overflowed", async () => {
-    const { plugin, account } = buildPlugin();
-    await plugin.__test__.loadState(account.accountId);
-    const conn = plugin.__test__.getOrConnect(account);
-    const received: string[] = [];
-    plugin.messaging.subscribe({ account, onMessage: (m) => received.push(m.text) });
-    const peer = "d".repeat(32);
-    conn.peers.observe({ nodeId: peer, agentName: "noisy", online: true, observedAtMs: Date.now() });
-    // Hand-construct a gate with a tiny cap so the test stays fast.
-    const state = plugin.__test__.stateByAccount.get(account.accountId)!;
-    const { TrustGate } = await import("../src/trust-gate.js");
-    const tinyGate = new TrustGate({ accountId: account.accountId, state, queueCap: 3 });
-    // Wire it in place of the real one for this test.
-    plugin.__test__.trustGates.set(account.accountId, tinyGate);
-    for (let i = 1; i <= 4; i++) {
-      tinyGate.evaluate({
-        channel: "ironmesh",
-        accountId: account.accountId,
-        fromId: peer,
-        text: `msg-${i}`,
-        externalId: `m${i}`,
-        timestamp: Date.now(),
-      });
-    }
-    expect(tinyGate._queueLength(peer)).toBe(3);
-    const drainSink = (m: { text: string }) => received.push(m.text);
-    const r = tinyGate.promote(peer, drainSink);
-    expect(r.drained).toBe(3);
-    // Oldest (msg-1) should have been evicted; we keep 2,3,4 in order.
-    expect(received).toEqual(["msg-2", "msg-3", "msg-4"]);
-  });
-
-  it("emits pendingTrust event on first inbound from an unknown peer", async () => {
-    const { plugin, account } = buildPlugin();
-    await plugin.__test__.loadState(account.accountId);
-    const conn = plugin.__test__.getOrConnect(account);
-    const events: { nodeId: string; queuedMessageCount: number }[] = [];
-    plugin.events.onPendingTrust(account.accountId, (e) =>
-      events.push({ nodeId: e.nodeId, queuedMessageCount: e.queuedMessageCount }),
-    );
-    const peer = "e".repeat(32);
-    // No prior observation — peer is genuinely unknown until the inbound lands.
-    emitMsg(conn, peer, "unsolicited", "m1");
-    expect(events).toEqual([{ nodeId: peer, queuedMessageCount: 1 }]);
-    // A second inbound updates the queued count.
-    emitMsg(conn, peer, "still unsolicited", "m2");
-    expect(events).toHaveLength(2);
-    expect(events[1].queuedMessageCount).toBe(2);
   });
 });
 
