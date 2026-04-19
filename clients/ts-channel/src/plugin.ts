@@ -10,6 +10,8 @@
 // v0.9.0 cut.
 
 import { IronMeshConnection } from "./connection.js";
+import { PeerMapper } from "./peer-mapper.js";
+import { PluginState } from "./persistence.js";
 import type {
   ChannelCapabilities,
   ChannelInboundMessage,
@@ -58,6 +60,12 @@ export interface IronMeshChannelPluginOptions {
   listAccountIds: (cfg: unknown) => string[];
   /** Optional logger — falls back to console. */
   logger?: PluginLogger;
+  /**
+   * Where to keep persisted plugin state (one JSON file per account).
+   * Defaults to ~/.openclaw/ironmesh-channel/ to live next to other
+   * channel state. Tests / non-OpenClaw embedders override this.
+   */
+  stateDir?: string;
 }
 
 export function ironMeshChannelPlugin(opts: IronMeshChannelPluginOptions) {
@@ -67,16 +75,44 @@ export function ironMeshChannelPlugin(opts: IronMeshChannelPluginOptions) {
     error: console.error.bind(console),
     debug: console.debug?.bind(console),
   };
+  const stateDir =
+    opts.stateDir ??
+    `${process.env.HOME ?? process.env.USERPROFILE ?? "."}/.openclaw/ironmesh-channel`;
 
   // accountId -> live connection
   const connections = new Map<string, IronMeshConnection>();
+  // accountId -> persisted plugin state
+  const stateByAccount = new Map<string, PluginState>();
   // accountId -> set of inbound subscribers (OpenClaw runtime)
   const inboundSubscribers = new Map<string, Set<(m: ChannelInboundMessage) => void>>();
+
+  async function getOrLoadState(accountId: string): Promise<PluginState> {
+    const existing = stateByAccount.get(accountId);
+    if (existing) return existing;
+    const s = await PluginState.load(accountId, { stateDir });
+    stateByAccount.set(accountId, s);
+    return s;
+  }
+
+  /** Sync version for hot paths — assumes state has already been loaded
+   *  (lifecycle.start does that before any other adapter call). */
+  function requireState(accountId: string): PluginState {
+    const s = stateByAccount.get(accountId);
+    if (!s) {
+      throw new Error(
+        `[ironmesh-channel] state for account=${accountId} not loaded — ` +
+          "call lifecycle.start() before any other adapter",
+      );
+    }
+    return s;
+  }
 
   function getOrConnect(account: IronMeshChannelAccount): IronMeshConnection {
     let c = connections.get(account.accountId);
     if (c) return c;
-    c = new IronMeshConnection(account, logger);
+    const state = requireState(account.accountId);
+    const peers = new PeerMapper(state);
+    c = new IronMeshConnection(account, peers, logger);
     connections.set(account.accountId, c);
     // Forward inbound to any subscribers for this account.
     c.onInbound((msg) => {
@@ -107,15 +143,65 @@ export function ironMeshChannelPlugin(opts: IronMeshChannelPluginOptions) {
         opts.resolveAccount(cfg, accountId),
     },
 
-    /** Lifecycle: open the WebSocket on start, close on stop. */
+    /** Lifecycle: open the WebSocket on start, close on stop. State is
+     *  loaded/persisted around the lifecycle so the adapter is durable
+     *  across restart. */
     lifecycle: {
       async start(params: { account: IronMeshChannelAccount }): Promise<void> {
+        await getOrLoadState(params.account.accountId);
         const c = getOrConnect(params.account);
         await c.start();
       },
       async stop(params: { account: IronMeshChannelAccount }): Promise<void> {
         const c = connections.get(params.account.accountId);
         if (c) await c.stop();
+        const state = stateByAccount.get(params.account.accountId);
+        if (state) {
+          try {
+            await state.save();
+          } catch (e) {
+            logger.warn(
+              `[ironmesh-channel] state save on stop failed: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+        }
+      },
+    },
+
+    /** Directory: peers seen on the mesh appear as OpenClaw contacts. */
+    directory: {
+      async self(params: { account: IronMeshChannelAccount }) {
+        const c = connections.get(params.account.accountId);
+        const myNodeId = c?.client.nodeId;
+        if (!myNodeId) return null;
+        return {
+          kind: "user" as const,
+          id: myNodeId,
+          name: params.account.name,
+          handle: params.account.name,
+        };
+      },
+      async listPeers(params: { account: IronMeshChannelAccount }) {
+        const c = connections.get(params.account.accountId);
+        if (!c) return [];
+        return c.peers.listAll().map((p) => ({
+          kind: "user" as const,
+          id: p.contactId,
+          name: p.displayName ?? p.contactId.slice(0, 12),
+          handle: p.displayName,
+          raw: { online: p.online, trust: p.trust, lastSeenMs: p.lastSeenMs },
+        }));
+      },
+      async listPeersLive(params: { account: IronMeshChannelAccount }) {
+        const c = connections.get(params.account.accountId);
+        if (!c) return [];
+        return c.peers.listOnline().map((p) => ({
+          kind: "user" as const,
+          id: p.contactId,
+          name: p.displayName ?? p.contactId.slice(0, 12),
+          handle: p.displayName,
+          raw: { online: true, trust: p.trust, lastSeenMs: p.lastSeenMs },
+        }));
       },
     },
 
@@ -203,6 +289,8 @@ export function ironMeshChannelPlugin(opts: IronMeshChannelPluginOptions) {
       connections,
       inboundSubscribers,
       getOrConnect,
+      loadState: getOrLoadState,
+      stateByAccount,
     },
   };
 }

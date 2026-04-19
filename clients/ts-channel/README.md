@@ -22,11 +22,10 @@ underlying transport is the encrypted IronMesh wire protocol via the
 ## What's NOT in alpha
 
 - **Setup wizard** — accounts must be configured by hand
-- **Directory adapter** — peers don't show up in OpenClaw's contact
-  list yet; you message them by name/node_id explicitly
-- **Group / multi-peer rooms** — single-peer DMs only
-- **TOFU pending-trust UI** — first message from an unknown peer is
-  delivered without an explicit user-approval step
+- **Group / multi-peer rooms** — DMs only
+- **TOFU pending-trust UI** — peers are auto-pinned on first sight
+  with `trust: "pending"`; an operator-approval flow that gates
+  delivery on `trust: "trusted"` is not wired yet
 - **Offline replay** — messages received while OpenClaw was off are
   not surfaced when it comes back up
 - **Streaming partial replies**
@@ -89,13 +88,14 @@ the handshake peer.
 | `meta` | ✅ | label, blurb, docs link |
 | `capabilities` | ✅ | outbound + inbound + DMs only |
 | `config.listAccountIds` / `resolveAccount` | ✅ | delegated to caller |
-| `lifecycle.start` / `.stop` | ✅ | open / close WS |
+| `lifecycle.start` / `.stop` | ✅ | open / close WS, load / save state |
 | `outbound.send` | ✅ | sends a single `MSG` |
-| `messaging.subscribe` | ✅ | inbound `MSG` → callback |
+| `messaging.subscribe` | ✅ | inbound `MSG` → callback (refreshes peer last-seen) |
+| `directory.self` / `listPeers` / `listPeersLive` | ✅ | peers appear as OpenClaw contacts; persists across restart |
 | `status.describe` | ✅ | `linked` / `not linked` + peer node_id |
 | `setup` / `setupWizard` | ❌ | manual config only |
 | `security`, `pairing`, `groups`, `mentions` | ❌ | |
-| `directory`, `resolver`, `actions` | ❌ | |
+| `resolver`, `actions` | ❌ | |
 | `streaming`, `threading`, `agentPrompt` | ❌ | |
 | `secrets`, `allowlist`, `doctor` | ❌ | |
 | `auth`, `commands`, `elevated`, `heartbeat` | ❌ | |

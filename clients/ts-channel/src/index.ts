@@ -15,4 +15,10 @@ export type {
   PluginLogger,
 } from "./types.js";
 
-export const VERSION = "0.1.0-alpha.1";
+export { PluginState } from "./persistence.js";
+export type { PeerRecord, PersistedState, PersistenceOptions } from "./persistence.js";
+
+export { PeerMapper } from "./peer-mapper.js";
+export type { DirectoryContact, LivePeerObservation } from "./peer-mapper.js";
+
+export const VERSION = "0.1.0-alpha.2";

@@ -5,6 +5,7 @@
 // keeps the wire view consistent.
 
 import { IronMeshClient } from "@wiztheagent/ironmesh-client";
+import type { PeerMapper } from "./peer-mapper.js";
 import type { ChannelInboundMessage, IronMeshChannelAccount, PluginLogger } from "./types.js";
 
 export interface ConnectionEvents {
@@ -14,12 +15,14 @@ export interface ConnectionEvents {
 export class IronMeshConnection {
   readonly account: IronMeshChannelAccount;
   readonly client: IronMeshClient;
+  readonly peers: PeerMapper;
   private readonly logger?: PluginLogger;
   private readonly inboundListeners: Set<(msg: ChannelInboundMessage) => void> = new Set();
   private connected = false;
 
-  constructor(account: IronMeshChannelAccount, logger?: PluginLogger) {
+  constructor(account: IronMeshChannelAccount, peers: PeerMapper, logger?: PluginLogger) {
     this.account = account;
+    this.peers = peers;
     this.logger = logger;
     this.client = new IronMeshClient({
       url: account.url,
@@ -30,15 +33,40 @@ export class IronMeshConnection {
 
     this.client.on("connect", () => {
       this.connected = true;
+      const peerNodeId = this.client.peerNodeId;
       this.logger?.info(
-        `[ironmesh-channel] account=${account.accountId} connected to ${account.url} (peer=${this.client.peerNodeId})`,
+        `[ironmesh-channel] account=${account.accountId} connected to ${account.url} (peer=${peerNodeId})`,
       );
+      // Record the handshake peer as a live observation. We don't yet
+      // know the peer's agent name — the IronMeshClient only surfaces
+      // node_id at handshake time. A future client API addition can
+      // include the peer's HELLO display name here.
+      if (peerNodeId) {
+        this.peers.observe({
+          nodeId: peerNodeId,
+          online: true,
+          observedAtMs: Date.now(),
+        });
+      }
     });
     this.client.on("disconnect", (reason) => {
       this.connected = false;
+      const peerNodeId = this.client.peerNodeId;
+      if (peerNodeId) this.peers.markOffline(peerNodeId);
       this.logger?.info(
         `[ironmesh-channel] account=${account.accountId} disconnected: ${reason}`,
       );
+    });
+    this.client.on("peerConnect", (info) => {
+      this.peers.observe({
+        nodeId: info.nodeId,
+        agentName: info.agentName,
+        online: true,
+        observedAtMs: Date.now(),
+      });
+    });
+    this.client.on("peerDisconnect", (info) => {
+      this.peers.markOffline(info.nodeId);
     });
     this.client.on("error", (err) => {
       this.logger?.warn(
@@ -50,10 +78,18 @@ export class IronMeshConnection {
       // Only "MSG" type is surfaced as a chat message; control frames are ignored.
       if (msg.msgType !== "MSG") return;
       const text = new TextDecoder("utf-8", { fatal: false }).decode(msg.payload);
+      // Refresh last_seen for the sending peer.
+      this.peers.observe({
+        nodeId: msg.fromNodeId,
+        online: true,
+        observedAtMs: msg.timestamp,
+      });
+      const fromContact = this.peers.resolveById(msg.fromNodeId);
       const inbound: ChannelInboundMessage = {
         channel: "ironmesh",
         accountId: account.accountId,
         fromId: msg.fromNodeId,
+        fromName: fromContact?.displayName,
         text,
         externalId: msg.msgId,
         timestamp: msg.timestamp,
