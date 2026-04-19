@@ -88,6 +88,17 @@ def parse_args():
                            choices=["text", "json"],
                            help="Log output format (default: text)")
 
+    # v0.8.5: pending-trust message gate (opt-in)
+    run_parser.add_argument("--require-message-promotion", action="store_true",
+                            help="Hold MSGs from new TOFU-pinned peers in a "
+                                 "pending queue until an operator promotes them. "
+                                 "Default off — preserves pre-v0.8.5 behavior. "
+                                 "Recommended on for OpenClaw deployments.")
+    run_parser.add_argument("--pending-trust-queue-cap", type=int, default=100,
+                            help="Per-peer cap on the pending-trust queue. "
+                                 "Oldest message is evicted on overflow. "
+                                 "Default: 100.")
+
     # --- trust ---
     trust_parser = sub.add_parser("trust", help="Manage peer trust (TOFU)")
     trust_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json",
@@ -372,6 +383,9 @@ def cmd_run(args):
         rekey_interval=getattr(args, "rekey_interval", 1800.0),
         # v0.6.0
         min_protocol_version=getattr(args, "min_protocol_version", "ironmesh/0.3"),
+        # v0.8.5: pending-trust message gate
+        require_message_promotion=getattr(args, "require_message_promotion", False),
+        pending_trust_queue_cap=getattr(args, "pending_trust_queue_cap", 100),
     )
 
     try:

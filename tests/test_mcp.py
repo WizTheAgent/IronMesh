@@ -526,9 +526,18 @@ class TestNewToolSpecs:
                   "ironmesh_subscribe_events"):
             assert n in names, f"{n} missing from TOOL_SPECS"
 
-    def test_total_tool_count_is_eighteen(self):
-        # 8 core + 5 OpenClaw bridge + 5 introspection/responder = 18
-        assert len(TOOL_SPECS) == 18
+    def test_total_tool_count(self):
+        # 8 core + 5 cross-agent + 5 self-introspection + 3 pending-trust = 21
+        assert len(TOOL_SPECS) == 21
+
+    def test_pending_trust_tools_registered(self):
+        names = {s["name"] for s in TOOL_SPECS}
+        for n in (
+            "ironmesh_list_pending_trust",
+            "ironmesh_trust_peer",
+            "ironmesh_block_peer",
+        ):
+            assert n in names, f"{n} missing from TOOL_SPECS"
 
     def test_audit_expansion_tools_registered(self):
         names = {s["name"] for s in TOOL_SPECS}

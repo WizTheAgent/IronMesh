@@ -79,6 +79,17 @@ class IronMeshConfig:
     rns_configdir: Optional[str] = None
     rns_announce_interval: float = 300.0
 
+    # v0.8.5: pending-trust message gate. When True, MSG/REQ/RESP frames
+    # from peers that haven't been promoted to "trusted" are queued
+    # instead of delivered to clients. Operator promotes via the
+    # /ws promote_peer action or the ironmesh_trust_peer MCP tool.
+    # Default False = no behavior change on upgrade. v0.9.0 may flip
+    # this default after one release of opt-in feedback.
+    require_message_promotion: bool = False
+    # Per-peer cap on the queue of messages held while a peer is pending.
+    # Oldest message is evicted on overflow.
+    pending_trust_queue_cap: int = 100
+
     def __post_init__(self):
         # Clamp announce interval to a sane minimum to prevent flooding
         if self.route_announce_interval < 1.0:
@@ -131,6 +142,9 @@ class IronMeshConfig:
             "IRONMESH_PASSPHRASE_FILE": "passphrase_file",
             "IRONMESH_RNS_ENABLED": ("rns_enabled", lambda v: v.lower() in ("1", "true", "yes")),
             "IRONMESH_RNS_CONFIGDIR": "rns_configdir",
+            "IRONMESH_REQUIRE_MSG_PROMOTION": ("require_message_promotion",
+                                                lambda v: v.lower() in ("1", "true", "yes")),
+            "IRONMESH_PENDING_QUEUE_CAP": ("pending_trust_queue_cap", int),
         }
         for env_var, target in env_map.items():
             val = os.environ.get(env_var)

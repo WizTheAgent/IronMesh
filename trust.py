@@ -132,8 +132,18 @@ class TrustStore:
 
         return "mismatch"
 
-    def pin_peer(self, node_id: str, identity_public_b64: str):
-        """Pin a peer's identity key (first-use trust)."""
+    def pin_peer(self, node_id: str, identity_public_b64: str,
+                 trust_state: str = "trusted"):
+        """Pin a peer's identity key (first-use trust).
+
+        Args:
+            trust_state: Initial trust state for the new pin. Defaults to
+                "trusted" for backwards compatibility. Callers can pass
+                "pending" when ``require_message_promotion`` is enabled
+                so the peer's MSGs queue until an operator promotes.
+        """
+        if trust_state not in ("pending", "trusted", "blocked"):
+            raise ValueError(f"invalid trust_state: {trust_state!r}")
         fp = self.fingerprint(identity_public_b64)
         now = time.time()
         self._peers[node_id] = {
@@ -141,9 +151,11 @@ class TrustStore:
             "fingerprint": fp,
             "first_seen": now,
             "last_seen": now,
+            "trust_state": trust_state,
         }
         self._save()
-        logger.info("Pinned peer %s (fingerprint: %s)", node_id, fp)
+        logger.info("Pinned peer %s (fingerprint: %s, trust_state: %s)",
+                    node_id, fp, trust_state)
 
     def revoke_peer(self, node_id: str) -> bool:
         """Revoke trust for a peer."""
@@ -202,8 +214,65 @@ class TrustStore:
                 "fingerprint": data.get("fingerprint", ""),
                 "first_seen": data.get("first_seen"),
                 "last_seen": data.get("last_seen"),
+                "trust_state": data.get("trust_state", "trusted"),
             })
         return result
 
     def get_peer(self, node_id: str) -> Optional[dict]:
         return self._peers.get(node_id)
+
+    # ------------------------------------------------------------------
+    # v0.8.5: pending-trust state machine
+    # ------------------------------------------------------------------
+
+    def get_trust_state(self, node_id: str) -> str:
+        """Return the per-peer trust state.
+
+        Returns one of: "pending", "trusted", "blocked".
+
+        For pinned peers without an explicit ``trust_state`` field
+        (pre-v0.8.5 stores), returns "trusted" — backwards-compatible
+        default so the gate doesn't retroactively quarantine anyone.
+
+        For peers we've never seen (not in ``_peers``), returns "pending".
+        Returns "blocked" for peers in ``_revoked``.
+        """
+        if node_id in self._revoked:
+            return "blocked"
+        rec = self._peers.get(node_id)
+        if rec is None:
+            return "pending"
+        return rec.get("trust_state", "trusted")
+
+    def set_trust_state(self, node_id: str, state: str) -> bool:
+        """Update the trust state for an already-pinned peer.
+
+        Returns True when the peer existed and was updated. Operators
+        flip "pending" → "trusted" via this entry point. Use
+        ``mark_revoked`` for the wire-level REVOCATION flow when you
+        want network-wide propagation; ``set_trust_state(.., "blocked")``
+        is a local-only quiet block.
+        """
+        if state not in ("pending", "trusted", "blocked"):
+            raise ValueError(f"invalid trust_state: {state!r}")
+        rec = self._peers.get(node_id)
+        if rec is None:
+            return False
+        rec["trust_state"] = state
+        self._save()
+        logger.info("Trust state for %s -> %s", node_id, state)
+        return True
+
+    def list_by_trust_state(self, state: str) -> List[dict]:
+        """List peers in a specific trust state. Useful for dashboards."""
+        out = []
+        for node_id, data in self._peers.items():
+            if data.get("trust_state", "trusted") == state:
+                out.append({
+                    "node_id": node_id,
+                    "fingerprint": data.get("fingerprint", ""),
+                    "first_seen": data.get("first_seen"),
+                    "last_seen": data.get("last_seen"),
+                    "trust_state": data.get("trust_state", "trusted"),
+                })
+        return out

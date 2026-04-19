@@ -148,6 +148,9 @@ class _DaemonConfig:
     dedup_sources_max: int = 128
     dedup_per_source_max: int = 1024
     dedup_cache_ttl: float = 300.0
+    # v0.8.5: pending-trust message gate
+    require_message_promotion: bool = False
+    pending_trust_queue_cap: int = 100
 
 
 # ---------------------------------------------------------------------------
@@ -1108,7 +1111,10 @@ class BridgeDaemon:
                  lora_max_payload: int = 128,
                  rekey_interval: float = 1800.0,
                  # v0.6.0: protocol hardening
-                 min_protocol_version: str = "ironmesh/0.3"):
+                 min_protocol_version: str = "ironmesh/0.3",
+                 # v0.8.5: pending-trust message gate
+                 require_message_promotion: bool = False,
+                 pending_trust_queue_cap: int = 100):
         self.name = name
         self.port = port
         self.bind_address = bind_address
@@ -1228,6 +1234,8 @@ class BridgeDaemon:
             metrics_format=metrics_format,
             log_format=log_format,
             audit_log_max_bytes=audit_log_max_bytes,
+            require_message_promotion=require_message_promotion,
+            pending_trust_queue_cap=pending_trust_queue_cap,
         )
         self._mesh = None  # MeshRouter, instantiated in _start() after keypair load
         self._capabilities = None  # CapabilityRegistry, instantiated in _start()
@@ -2094,6 +2102,218 @@ class BridgeDaemon:
                 self.peers[target].session_key = None
 
     # ------------------------------------------------------------------
+    # v0.8.5: Pending-trust message gate
+    # ------------------------------------------------------------------
+
+    # Frame types eligible for the gate. Control frames (REKEY, HEARTBEAT,
+    # ROUTE_*, CAPABILITY_*) handle themselves earlier in dispatch.
+    _GATED_MSG_TYPES: frozenset = frozenset({"MSG", "REQ", "RESP"})
+
+    async def _gate_inbound_msg(self, peer_id: str,
+                                 frame: "ew_protocol.Frame") -> str:
+        """Decide whether to deliver, queue, or drop an inbound user MSG.
+
+        Returns one of:
+          "deliver" — fall through to normal handling
+          "queue"   — enqueued in pending_trust_messages, do not store/publish
+          "drop"    — sender is blocked, silently dropped
+
+        Gate is a no-op when ``require_message_promotion`` is False or the
+        frame is not a user-payload type. The originator is judged by
+        ``frame.source`` if set (so relayed messages from a pending peer
+        still gate), falling back to the immediate ``peer_id``.
+        """
+        if not self.config.require_message_promotion:
+            return "deliver"
+        if frame.msg_type not in self._GATED_MSG_TYPES:
+            return "deliver"
+
+        originator = frame.source or peer_id
+        # Don't gate ourselves (loopback / self-test).
+        if originator == self.node_id:
+            return "deliver"
+
+        try:
+            from ironmesh.trust import TrustStore
+            mac_key = self._keypair.ed25519_secret[:32]
+            ts = TrustStore(agent_key=mac_key)
+        except Exception as e:
+            logger.warning("Trust gate: failed to open TrustStore (%s) — fail-open", e)
+            return "deliver"
+
+        state = ts.get_trust_state(originator)
+        if state == "trusted":
+            return "deliver"
+        if state == "blocked":
+            self.metrics.messages_received_blocked = (
+                getattr(self.metrics, "messages_received_blocked", 0) + 1
+            )
+            logger.debug("Trust gate: dropping MSG from blocked peer %s",
+                         originator[:12])
+            return "drop"
+
+        # state == "pending" — queue the wire payload for later drain.
+        try:
+            queued = await self._db.queue_pending_trust(
+                source_node_id=originator,
+                msg_id=frame.msg_id,
+                msg_type=frame.msg_type,
+                payload=frame.payload,
+                priority=getattr(frame, "priority", "NORMAL") or "NORMAL",
+                cap=int(self.config.pending_trust_queue_cap or 100),
+            )
+            if queued:
+                queued_count = await self._db.pending_trust_count_for(originator)
+                # Surface to GUI clients so an operator can react.
+                try:
+                    await self._gui_broadcast({
+                        "type": "pending_trust",
+                        "source_node_id": originator,
+                        "queued_count": queued_count,
+                        "msg_id": frame.msg_id,
+                    })
+                except Exception:
+                    pass
+                if self._audit:
+                    try:
+                        from ironmesh.audit import EVENT_TOFU_NEW
+                        # Reuse the TOFU-new event for queue-on-pending so
+                        # operators can grep audit logs for first-sight events.
+                        self._audit.log(EVENT_TOFU_NEW, {
+                            "peer_id": originator,
+                            "trust_state": "pending",
+                            "queued_msg_id": frame.msg_id,
+                            "queued_count": queued_count,
+                        })
+                    except Exception:
+                        pass
+        except Exception as e:
+            # Storage failure is bad but should not crash dispatch — log
+            # and fail-closed (drop) so a pending peer can't bypass the
+            # gate by tripping a storage error.
+            logger.error("Trust gate: queue_pending_trust failed for %s msg=%s: %s",
+                         originator, frame.msg_id, e)
+            return "drop"
+        return "queue"
+
+    async def promote_pending_peer(self, target_node_id: str) -> dict:
+        """Operator action: promote a pending peer to trusted, drain its queue.
+
+        Returns ``{"ok": bool, "drained": int, "error": str | None}``. The
+        drained messages are re-stored in history and re-published to the
+        bus in arrival order, exactly as if they had arrived just now —
+        downstream consumers (GUI, MCP subscribers, OpenClaw) see them
+        through the normal inbound path.
+        """
+        from ironmesh.trust import TrustStore
+        try:
+            mac_key = self._keypair.ed25519_secret[:32]
+            ts = TrustStore(agent_key=mac_key)
+        except Exception as e:
+            return {"ok": False, "drained": 0, "error": f"trust store: {e}"}
+        if not ts.set_trust_state(target_node_id, "trusted"):
+            return {"ok": False, "drained": 0,
+                    "error": f"peer {target_node_id} not in trust store"}
+        drained = await self._db.drain_pending_trust(target_node_id)
+        for m in drained:
+            try:
+                await self._db.store_message(
+                    msg_id=m["msg_id"], source=target_node_id,
+                    source_display=target_node_id,
+                    destination=self.node_id, msg_type=m["msg_type"],
+                    payload=m["payload"], direction="inbound",
+                    priority=m["priority"],
+                )
+                self.bus.publish(m["msg_type"], {
+                    "peer_id": target_node_id,
+                    "msg_id": m["msg_id"],
+                    "type": m["msg_type"],
+                    "payload": m["payload"],
+                })
+            except Exception as e:
+                logger.warning("Promote-drain re-publish failed for %s msg=%s: %s",
+                               target_node_id, m["msg_id"], e)
+        if self._audit:
+            try:
+                from ironmesh.audit import EVENT_TOFU_NEW
+                self._audit.log(EVENT_TOFU_NEW, {
+                    "peer_id": target_node_id,
+                    "trust_state": "trusted",
+                    "drained": len(drained),
+                    "via": "operator_promote",
+                })
+            except Exception:
+                pass
+        logger.info("Promoted peer %s to trusted (drained %d queued)",
+                    target_node_id, len(drained))
+        return {"ok": True, "drained": len(drained), "error": None}
+
+    async def block_pending_peer(self, target_node_id: str) -> dict:
+        """Operator action: mark a peer as blocked (local-only quiet block).
+
+        Drops any currently-queued pending messages and prevents future
+        MSGs from being delivered. Distinct from broadcast_revocation —
+        that propagates a signed REVOCATION to the network; this is a
+        unilateral local block that doesn't interact with peer keys.
+        """
+        from ironmesh.trust import TrustStore
+        try:
+            mac_key = self._keypair.ed25519_secret[:32]
+            ts = TrustStore(agent_key=mac_key)
+        except Exception as e:
+            return {"ok": False, "discarded": 0, "error": f"trust store: {e}"}
+        if not ts.set_trust_state(target_node_id, "blocked"):
+            return {"ok": False, "discarded": 0,
+                    "error": f"peer {target_node_id} not in trust store"}
+        discarded = await self._db.discard_pending_trust(target_node_id)
+        logger.info("Blocked peer %s (discarded %d queued)",
+                    target_node_id, discarded)
+        return {"ok": True, "discarded": discarded, "error": None}
+
+    async def list_pending_trust(self) -> list:
+        """Return one entry per peer awaiting promotion, with queued count
+        and identity metadata. Used by GUI dashboard + MCP tool."""
+        from ironmesh.trust import TrustStore
+        try:
+            mac_key = self._keypair.ed25519_secret[:32]
+            ts = TrustStore(agent_key=mac_key)
+        except Exception:
+            return []
+        # Union: peers in trust store with state=pending + peers with
+        # queued messages even if missing from store (defensive).
+        store_pending = {p["node_id"]: p for p in ts.list_by_trust_state("pending")}
+        queue_summary = await self._db.list_pending_trust_summary()
+        out = []
+        seen: set = set()
+        for q in queue_summary:
+            nid = q["source_node_id"]
+            seen.add(nid)
+            rec = store_pending.get(nid, {})
+            out.append({
+                "node_id": nid,
+                "fingerprint": rec.get("fingerprint", ""),
+                "first_seen": rec.get("first_seen"),
+                "last_seen": rec.get("last_seen"),
+                "queued_count": q["queued_count"],
+                "oldest_queued_at": q["oldest_queued_at"],
+                "newest_queued_at": q["newest_queued_at"],
+            })
+        # Pending peers in the store with no queued messages right now.
+        for nid, rec in store_pending.items():
+            if nid in seen:
+                continue
+            out.append({
+                "node_id": nid,
+                "fingerprint": rec.get("fingerprint", ""),
+                "first_seen": rec.get("first_seen"),
+                "last_seen": rec.get("last_seen"),
+                "queued_count": 0,
+                "oldest_queued_at": None,
+                "newest_queued_at": None,
+            })
+        return out
+
+    # ------------------------------------------------------------------
     # TOFU (Trust-On-First-Use)
     # ------------------------------------------------------------------
 
@@ -2121,10 +2341,21 @@ class BridgeDaemon:
                 raise ConnectionError(f"Peer {peer_id} is revoked")
             result = trust.verify_peer(peer_id, identity_public_b64)
             if result == "new":
-                trust.pin_peer(peer_id, identity_public_b64)
-                logger.info("TOFU: Pinned new peer %s", peer_id)
+                # v0.8.5: when require_message_promotion is on, brand-new
+                # peers are pinned in "pending" state — their MSGs queue
+                # until an operator promotes. Default-off preserves the
+                # pre-v0.8.5 behavior (peers are immediately trusted).
+                gate_on = bool(getattr(self.cfg, "require_message_promotion", False))
+                initial_state = "pending" if gate_on else "trusted"
+                trust.pin_peer(peer_id, identity_public_b64,
+                               trust_state=initial_state)
+                logger.info("TOFU: Pinned new peer %s (state=%s)",
+                            peer_id, initial_state)
                 if self._audit:
-                    self._audit.log(EVENT_TOFU_NEW, {"peer_id": peer_id})
+                    self._audit.log(EVENT_TOFU_NEW, {
+                        "peer_id": peer_id,
+                        "trust_state": initial_state,
+                    })
             elif result == "mismatch":
                 if self._audit:
                     self._audit.log(EVENT_TOFU_MISMATCH, {"peer_id": peer_id})
@@ -2377,6 +2608,20 @@ class BridgeDaemon:
                     except Exception:
                         pass
                 return
+
+        # v0.8.5: pending-trust message gate. Only user-payload frames are
+        # gated — control frames (REKEY/HEARTBEAT/etc.) short-circuit
+        # earlier in this function. The originator we judge against is the
+        # frame source if present (so relayed messages from a pending peer
+        # still get gated), otherwise the immediate peer.
+        gate_action = await self._gate_inbound_msg(peer_id, frame)
+        if gate_action == "queue":
+            peer_state.last_seen = time.time()
+            return
+        if gate_action == "drop":
+            peer_state.last_seen = time.time()
+            return
+        # action == "deliver" → fall through to normal handling
 
         # Store in history
         await self._db.store_message(
@@ -4019,6 +4264,53 @@ class BridgeDaemon:
             except Exception as e:
                 await websocket.send(json.dumps({
                     "type": "send_error", "error": f"Revocation failed: {e}",
+                }))
+
+        elif action == "list_pending_trust":
+            try:
+                pending = await self.list_pending_trust()
+                await websocket.send(json.dumps({
+                    "type": "pending_trust_list",
+                    "pending": pending,
+                    "gate_enabled": bool(self.config.require_message_promotion),
+                }, default=str))
+            except Exception as e:
+                await websocket.send(json.dumps({
+                    "type": "send_error", "error": f"list_pending_trust failed: {e}",
+                }))
+
+        elif action == "promote_peer":
+            target = cmd.get("target_node_id")
+            if not target:
+                await websocket.send(json.dumps({
+                    "type": "send_error", "error": "target_node_id required",
+                }))
+                return
+            try:
+                result = await self.promote_pending_peer(target)
+                await websocket.send(json.dumps({
+                    "type": "promote_ack", "target": target, **result,
+                }))
+            except Exception as e:
+                await websocket.send(json.dumps({
+                    "type": "send_error", "error": f"promote failed: {e}",
+                }))
+
+        elif action == "block_peer":
+            target = cmd.get("target_node_id")
+            if not target:
+                await websocket.send(json.dumps({
+                    "type": "send_error", "error": "target_node_id required",
+                }))
+                return
+            try:
+                result = await self.block_pending_peer(target)
+                await websocket.send(json.dumps({
+                    "type": "block_ack", "target": target, **result,
+                }))
+            except Exception as e:
+                await websocket.send(json.dumps({
+                    "type": "send_error", "error": f"block failed: {e}",
                 }))
 
         elif action == "rotate_session":

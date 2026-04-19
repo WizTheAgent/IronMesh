@@ -4,7 +4,7 @@
 Protocol: Model Context Protocol (stdio transport by default).
 Client: any MCP host (Claude Desktop, Claude Code, VS Code MCP).
 
-Tools exposed (18 total as of v0.8.4):
+Tools exposed (21 total as of v0.8.5):
     Core:
         ironmesh_list_peers              — enumerate connected + known peers with live metrics
         ironmesh_send_message            — send a MSG to a named peer (by agent name or node_id)
@@ -14,18 +14,22 @@ Tools exposed (18 total as of v0.8.4):
         ironmesh_get_peer_stats          — drill into one peer's latency/retries/rekey history
         ironmesh_trust_list              — list pinned and revoked peers
         ironmesh_revoke_peer             — revoke a peer (requires confirm parameter)
-    OpenClaw bridge (v0.8.4):
+    Cross-agent collaboration:
         ironmesh_discover_capabilities   — glob-match capabilities advertised across the mesh
         ironmesh_get_peer_capabilities   — query one peer's advertised capability set
         ironmesh_request_service         — REQ/RESP to a peer with correlation-id + timeout
         ironmesh_broadcast               — send a message to all online peers
         ironmesh_subscribe_events        — poll-based event queue with cursor
-    Audit-expansion (v0.8.4):
+    Self-introspection:
         ironmesh_advertise_capability    — declare a new local capability without restarting
         ironmesh_withdraw_capability     — stop advertising a local capability
         ironmesh_get_my_identity         — return own node_id, name, advertised caps
         ironmesh_pending_requests        — list in-flight REQ/RESP correlation slots
         ironmesh_reply_to_request        — wrap a correlation-id reply so responders don't build envelopes manually
+    Pending-trust gate (v0.8.5):
+        ironmesh_list_pending_trust      — list peers awaiting promotion under the message gate
+        ironmesh_trust_peer              — promote a pending peer to trusted, drain its queued MSGs
+        ironmesh_block_peer              — local-only quiet block (requires confirm parameter)
 
 Transport: spawns a local ``ironmesh run`` daemon if one isn't already running,
 then attaches as a read/write client via the IronMesh programmatic API. The
@@ -460,6 +464,97 @@ class IronMeshMCP:
             return {"ok": True, "revoked": peer}
         except Exception as e:
             return {"error": f"revoke failed: {e}"}
+
+    # --- v0.8.5: pending-trust message gate tools ---------------------------
+
+    def _resolve_node_id(self, target: str) -> Optional[str]:
+        """Resolve an agent name OR 32-hex node_id to a node_id, by
+        consulting connected peers. Returns the input verbatim if it
+        already looks like a node_id (32+ hex chars)."""
+        if not target:
+            return None
+        # Heuristic: 32+ lowercase hex chars → already a node_id.
+        if len(target) >= 32 and all(c in "0123456789abcdef" for c in target.lower()):
+            return target.lower()
+        for nid, state in (self.daemon.peers or {}).items():
+            if getattr(state, "name", None) == target:
+                return nid
+        return None
+
+    def tool_list_pending_trust(self, args: dict) -> dict:
+        """List peers awaiting promotion + their queued message counts.
+
+        Returns ``{gate_enabled: bool, pending: [{node_id, fingerprint,
+        queued_count, oldest_queued_at, ...}]}``. ``gate_enabled`` lets the
+        caller see whether the daemon is actually gating — when False,
+        ``pending`` is informational only (the queue may still hold a few
+        messages from a previous run).
+        """
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                self.daemon.list_pending_trust(), self.loop,
+            )
+            pending = fut.result(timeout=5)
+        except Exception as e:
+            return {"error": f"list_pending_trust failed: {e}"}
+        return {
+            "gate_enabled": bool(getattr(self.daemon.config,
+                                          "require_message_promotion", False)),
+            "pending": pending,
+        }
+
+    def tool_trust_peer(self, args: dict) -> dict:
+        """Promote a pending peer to trusted. Drains the peer's queued
+        messages into the normal inbound path (history + bus), in arrival
+        order. Idempotent on already-trusted peers (returns drained=0)."""
+        target = args.get("peer") or args.get("target")
+        if not target:
+            return {"error": "peer name or node_id required (field: 'peer')"}
+        node_id = self._resolve_node_id(target)
+        if not node_id:
+            return {"error": f"could not resolve {target!r} to a known peer"}
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                self.daemon.promote_pending_peer(node_id), self.loop,
+            )
+            result = fut.result(timeout=10)
+        except Exception as e:
+            return {"error": f"promote failed: {e}"}
+        if not result.get("ok"):
+            return {"error": result.get("error", "unknown promote failure")}
+        return {
+            "ok": True,
+            "node_id": node_id,
+            "drained": int(result.get("drained", 0)),
+        }
+
+    def tool_block_peer(self, args: dict) -> dict:
+        """Block a peer (local-only quiet block). Drops queued pending
+        messages and refuses future MSGs from this peer until set_trust_state
+        is reset. Distinct from ironmesh_revoke_peer — that's a wire-level
+        broadcast; this is a unilateral local block."""
+        target = args.get("peer") or args.get("target")
+        if not target:
+            return {"error": "peer name or node_id required (field: 'peer')"}
+        if not args.get("confirm"):
+            return {"error": "set confirm=true to execute; this is destructive"}
+        node_id = self._resolve_node_id(target)
+        if not node_id:
+            return {"error": f"could not resolve {target!r} to a known peer"}
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                self.daemon.block_pending_peer(node_id), self.loop,
+            )
+            result = fut.result(timeout=10)
+        except Exception as e:
+            return {"error": f"block failed: {e}"}
+        if not result.get("ok"):
+            return {"error": result.get("error", "unknown block failure")}
+        return {
+            "ok": True,
+            "node_id": node_id,
+            "discarded": int(result.get("discarded", 0)),
+        }
 
     # --- Cross-agent collaboration tools ------------------------------------
 
@@ -986,6 +1081,36 @@ TOOL_SPECS = [
                 "priority": {"type": "string", "enum": ["CRITICAL", "HIGH", "NORMAL", "LOW"], "default": "NORMAL"},
             },
             "required": ["target", "correlation_id", "body"],
+        },
+    },
+    {
+        "name": "ironmesh_list_pending_trust",
+        "description": "List peers awaiting operator promotion under the v0.8.5 message gate. Returns gate_enabled + per-peer queued-message counts, fingerprints, and first/last-seen timestamps. Safe to call when the gate is off (returns empty pending list).",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "ironmesh_trust_peer",
+        "description": "Promote a pending peer to trusted, draining its queued messages into the normal inbound path (history + bus + downstream subscribers) in arrival order. Use after ironmesh_list_pending_trust shows a peer you recognize. Idempotent on already-trusted peers.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "peer": {"type": "string", "description": "agent name or 32-hex node_id"},
+            },
+            "required": ["peer"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "ironmesh_block_peer",
+        "description": "Block a peer locally — discards queued messages and silently drops future MSGs from this peer. Distinct from ironmesh_revoke_peer (which propagates a signed REVOCATION across the mesh); this is a unilateral local block. Requires confirm=true.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "peer": {"type": "string", "description": "agent name or 32-hex node_id"},
+                "confirm": {"type": "boolean", "default": False},
+            },
+            "required": ["peer"],
+            "additionalProperties": False,
         },
     },
 ]

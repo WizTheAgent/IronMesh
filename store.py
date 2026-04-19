@@ -14,7 +14,7 @@ import aiosqlite
 
 logger = logging.getLogger("ironmesh.store")
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # v0.7.2 Wiz hardening: bound the offline queue so a perpetually-offline
 # peer can't consume unbounded disk. When at cap, the oldest LOW/NORMAL
@@ -90,6 +90,8 @@ class MessageStore:
             await self._migrate_v1()
         if current < 2:
             await self._migrate_v2()
+        if current < 3:
+            await self._migrate_v3()
 
         await self._set_schema_version(SCHEMA_VERSION)
 
@@ -181,6 +183,157 @@ class MessageStore:
         except Exception:
             pass
         await self._db.commit()
+
+    async def _migrate_v3(self):
+        """V3: Pending-trust message queue (v0.8.5).
+
+        Holds inbound MSG/REQ/RESP frames from peers that haven't been
+        promoted to "trusted" yet. Operator promotes via the GUI / MCP
+        and the queue drains in arrival order.
+        """
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS pending_trust_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_node_id TEXT NOT NULL,
+                msg_id TEXT NOT NULL,
+                msg_type TEXT NOT NULL,
+                payload BLOB,
+                priority TEXT DEFAULT 'NORMAL',
+                queued_at REAL NOT NULL,
+                UNIQUE(source_node_id, msg_id)
+            )
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pending_trust_source
+            ON pending_trust_messages(source_node_id, queued_at)
+        """)
+        await self._db.commit()
+
+    # ------------------------------------------------------------------
+    # v0.8.5: pending-trust message queue
+    # ------------------------------------------------------------------
+
+    async def queue_pending_trust(self, source_node_id: str, msg_id: str,
+                                   msg_type: str, payload: bytes,
+                                   priority: str = "NORMAL",
+                                   cap: int = 100) -> bool:
+        """Queue a MSG from a peer awaiting trust promotion.
+
+        Enforces a per-peer cap with FIFO eviction (oldest evicted on
+        overflow). Returns True if the new message is now in the queue.
+        Increments ``pending_dropped`` on eviction (counter is shared
+        with the offline-queue, named for observability).
+        """
+        if cap and cap > 0:
+            cursor = await self._db.execute(
+                "SELECT COUNT(*) FROM pending_trust_messages WHERE source_node_id = ?",
+                (source_node_id,),
+            )
+            row = await cursor.fetchone()
+            current = int(row[0]) if row else 0
+            if current >= cap:
+                # Evict the oldest (FIFO).
+                await self._db.execute(
+                    """DELETE FROM pending_trust_messages
+                       WHERE id = (
+                         SELECT id FROM pending_trust_messages
+                         WHERE source_node_id = ?
+                         ORDER BY queued_at ASC, id ASC LIMIT 1
+                       )""",
+                    (source_node_id,),
+                )
+                self.pending_evicted += 1
+                logger.warning(
+                    "Pending-trust queue for %s at cap (%d); evicted oldest to admit %s",
+                    source_node_id, cap, msg_id,
+                )
+        encrypted = self._encrypt_payload(payload)
+        try:
+            await self._db.execute(
+                """INSERT INTO pending_trust_messages
+                   (source_node_id, msg_id, msg_type, payload, priority, queued_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (source_node_id, msg_id, msg_type, encrypted, priority, time.time()),
+            )
+            await self._db.commit()
+        except aiosqlite.IntegrityError:
+            # Duplicate (source, msg_id) — same wire MSG arrived twice. Idempotent no-op.
+            return False
+        return True
+
+    async def drain_pending_trust(self, source_node_id: str) -> List[dict]:
+        """Return + remove all queued pending-trust messages for a peer,
+        in arrival order. Caller is responsible for re-publishing to the
+        bus + storing in history."""
+        cursor = await self._db.execute(
+            """SELECT id, msg_id, msg_type, payload, priority, queued_at
+               FROM pending_trust_messages
+               WHERE source_node_id = ?
+               ORDER BY queued_at ASC, id ASC""",
+            (source_node_id,),
+        )
+        rows = await cursor.fetchall()
+        out = []
+        for row in rows:
+            raw = row[3] if isinstance(row[3], (bytes, bytearray)) else (row[3].encode() if row[3] else b"")
+            out.append({
+                "id": row[0],
+                "msg_id": row[1],
+                "msg_type": row[2],
+                "payload": self._decrypt_payload(raw),
+                "priority": row[4],
+                "queued_at": row[5],
+            })
+        if out:
+            await self._db.execute(
+                "DELETE FROM pending_trust_messages WHERE source_node_id = ?",
+                (source_node_id,),
+            )
+            await self._db.commit()
+        return out
+
+    async def discard_pending_trust(self, source_node_id: str) -> int:
+        """Drop all queued pending-trust messages for a peer (used on block).
+        Returns the number discarded."""
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) FROM pending_trust_messages WHERE source_node_id = ?",
+            (source_node_id,),
+        )
+        n = int((await cursor.fetchone())[0])
+        if n:
+            await self._db.execute(
+                "DELETE FROM pending_trust_messages WHERE source_node_id = ?",
+                (source_node_id,),
+            )
+            await self._db.commit()
+        return n
+
+    async def list_pending_trust_summary(self) -> List[dict]:
+        """One row per peer with at least one queued pending-trust msg,
+        with the count and the oldest queued_at."""
+        cursor = await self._db.execute(
+            """SELECT source_node_id, COUNT(*), MIN(queued_at), MAX(queued_at)
+               FROM pending_trust_messages
+               GROUP BY source_node_id
+               ORDER BY MIN(queued_at) ASC"""
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "source_node_id": r[0],
+                "queued_count": int(r[1]),
+                "oldest_queued_at": r[2],
+                "newest_queued_at": r[3],
+            }
+            for r in rows
+        ]
+
+    async def pending_trust_count_for(self, source_node_id: str) -> int:
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) FROM pending_trust_messages WHERE source_node_id = ?",
+            (source_node_id,),
+        )
+        return int((await cursor.fetchone())[0])
 
     # ------------------------------------------------------------------
     # Payload encryption at rest (#8)
