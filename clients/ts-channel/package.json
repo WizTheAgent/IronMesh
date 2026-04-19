@@ -1,14 +1,14 @@
 {
-  "name": "@wiztheagent/ironmesh-client",
-  "version": "0.1.0-alpha.2",
-  "description": "TypeScript / Node.js client for the IronMesh agent-to-agent mesh protocol. Connects, handshakes, and exchanges messages with an IronMesh daemon over WebSocket.",
+  "name": "@wiztheagent/openclaw-ironmesh-channel",
+  "version": "0.1.0-alpha.1",
+  "description": "OpenClaw channel plugin that uses IronMesh as transport. Lets OpenClaw agents see other mesh peers as contacts and exchange messages over the encrypted local-first mesh.",
   "license": "MIT",
   "author": "WizTheAgent",
   "homepage": "https://ironmesh.org",
   "repository": {
     "type": "git",
     "url": "https://github.com/WizTheAgent/IronMesh",
-    "directory": "clients/ts"
+    "directory": "clients/ts-channel"
   },
   "type": "module",
   "main": "dist/index.js",
@@ -17,6 +17,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./plugin": {
+      "types": "./dist/plugin.d.ts",
+      "import": "./dist/plugin.js"
     }
   },
   "files": [
@@ -35,23 +39,29 @@
     "clean": "rimraf dist"
   },
   "dependencies": {
-    "tweetnacl": "^1.0.3",
-    "ws": "^8.18.0"
+    "@wiztheagent/ironmesh-client": "file:../ts"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/node": "^20.12.0",
-    "@types/ws": "^8.5.10",
     "rimraf": "^5.0.5",
     "typescript": "^5.4.0",
     "vitest": "^3.2.4"
   },
   "keywords": [
+    "openclaw",
+    "channel",
+    "plugin",
     "ironmesh",
     "mesh",
     "agent",
-    "websocket",
-    "ed25519",
-    "ecdh",
     "p2p",
     "decentralized"
   ]

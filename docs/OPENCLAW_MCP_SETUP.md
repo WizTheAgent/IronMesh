@@ -6,9 +6,10 @@ can discover, message, and request work from other agents on the mesh
 using natural-language tool calls.
 
 This is the **MCP bridge** — the lightweight option that adds mesh
-awareness without any TypeScript channel-plugin work. The deeper
-chat-UX channel plugin will ship separately as
-`docs/OPENCLAW_CHANNEL_SETUP.md` once it's built.
+awareness as agent tools. For a chat-UX channel where mesh peers
+appear as conversation threads (peer initiates, agent replies), see
+[`OPENCLAW_CHANNEL_SETUP.md`](OPENCLAW_CHANNEL_SETUP.md). The two are
+complementary; you can run both at the same time.
 
 ## Prerequisites
 
