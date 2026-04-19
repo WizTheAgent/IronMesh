@@ -1,7 +1,4 @@
-# IronMesh v0.8.5 — Release Notes (DRAFT)
-
-> **Status:** draft. Contents will be finalized at tag time. Items
-> below describe everything currently on `main` since v0.8.4.
+# IronMesh v0.8.5 — Release Notes
 
 ## Headline
 
@@ -54,7 +51,7 @@ No wire-protocol changes. Every v0.8.x peer stays interoperable.
 - 34 new tests in `tests/test_trust_gate.py` covering state machine,
   queue admit + cap eviction + drain order, schema migration, MCP tool
   dispatch, end-to-end gate behavior, concurrent inbound serialization
-- 15 vitest tests for the channel plugin (unchanged from alpha.2)
+- 29 vitest tests for the channel plugin (plugin shape + adapter wiring + configSchema validation)
 
 ## Migration
 
