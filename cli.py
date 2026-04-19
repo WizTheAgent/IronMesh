@@ -422,9 +422,39 @@ def cmd_run(args):
         # Default-deny: disable mDNS auto-connect unless explicitly allowed
         log.warning("mDNS auto-connect disabled (default-deny). "
                     "Use --allowed-peers or --open-discovery to enable.")
+    elif open_discovery:
+        log.warning(
+            "INSECURE: --open-discovery is set. mDNS auto-connect to ANY "
+            "peer is enabled, bypassing the default-deny allowlist. This "
+            "flag is for localhost testing only. Use --allowed-peers in "
+            "any real deployment."
+        )
 
     # TLS preference
     allow_plaintext_ws = getattr(args, "allow_plaintext_ws", False)
+    if allow_plaintext_ws:
+        log.warning(
+            "INSECURE: --allow-plaintext-ws is set. WebSocket connections "
+            "may fall back to plaintext ws:// instead of requiring wss://. "
+            "This flag is for localhost testing only. Generate a TLS cert "
+            "and pass --tls-cert/--tls-key in any real deployment."
+        )
+
+    # Pending-trust message gate deprecation notice (default-on in v0.9)
+    require_msg_promotion = (
+        getattr(args, "require_message_promotion", False)
+        or os.environ.get("IRONMESH_REQUIRE_MSG_PROMOTION", "").lower() in ("1", "true", "yes")
+    )
+    if not require_msg_promotion:
+        log.warning(
+            "DEPRECATION: pending-trust message gate is opt-in in v0.8.x. "
+            "It will be enabled by default in v0.9. To prepare, set "
+            "IRONMESH_REQUIRE_MSG_PROMOTION=true or pass "
+            "--require-message-promotion now. To keep the legacy "
+            "trust-on-first-message behavior in v0.9 and later, you will "
+            "need to pass an explicit --no-message-promotion flag (not "
+            "yet implemented). See docs/migration/v0_9_default_deny.md."
+        )
 
     daemon = BridgeDaemon(
         name=name,

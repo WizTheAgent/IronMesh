@@ -8,7 +8,7 @@
 
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **v0.8.5.2 — pre-1.0 release.** 656 tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus a 3-node live-mesh validation pass.
+> **v0.8.5.3 — pre-1.0 release.** 686 tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus a 3-node live-mesh validation pass.
 > Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -141,7 +141,7 @@ Requires Python 3.10 or newer. On Linux the firewall must allow UDP 5353
 
 ```bash
 pip install ironmesh            # PyPI
-# or: docker pull wiztheagent/ironmesh:0.8.5.2
+# or: docker pull wiztheagent/ironmesh:0.8.5.3
 # or: ./scripts/install.sh       (Linux / macOS systemd)
 # or: see docs/TERMUX.md         (Android)
 ```
@@ -160,32 +160,9 @@ real deployment.
 
 ### 60-second demo — two agents on one machine
 
-Open two terminals. Export the same passphrase in both, then run one
-agent per terminal:
+For a quick same-machine walkthrough, see **[Advanced / Testing — same-machine localhost demo](#advanced--testing--same-machine-localhost-demo)** below. That path uses two opt-in shortcut flags so you can run two agents without generating TLS certs or pre-pinning peer names.
 
-```bash
-# Both terminals
-export IRONMESH_PASSPHRASE="any-12-plus-char-passphrase"
-
-# Terminal 1
-ironmesh run --name alice --port 8765 --open-discovery --allow-plaintext-ws
-
-# Terminal 2
-ironmesh run --name bob   --port 8766 --open-discovery --allow-plaintext-ws
-```
-
-Within a few seconds each terminal prints a line like:
-
-```
-Discovered agent: bob @ 127.0.0.1:8766
-Peer bob (8f3c2a1b...) online -- ephemeral ECDH complete
-```
-
-That means the handshake succeeded and the two nodes have a live,
-encrypted session. `--open-discovery` turns off the default-deny peer
-filter so a same-machine demo just works. `--allow-plaintext-ws`
-disables the wss-first attempt so you don't need to generate a TLS cert
-for localhost. In any real deployment you'll leave both of those off.
+For a real two-machine deployment, use **[Running two physical machines](#running-two-physical-machines)** instead. That path is the recommended deployment shape: passphrase file (not env var), `--allowed-peers` allowlist, and TLS by default.
 
 ### The "two Ollama agents talking" demo
 
@@ -243,6 +220,45 @@ ironmesh run --name bob   --port 8765 --allowed-peers alice
 > The `--passphrase` CLI flag was deliberately removed in v0.3 — it
 > would leak the passphrase into `ps aux`. Use `--passphrase-file`,
 > `IRONMESH_PASSPHRASE_FILE`, or the interactive `getpass` prompt.
+
+### Advanced / Testing — same-machine localhost demo
+
+> ⚠ **Localhost testing only.** This path uses two opt-in shortcut
+> flags (`--open-discovery` and `--allow-plaintext-ws`) that disable
+> default-deny peer filtering and the TLS-first connection attempt.
+> They exist to make a same-machine demo possible without generating
+> TLS certs or pre-pinning peer names. **Do not use them on a real
+> deployment.** For a real deployment, follow
+> [Running two physical machines](#running-two-physical-machines) above.
+
+Open two terminals. Export the same passphrase in both, then run one
+agent per terminal:
+
+```bash
+# Both terminals
+export IRONMESH_PASSPHRASE="any-12-plus-char-passphrase"
+
+# Terminal 1
+ironmesh run --name alice --port 8765 --open-discovery --allow-plaintext-ws
+
+# Terminal 2
+ironmesh run --name bob   --port 8766 --open-discovery --allow-plaintext-ws
+```
+
+Within a few seconds each terminal prints a line like:
+
+```
+Discovered agent: bob @ 127.0.0.1:8766
+Peer bob (8f3c2a1b...) online -- ephemeral ECDH complete
+```
+
+That means the handshake succeeded and the two nodes have a live,
+encrypted session. `--open-discovery` turns off the default-deny peer
+filter so a same-machine demo just works without you having to know the
+peer names in advance. `--allow-plaintext-ws` disables the wss-first
+attempt so you don't need to generate a TLS cert for localhost. Both
+flags emit a startup warning when set so they cannot accidentally make
+it into a production config.
 
 ### Docker
 
@@ -511,14 +527,30 @@ pytest tests/ -v --cov=ironmesh
 
 ## Recent changes
 
-**v0.8.5.2 (current):** Operator polish on top of v0.8.5 plus a batch of
-security hardening fixes. HMAC-chained audit events for every gate decision,
-`ironmesh trust set-state` CLI for offline trust edits, `ironmesh doctor`
-one-shot diagnostic, gate counters in `/api/mesh_stats` and Prometheus,
-constant-time GUI token comparison, and nine other hardening fixes from a
-deep audit. No protocol or schema changes — every v0.8.x peer stays
-interoperable. See
+**v0.8.5.3 (current):** Quickstart hardening and onboarding polish. The
+`--open-discovery` and `--allow-plaintext-ws` shortcut flags now emit
+explicit `INSECURE` warnings on startup so they cannot quietly make it
+into a production config; the README quickstart leads with the secure
+deployment path and demotes the localhost-shortcut walkthrough to a
+clearly-labeled `Advanced / Testing` section. The pending-trust message
+gate emits a startup deprecation notice when opt-in is disabled, with a
+dated commitment to default-on in v0.9. Two new examples:
+[`conv_multiturn.py`](examples/conv_multiturn.py) (a self-contained
+ConvEnvelope walkthrough that runs without any LLM dependency) and
+[`persona_debate.py`](examples/persona_debate.py) (orchestrates a
+persona-vs-persona debate between two `llm_bridge.py` instances using
+the bundled persona presets). Adds `.github/RELEASE_CHECKLIST.md` so
+the doc-sync drift that motivated this release cannot recur. No
+protocol or schema changes; every v0.8.x peer stays interoperable. See
 [`CHANGELOG.md`](CHANGELOG.md) and
+[`docs/RELEASE_NOTES_v0.8.5.3.md`](docs/RELEASE_NOTES_v0.8.5.3.md).
+
+**v0.8.5.2:** Operator polish on top of v0.8.5 plus a batch of security
+hardening fixes. HMAC-chained audit events for every gate decision,
+`ironmesh trust set-state` CLI for offline trust edits, `ironmesh
+doctor` one-shot diagnostic, gate counters in `/api/mesh_stats` and
+Prometheus, constant-time GUI token comparison, and nine other
+hardening fixes from a deep audit. See
 [`docs/RELEASE_NOTES_v0.8.5.2.md`](docs/RELEASE_NOTES_v0.8.5.2.md).
 
 **v0.8.5:** Pending-trust message gate — opt-in default-deny mode for new
@@ -571,8 +603,8 @@ Full list: [CHANGELOG.md](CHANGELOG.md). Planned work: [docs/ROADMAP.md](docs/RO
 
 Where to get it and what's still rough:
 
-- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport). Latest: **v0.8.5.2**.
-- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.8.5.2`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
+- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport). Latest: **v0.8.5.3**.
+- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.8.5.3`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
 - **GitHub releases** — signed tags, wheel + sdist attached: [releases page](https://github.com/WizTheAgent/IronMesh/releases).
 - **Go client** — `clients/go/` (reference implementation, crypto primitives verified against Python).
 - **LoRa end-to-end latency** — Measured live at 915 MHz SF8/BW125 between two RNode-equipped nodes (1 hop, strong signal): 16-byte probe 1.07 — 1.23 s, 64-byte probe 1.17 — 1.25 s, 256-byte probe 1.77 — 1.98 s, 100% delivery across 9 probes. Multi-hop + long-range interference sweeps are still pending — see [`docs/LORA_VALIDATION.md`](docs/LORA_VALIDATION.md).

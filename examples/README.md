@@ -10,6 +10,45 @@ characters). The passphrase must match across every peer in the mesh.
 export IRONMESH_PASSPHRASE='any-strong-passphrase-12-plus'
 ```
 
+## conv_multiturn.py — minimal ConvEnvelope walkthrough (no LLM)
+
+A scripted ping/pong conversation between two agents using
+`ConvEnvelope` for structured multi-turn exchange. No LLM dependency —
+both sides are scripted — so this works as a self-contained walkthrough
+of the conversation envelope API. The reference for: open a
+conversation, exchange bounded turns, recognize end-of-conversation,
+no orphaned state.
+
+```bash
+# Terminal 1
+python examples/conv_multiturn.py --role ponger --port 18890
+
+# Terminal 2
+python examples/conv_multiturn.py --role pinger --port 18891 \
+    --partner ponger --turns 4
+```
+
+## persona_debate.py — two persona-tagged LLM bridges debating a motion
+
+Discovers two peers advertising different `role:<persona>` capabilities
+(e.g., `role:assistant` and `role:devil`), seeds a debate motion, and
+relays bounded turns between them. Each side responds in character
+using its persona preset from `ironmesh.roles`. Pair however you like:
+`assistant` vs `devil` for classic debate, `security-analyst` vs `ops`
+for a real-world tradeoff discussion, `historian` vs `coder` for
+perspective contrast.
+
+Requires two `llm_bridge.py` instances running with different `--role`
+flags pointed at an Ollama-compatible backend. See the script's module
+docstring for the full setup.
+
+```bash
+python examples/persona_debate.py \
+    --persona-a assistant --persona-b devil \
+    --motion "Self-hosted AI is the only ethical path forward." \
+    --turns 6
+```
+
 ## ai_to_ai_dialogue.py — two AI agents holding a bounded conversation
 
 Demonstrates the "AI agents talk to each other without the user babysitting,

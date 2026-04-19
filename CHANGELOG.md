@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.5.3] — Quickstart hardening and onboarding polish
+
+Patch release on top of v0.8.5.2. No protocol or schema changes; every
+v0.8.x peer stays interoperable. Default behavior is unchanged for
+existing deployments — the new warnings only fire when the relevant
+flags or env vars are set (or absent in the deprecation case).
+
+### Added
+
+- **Startup `INSECURE` warning when `--open-discovery` is set.**
+  Previously the daemon emitted a warning only when default-deny mode
+  was active; the explicit insecure case was silent. Setting the flag
+  now logs a clear warning naming the flag, the security implication,
+  and the recommended replacement (`--allowed-peers`).
+- **Startup `INSECURE` warning when `--allow-plaintext-ws` is set.**
+  Same pattern — explicit warning naming the flag, the implication
+  (plaintext `ws://` fallback enabled), and the recommended fix
+  (generate a TLS cert and pass `--tls-cert`/`--tls-key`).
+- **Startup `DEPRECATION` warning when the pending-trust message gate
+  is opt-in disabled.** Cites the v0.9 default-on commitment and points
+  at the planned `--no-message-promotion` escape hatch and the
+  `docs/migration/v0_9_default_deny.md` migration doc (to be written
+  ahead of the v0.9 ship).
+- **`examples/conv_multiturn.py`** — minimal `ConvEnvelope` walkthrough.
+  Two terminals, two roles (`pinger`/`ponger`), no LLM dependency.
+  Reference for: open a conversation, exchange bounded turns,
+  recognize end-of-conversation, no orphaned state.
+- **`examples/persona_debate.py`** — persona-vs-persona debate
+  orchestrator. Discovers two peers advertising different
+  `role:<persona>` capabilities, seeds a debate motion, relays bounded
+  turns. Pair `assistant` vs `devil` for classic debate,
+  `security-analyst` vs `ops` for a real-world tradeoff discussion,
+  etc.
+- **`.github/RELEASE_CHECKLIST.md`** — explicit doc-sync, public-facing
+  scrub, smoke-gate, and post-release verification sections so the
+  README/version drift that motivated this release cannot recur.
+  Section 3 ("Documentation in sync") enumerates every shipped doc
+  with the exact sweep command for catching stale current-version
+  claims.
+
+### Changed
+
+- **README quickstart restructured.** The `60-second demo` section in
+  Quick Start now leads with pointers to the secure deployment path
+  (`Running two physical machines`) and to a clearly labeled
+  `Advanced / Testing — same-machine localhost demo` subsection. The
+  insecure-flag walkthrough still exists in full — it just no longer
+  appears in the headline quickstart where a stranger could mistake it
+  for the recommended path.
+- **README "Recent changes" section** has a new `v0.8.5.3` paragraph
+  at the top; the `v0.8.5.2` paragraph is preserved as historical
+  context with `(current)` removed.
+
+### Documentation
+
+- New `docs/RELEASE_NOTES_v0.8.5.3.md`.
+- README current-version references (top banner, docker-pull commands,
+  `Latest:` line) all updated to `v0.8.5.3`.
+
 ## [0.8.5.2] — Operator polish and security hardening
 
 Patch release on top of v0.8.5. Operator UX polish for the pending-

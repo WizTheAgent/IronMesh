@@ -74,7 +74,7 @@ Reticulum is an **opt-in** transport enabled by installing
 `ironmesh[rns]` and passing `--reticulum`. The WebSocket path is the
 default; most deployments never touch RNS. If you enable it, be
 aware of these residual risks (documented so they don't surprise
-you; hardening is planned for a post-v0.8.5.2 release):
+you; hardening is planned for a future release):
 
 - **Identity binding to RNS layer is not strictly enforced.** A peer
   that holds a valid RNS identity can open an RNS link and then send
