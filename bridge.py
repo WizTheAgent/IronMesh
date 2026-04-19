@@ -1307,6 +1307,13 @@ class BridgeDaemon:
         self._auth_max_failures = 3
         self._auth_failure_window = 300  # 5 minutes
 
+        # v0.8.5.2-R5: per-peer gate-audit write rate-limit. Prevents a
+        # blocked peer from flooding the audit log with MSG_GATED_DROP
+        # events faster than rotation retention, which could push
+        # earlier forensic evidence out of the retained archives.
+        # Keyed by originator node_id -> last audit write timestamp.
+        self._gate_audit_last_write: Dict[str, float] = {}
+
         # GUI token (#9) — required for /metrics, /api/state, /ws
         import secrets
         self._gui_token: str = secrets.token_urlsafe(32)
@@ -2264,16 +2271,29 @@ class BridgeDaemon:
             self._db.pending_trust_dropped += 1
             logger.debug("Trust gate: dropping MSG from blocked peer %s",
                          originator[:12])
-            if self._audit:
-                try:
-                    self._audit.log(EVENT_MSG_GATED_DROP, {
-                        "peer_id": originator,
-                        "msg_id": frame.msg_id,
-                        "msg_type": frame.msg_type,
-                        "reason": "blocked",
-                    })
-                except Exception:
-                    pass
+            # v0.8.5.2-R5: rate-limit audit writes for blocked peers to
+            # 1 per peer per second. Without this cap, a malicious
+            # blocked peer sending 1000 MSGs/sec could grow the audit
+            # log at ~200 KB/sec, rotating older entries out within
+            # ~4 minutes (MAX_ARCHIVES=5, max_bytes=10MB each). The
+            # attacker could then use the flood to obscure earlier
+            # forensic evidence. Counter-only path keeps per-peer
+            # drop totals visible via /api/mesh_stats without growing
+            # the audit chain.
+            now = time.time()
+            last_audit = self._gate_audit_last_write.get(originator, 0.0)
+            if now - last_audit >= 1.0:
+                self._gate_audit_last_write[originator] = now
+                if self._audit:
+                    try:
+                        self._audit.log(EVENT_MSG_GATED_DROP, {
+                            "peer_id": originator,
+                            "msg_id": frame.msg_id,
+                            "msg_type": frame.msg_type,
+                            "reason": "blocked",
+                        })
+                    except Exception:
+                        pass
             return "drop"
 
         # state == "pending" — queue the wire payload for later drain.

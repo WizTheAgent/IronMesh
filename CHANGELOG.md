@@ -5,12 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.8.5.2] — Operator polish + security hardening
+## [0.8.5.2] — Operator polish and security hardening
 
 Patch release on top of v0.8.5. Operator UX polish for the pending-
-trust gate + three security fixes from a pre-submission audit. No
-protocol or schema changes; every v0.8.x peer stays interoperable;
-default behavior is unchanged.
+trust gate plus a batch of security hardening fixes. No protocol
+or schema changes; every v0.8.x peer stays interoperable; default
+behavior is unchanged.
 
 ### Added
 
@@ -55,7 +55,7 @@ default behavior is unchanged.
 
 ### Fixed (observability)
 
-- **Conflated pending-queue counter.** My v0.8.5 trust-gate queue
+- **Conflated pending-queue counter.** The v0.8.5 trust-gate queue
   eviction was incrementing `self.pending_evicted` on
   `MessageStore`, which is also the offline-queue counter. Operators
   looking at `/metrics` couldn't tell which queue was under
@@ -78,11 +78,70 @@ default behavior is unchanged.
   prefix + file path + explicit pointer to `--trust-path` for the
   multi-daemon collision pattern this release closes in v0.8.5.
 
+### Fixed (additional security hardening)
+
+- **MCP tool resource caps.** `ironmesh_request_service` timeout
+  clamped to [1, 300]s and prompt capped at 1 MB;
+  `ironmesh_send_message` and `ironmesh_broadcast` payload capped
+  at 16 MB; `ironmesh_subscribe_events` limit clamped to
+  [1, 1000], cursor must be non-negative, kinds filter capped at
+  64 entries. Any of these could previously have been weaponized
+  against the MCP handler for resource exhaustion.
+- **TypeScript persistence `fsync`.** `PluginState.save` in
+  `@wiztheagent/openclaw-ironmesh-channel` now `fsync`s before
+  rename. Same class as the Python trust-file atomic-write fix.
+- **Framework adapter error leakage.** `langchain_adapter` and
+  `autogen_adapter` previously returned raw `str(e)` on exception,
+  leaking internal paths and config into the LLM's tool-result
+  context. Now returns only the exception class name plus a
+  generic category; full trace logs server-side.
+- **Federation targeted forwarding.**
+  `FederationGateway._forward_handler` previously broadcast to
+  every peer on the destination mesh as long as any peer there
+  advertised a policy-allowed capability. Now iterates destination
+  peers and forwards only to those whose own advertised
+  capabilities pass policy. Closes a cross-mesh data-leakage
+  vector.
+- **MCP stdio EOF zombie.** When an MCP host closed stdio, the
+  MCP server's long-running background tasks kept non-daemon
+  threads alive for 20+ seconds (or indefinitely). Now `main()`
+  calls `daemon.shutdown()` with a 3 s cap then `os._exit(0)` to
+  kill any surviving threads. Exits in 3 s.
+- **Audit log bombing rate-limit.** `MSG_GATED_DROP` events
+  rate-limited to one per peer per second. A blocked peer sending
+  1000 MSGs/sec could previously flood the audit chain at
+  ~200 KB/sec, rotating older forensic entries out of the retained
+  5-archive window within ~4 minutes. Counter in `/api/mesh_stats`
+  still increments on every drop for visibility.
+- **Passphrase-file hardening.** `_read_passphrase_file_safe`
+  refuses non-regular files (blocks symlinks to `/dev/urandom`
+  that would hang reads), caps size at 4096 bytes, rejects empty
+  files, warns on world-readable mode on POSIX, validates UTF-8.
+
+### Added documentation
+
+- `SECURITY.md` gained sections: "Storage-at-rest properties"
+  (documents ciphertext in SQLite WAL/SHM, metadata plaintext
+  by design), "Reticulum (LoRa) transport caveats" (opt-in path,
+  known gaps), "TLS and peer authentication" (design choice —
+  TOFU+Ed25519 authenticates, TLS for confidentiality only).
+- `docs/OPERATOR_TRUST_RUNBOOK.md` gained sections: "Running
+  multiple daemons on one host" with the exact multi-daemon
+  collision error message, "Audit events you can grep for" with
+  the full event-name table + forensic grep recipe,
+  "`ironmesh doctor` diagnostic" with the 7-check breakdown.
+- `docs/RELEASE_NOTES_v0.8.5.2.md` — complete release notes.
+- `tests/test_fuzz_v0852.py` — property-based fuzz tests for
+  `Frame.from_dict`, `TrustStore._load`, and
+  `MessageStore.queue_pending_trust` against arbitrary inputs
+  including unicode, SQL-injection attempts, binary bytes, and
+  empty strings.
+
 ### Verification
 
-- **656 unit tests + 29 vitest tests green.**
-- **Deep adversarial security audit** — three real findings all
-  fixed, one false positive dismissed.
+- **656 unit tests and 29 vitest tests green.**
+- **Adversarial security review** — findings fixed (see Fixed
+  sections above).
 - **Cross-version handshake** — v0.8.5.2 daemon interoperates with
   v0.8.4 peers running on Raspberry Pi and NAS (verified on a live
   3-node mesh).
@@ -95,9 +154,9 @@ default behavior is unchanged.
   on next trust operation.
 - **Concurrent promote/block race** — final state consistent, both
   operations captured in audit chain.
-- **Real-mesh gate flow** — live kingpi-llm → wiz MSG blocked at
-  the gate, `MSG_GATED_DROP` event fired with the real Ollama
-  response's msg_id, `pending_trust_dropped` counter incremented.
+- **Real-mesh gate flow** — live MSG blocked at the gate,
+  `MSG_GATED_DROP` event fired with the message's msg_id,
+  `pending_trust_dropped` counter incremented.
 
 ## [0.8.5] — Pending-trust gate + OpenClaw channel
 

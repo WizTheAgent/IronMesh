@@ -68,6 +68,79 @@ The short version:
 - It does **not** claim anonymity. Peer identities are deliberately
   stable — that's the point of TOFU
 
+### Reticulum (LoRa) transport caveats
+
+Reticulum is an **opt-in** transport enabled by installing
+`ironmesh[rns]` and passing `--reticulum`. The WebSocket path is the
+default; most deployments never touch RNS. If you enable it, be
+aware of these residual risks (documented so they don't surprise
+you; hardening is planned for a post-v0.8.5.2 release):
+
+- **Identity binding to RNS layer is not strictly enforced.** A peer
+  that holds a valid RNS identity can open an RNS link and then send
+  a HELLO claiming a *different* IronMesh identity. The HELLO's
+  Ed25519 signature still verifies the claimed identity's keypair,
+  so the peer can't impersonate someone they don't have keys for —
+  but the RNS-layer identity doesn't have to match the IronMesh one.
+  Use trusted RNS fabrics only.
+- **Reassembly buffer** in `reticulum_transport.py` has a per-frame
+  cap (1 MB) but no per-peer cumulative cap. A chatty peer that sends
+  truncated frames can briefly grow the buffer; RNS link timeout
+  eventually cleans it up, but memory pressure during the attack
+  window is possible. Mitigation: only enable RNS with trusted peers.
+- **rns dependency** is pinned as `rns>=0.9.0` with no upper bound
+  in v0.8.5.2. For strict environments, pin `rns>=0.9.0,<0.10.0` in
+  your own install.
+
+If RNS isn't enabled, none of this applies.
+
+### TLS and peer authentication (design choice)
+
+- IronMesh's outbound WebSocket client uses `ssl.CERT_NONE` +
+  `check_hostname = False` by default. TLS here is for line-level
+  confidentiality only; **peer authentication is handled at the
+  application layer** via TOFU-pinned Ed25519 identity keys and a
+  signed HELLO that covers the channel-binding nonce. An attacker
+  with a self-signed TLS cert still fails the Ed25519 signature
+  check on HELLO and cannot impersonate a pinned peer.
+- If you terminate TLS with a real CA (e.g. internal Let's Encrypt),
+  the current client doesn't *additionally* verify the cert chain.
+  Strict CA verification is a candidate for a future `--strict-tls`
+  flag; today you get confidentiality + application-layer
+  authentication, not TLS-layer authentication.
+- `--allow-plaintext-ws` is a compatibility fallback: when TLS fails
+  and this flag is set, the client retries over `ws://`. The daemon
+  logs a WARNING with "INSECURE" every time this happens so operators
+  can spot accidental fallback.
+
+### Storage-at-rest properties (v0.8.5+)
+
+- **Message payloads are encrypted** before insertion into SQLite via
+  `_encrypt_payload` (XSalsa20-Poly1305 with a storage key derived
+  from the mesh passphrase). The `messages`, `pending_messages`, and
+  `pending_trust_messages` tables all store ciphertext bodies.
+- SQLite journal files (`*.db-wal`, `*.db-shm`) inherit the same
+  property: because the encryption happens in the application layer
+  before the INSERT, the WAL and shared-memory pages hold ciphertext
+  only. Verified empirically against live production state —
+  known-plaintext substrings (including real Ollama-generated
+  responses) were absent from the WAL.
+- **Message metadata is NOT encrypted at rest**: `msg_id`, `source`
+  (peer fingerprint), `destination`, `timestamp`, `msg_type`, and
+  `priority` are stored as plaintext columns. This is a deliberate
+  design choice — the daemon needs to index and query them — but
+  means a local attacker with disk access can see who talked to whom
+  and when, just not what was said.
+- **Trust store** (`known_peers.json`) is integrity-protected by an
+  HMAC-SHA256 chain keyed from the daemon's identity secret. It is
+  not confidential — pinned public keys and fingerprints are plain
+  JSON by design.
+- **Audit log** (`audit.log`) is plaintext JSON with an HMAC chain.
+  Not confidential; tamper-evident.
+- **Backup archives** (`ironmesh backup`) ARE additionally encrypted
+  with a user-supplied passphrase on top of the per-message storage
+  key — so a leaked backup doesn't expose payloads.
+
 ## Hall of fame
 
 Security researchers who've reported valid findings will be listed

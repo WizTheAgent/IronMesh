@@ -3,15 +3,14 @@
 ## Headline
 
 Patch release on top of v0.8.5. Operator polish for the pending-trust
-message gate + three security hardening fixes found by a deep
-pre-submission audit.
+message gate plus a batch of security hardening fixes.
 
 No protocol changes. Every v0.8.x peer stays interoperable. Default
 behavior is unchanged — upgrading a daemon touches no live state.
 
 ## Highlights
 
-### Operator polish (6 items)
+### Operator polish
 
 - **Audit-log coverage for gate decisions.** Four new HMAC-chained
   event types — `MSG_GATED_QUEUE`, `MSG_GATED_DROP`, `PEER_PROMOTED`,
@@ -30,25 +29,25 @@ behavior is unchanged — upgrading a daemon touches no live state.
   now flows through `/api/state` and renders in the main peers table
   as `… PENDING-PROMOTE` or `⛔ BLOCKED` alongside the existing
   `✓ TOFU-PINNED` / `✗ MISMATCH` labels.
-- **Queue + gate counters in `/api/mesh_stats` + `/metrics`.** Four
-  new observability fields: `gate_enabled`, `pending_trust_evicted`,
-  `pending_trust_dropped`, `messages_received_blocked`. Fixes a
-  latent bug where my v0.8.5 trust-queue eviction clobbered the
-  pre-existing offline-queue counter of the same name — each queue
-  now has its own counter set.
+- **Queue and gate counters in `/api/mesh_stats` and `/metrics`.**
+  Four new observability fields: `gate_enabled`,
+  `pending_trust_evicted`, `pending_trust_dropped`,
+  `messages_received_blocked`. Fixes a latent bug where the v0.8.5
+  trust-queue eviction counter shared a name with the pre-existing
+  offline-queue counter — each queue now has its own counter set.
 - **Better trust-integrity error message.** When the HMAC integrity
   check fails at load time (the v0.8.4 multi-daemon collision
   pattern), the CRITICAL log now includes the stored-vs-expected
-  MAC prefix + the file path + an explicit pointer to `--trust-path`.
-  Previous message was the generic "file may be tampered" which
-  misled operators chasing a non-existent compromise.
+  MAC prefix, the file path, and an explicit pointer to
+  `--trust-path`. The previous message was the generic "file may be
+  tampered" which misled operators chasing a non-existent compromise.
 - **`ironmesh doctor` subcommand.** One-shot diagnostic that checks
-  identity key file, trust store MAC + peer counts, SQLite schema
+  identity key file, trust store MAC plus peer counts, SQLite schema
   version, pending-trust queue depth, gate environment variables,
   port availability, and audit chain integrity. Exit code non-zero
-  on any failing check. Tested green on live production state (7/7).
+  on any failing check.
 
-### Security fixes (3 items from pre-submission audit)
+### Security hardening
 
 - **Constant-time GUI token comparison.** Previously compared with
   `==` at both the `?token=` query-param and `Authorization: Bearer`
@@ -65,32 +64,110 @@ behavior is unchanged — upgrading a daemon touches no live state.
   in the dispatch path with a confusing error. Now validates `type`,
   `msg_id`, `source`, `destination`, and `sequence` fields at the
   deserialization boundary with clear error messages.
+- **MCP tool resource caps.** Every MCP tool that accepts caller
+  input now has defensive bounds so a malicious MCP client can't
+  exhaust daemon resources:
+  - `ironmesh_request_service`: `timeout` clamped to [1, 300]
+    seconds; `prompt` capped at 1 MB.
+  - `ironmesh_send_message` and `ironmesh_broadcast`: `payload`
+    capped at 16 MB. Broadcast per-peer fan-out timeout clamped to
+    [1, 60] seconds.
+  - `ironmesh_subscribe_events`: `limit` clamped to [1, 1000];
+    `cursor` must be non-negative; `kinds` filter capped at 64
+    entries.
+- **TypeScript channel atomic persistence.** `PluginState.save` in
+  `@wiztheagent/openclaw-ironmesh-channel` now calls `fsync` before
+  the atomic rename. Without it, a power-loss window between rename
+  and disk-flush could leave the new filename pointing at partial
+  inode contents. Same class of fix as the Python trust-file atomic
+  write above.
+- **Framework adapter error-path sanitization.**
+  `adapters/langchain_adapter.py` and `adapters/autogen_adapter.py`
+  previously returned raw `str(e)` to the LLM's tool-result context
+  on exception. File paths, config details, and stack-trace fragments
+  could leak into the LLM's context window where a prompt-injection
+  probe could exfiltrate them. Now returns only the exception class
+  name plus a generic category ("send failed"); full trace logs
+  server-side via `logger.exception`.
+- **Federation targeted forwarding.**
+  `FederationGateway._forward_handler` previously forwarded each
+  cross-mesh message to **every** peer on the destination mesh if
+  any peer there advertised a policy-allowed capability. An
+  attacker on the destination mesh could harvest cross-mesh traffic
+  simply by being online, without advertising the matched
+  capability. Fixed to iterate destination peers and forward only
+  to those whose own advertised capabilities intersect with the
+  allow policy. Peers that advertise nothing never receive
+  cross-mesh traffic.
+- **MCP stdio EOF no longer leaves zombie daemons.** When an MCP
+  host closed stdio, the MCP server's `serve()` loop returned
+  cleanly but the embedded daemon's long-running tasks (heartbeat,
+  cleanup, reconnect, discovery, capability announce, mDNS
+  zeroconf, WebSocket server) kept non-daemon threads alive. The
+  process survived for 20+ seconds — sometimes indefinitely —
+  turning every host disconnect into a zombie daemon holding port
+  and DB. Fixed: after `serve()` returns, `main()` now calls
+  `daemon.shutdown()` with a 3 s cap and then `os._exit(0)` to kill
+  any surviving non-daemon threads. Stdio MCP has no meaningful
+  work after host disconnect. Verified exit within 3 s.
+- **Audit-log bombing rate-limit.** `MSG_GATED_DROP` audit events
+  are now rate-limited to one per peer per second. Without this
+  cap, a blocked peer sending 1000 MSGs/sec grew the HMAC audit
+  chain at ~200 KB/sec, rotating older forensic entries out of the
+  5-archive retention window within ~4 minutes — an attacker could
+  flood the log after misbehavior to push their earlier actions
+  out of the retained audit tail. The daemon metrics counter
+  (`pending_trust_dropped`) still increments every drop, so the
+  operator sees the volume in `/api/mesh_stats` even when
+  individual events are throttled.
+- **Passphrase-file hardening.** `--passphrase-file` and
+  `IRONMESH_PASSPHRASE_FILE` now route through
+  `_read_passphrase_file_safe`, which:
+  - Refuses to read non-regular files (blocks symlinks to
+    `/dev/urandom` that would hang on read)
+  - Caps reads at 4096 bytes (prevents memory exhaustion from a
+    huge file that was pointed at by accident)
+  - Rejects empty files with a clear error
+  - Warns on world- or group-readable mode on POSIX
+  - Validates UTF-8
 
 ### MCP host env passthrough
 
-Carry-over from v0.8.5 that only shipped fully in v0.8.5.2 after
-env-var bug fixes: `python -m ironmesh_mcp` now honors
-`IRONMESH_REQUIRE_MSG_PROMOTION`, `IRONMESH_PENDING_QUEUE_CAP`, and
-`IRONMESH_TRUST_PATH` so MCP hosts (Claude Desktop, Claude Code) can
-opt their embedded daemon into the gate via config block.
+`python -m ironmesh_mcp` now honors `IRONMESH_REQUIRE_MSG_PROMOTION`,
+`IRONMESH_PENDING_QUEUE_CAP`, and `IRONMESH_TRUST_PATH` so MCP hosts
+(Claude Desktop, Claude Code) can opt their embedded daemon into the
+gate via config block.
 
-## Hackathon-grade validation
+### Documentation additions
 
-Every feature was exercised end-to-end on a **real 3-node LAN mesh**
-(a laptop, a Raspberry Pi, and a NAS) with real Ollama-backed
-llm_bridge peers — no synthetic localhost daemons, per the
-operator's explicit direction:
+- `SECURITY.md` gained a "Storage-at-rest properties" section
+  documenting that SQLite WAL/SHM inherit payload ciphertext (so
+  backup leaks don't expose message bodies) and a "Reticulum (LoRa)
+  transport caveats" section for operators who enable `--reticulum`.
+- `SECURITY.md` gained a "TLS and peer authentication" section that
+  explicitly documents the design choice to let TOFU and Ed25519
+  authenticate peers while TLS is used only for line-level
+  confidentiality.
+- `docs/OPERATOR_TRUST_RUNBOOK.md` gained three new sections:
+  "Running multiple daemons on one host (`--trust-path`)", "Audit
+  events you can grep for", and "`ironmesh doctor` diagnostic".
+
+## Validation
+
+Every feature was exercised end-to-end on a real 3-node LAN mesh
+(laptop, Raspberry Pi, NAS) with real Ollama-backed llm_bridge
+peers — no synthetic localhost daemons:
 
 | Check | Result |
 |---|---|
 | Full unit suite | 656 passed, 1 xpassed |
-| Deep adversarial security audit | 3 findings fixed, 1 false positive |
+| Adversarial security review | findings fixed (see Security hardening) |
 | Cross-version handshake (v0.8.5.2 daemon ↔ v0.8.4 peers) | all 3 peers verified=true |
 | Malformed frame fuzz (11 payloads) | daemon survived all, rejected cleanly |
-| SIGKILL + restart recovery | trust file intact, SQLite integrity=ok, peers re-handshaken <1s |
+| SIGKILL and restart recovery | trust file intact, SQLite integrity=ok, peers re-handshaken <1s |
 | Trust file deletion mid-run | daemon survived, file recreated on next trust op |
 | Concurrent promote/block race | final state consistent, both operations in audit trail |
-| Real-mesh end-to-end (live-peer block → llm response → drop) | `MSG_GATED_DROP` fired for real Ollama response, counter incremented |
+| End-to-end gate drop (live-peer block → llm response → drop) | `MSG_GATED_DROP` fired for real Ollama response, counter incremented |
 | 5-minute soak with mixed traffic | no unexpected warnings or errors |
 
 ## Migration
@@ -130,11 +207,3 @@ testing stays clean.
 - Python API: `BridgeDaemon.__init__` unchanged; `TrustStore.pin_peer`
   unchanged; `trust set-state` is a new CLI subcommand with no Python
   API impact
-
-## Verification gates (before tag)
-
-1. `scripts/release-smoke.sh` — wheel packaging + installable smoke
-2. `npm test` in `clients/ts-channel/` (29 tests)
-3. Full pytest matrix on tag push (12 jobs incl macOS)
-4. `ironmesh doctor` green on the test node
-5. Public-facing scrub

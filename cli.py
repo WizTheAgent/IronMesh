@@ -228,6 +228,57 @@ def parse_args():
     return parser.parse_args()
 
 
+# v0.8.5.2-R5: maximum bytes read from a passphrase file. A legitimate
+# passphrase is at most a few hundred chars; 4096 is generous and
+# prevents hanging on /dev/urandom or exhausting memory on a huge file.
+_PASSPHRASE_FILE_MAX_BYTES = 4096
+
+
+def _read_passphrase_file_safe(path: str) -> str:
+    """Read a passphrase file with defensive bounds + mode warnings.
+
+    Protects against:
+      - Infinite reads on device files (/dev/urandom, /dev/zero)
+      - Memory exhaustion from a huge file
+      - World-readable passphrase files (logs a warning; doesn't reject)
+      - Empty or whitespace-only files (raises ValueError)
+    """
+    resolved = os.path.expanduser(path)
+    st = os.stat(resolved)
+    # Reject non-regular files so a symlink to /dev/urandom can't hang.
+    import stat as _stat
+    if not _stat.S_ISREG(st.st_mode):
+        raise ValueError(
+            f"passphrase file {path} is not a regular file "
+            f"(mode={oct(st.st_mode)}); refusing to read"
+        )
+    # Warn if world- or group-readable on POSIX. Windows NTFS permissions
+    # don't map cleanly to these bits, so the check is a best-effort.
+    try:
+        if (st.st_mode & 0o077) != 0 and os.name == "posix":
+            import logging
+            logging.getLogger("ironmesh.cli").warning(
+                "passphrase file %s has permissive mode %s — recommend `chmod 600`",
+                path, oct(st.st_mode & 0o777),
+            )
+    except Exception:
+        pass
+    with open(resolved, "rb") as f:
+        raw = f.read(_PASSPHRASE_FILE_MAX_BYTES + 1)
+    if len(raw) > _PASSPHRASE_FILE_MAX_BYTES:
+        raise ValueError(
+            f"passphrase file {path} exceeds {_PASSPHRASE_FILE_MAX_BYTES} "
+            "bytes — likely wrong file"
+        )
+    try:
+        text = raw.decode("utf-8").strip("\r\n").strip()
+    except UnicodeDecodeError:
+        raise ValueError(f"passphrase file {path} is not valid UTF-8")
+    if not text:
+        raise ValueError(f"passphrase file {path} is empty")
+    return text
+
+
 def get_passphrase():
     """Obtain passphrase from secure sources only.
 
@@ -238,12 +289,10 @@ def get_passphrase():
     passphrase_file = os.environ.get("IRONMESH_PASSPHRASE_FILE")
     if passphrase_file:
         try:
-            path = os.path.expanduser(passphrase_file)
-            with open(path) as f:
-                passphrase = f.read().strip("\n").strip("\r")
+            passphrase = _read_passphrase_file_safe(passphrase_file)
             if passphrase:
                 return passphrase
-        except (IOError, OSError) as e:
+        except (IOError, OSError, ValueError) as e:
             print(f"ERROR: Cannot read passphrase file {passphrase_file}: {e}")
             sys.exit(1)
     env = os.environ.get("IRONMESH_PASSPHRASE")
@@ -328,9 +377,8 @@ def cmd_run(args):
     passphrase_file = getattr(args, "passphrase_file", None)
     if passphrase_file:
         try:
-            with open(os.path.expanduser(passphrase_file)) as f:
-                passphrase = f.read().strip("\n").strip("\r")
-        except (IOError, OSError) as e:
+            passphrase = _read_passphrase_file_safe(passphrase_file)
+        except (IOError, OSError, ValueError) as e:
             print(f"ERROR: Cannot read passphrase file {passphrase_file}: {e}")
             return 1
     else:

@@ -346,10 +346,10 @@ IronMesh can communicate over LoRa radio using [Reticulum](https://reticulum.net
 
 ```bash
 # Terminal 1 (node A)
-ironmesh run --name kingpi --reticulum --passphrase-file /path/to/passphrase
+ironmesh run --name node-a --reticulum --passphrase-file /path/to/passphrase
 
 # Terminal 2 (node B) — connect to node A's RNS destination hash
-ironmesh run --name wiz --reticulum --rns-connect <kingpi_dest_hash> --passphrase-file /path/to/passphrase
+ironmesh run --name node-b --reticulum --rns-connect <node_a_dest_hash> --passphrase-file /path/to/passphrase
 ```
 
 The destination hash is printed at startup: `Reticulum transport active — destination <hash>`.
@@ -367,8 +367,8 @@ The destination hash is printed at startup: `Reticulum transport active — dest
 
 ```
 +-------------------+       mDNS discovery       +-------------------+
-|   Agent: kingpi   |<--------------------------->|   Agent: wiz      |
-|   (Raspberry Pi)  |                             |   (Windows PC)    |
+|   Agent: node-a   |<--------------------------->|   Agent: node-b   |
+|   (Raspberry Pi)  |                             |   (Laptop)        |
 +-------------------+                             +-------------------+
 | Your AI / App     |                             | Your AI / App     |
 | Bridge Daemon     |<--- WebSocket (encrypted)-->| Bridge Daemon     |

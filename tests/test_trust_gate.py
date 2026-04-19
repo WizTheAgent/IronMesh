@@ -348,6 +348,8 @@ class TestGateEndToEnd:
             metrics=SimpleNamespace(messages_received_blocked=0),
             bus=SimpleNamespace(publish=lambda *a, **k: None),
             trust_path=trust_path,
+            # v0.8.5.2-R5: per-peer audit-write rate-limit dict.
+            _gate_audit_last_write={},
         )
         # Bind the gate methods to our stub.
         from ironmesh.bridge import BridgeDaemon
