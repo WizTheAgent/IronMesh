@@ -25,7 +25,7 @@ Three options were on the table for the v0.8.5 default:
 - **C: Default off when no channel-plugin client is connected, on
   otherwise.** Best UX, hidden state controls security.
 
-We picked **A**. A breaking security change deserves its own release
+Option **A** was chosen. A breaking security change deserves its own release
 window with explicit operator opt-in feedback before the default
 flips. v0.9.0 is the natural place to revisit. C was rejected because
 operators can't reason about a security policy whose state is
