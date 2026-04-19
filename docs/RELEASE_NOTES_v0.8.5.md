@@ -97,11 +97,37 @@ Before tagging:
 
 1. `scripts/release-smoke.sh` — wheel packaging + installable smoke
 2. Full pytest matrix on tag push (12 jobs)
-3. `npm test` in `clients/ts-channel/` (15 tests)
-4. Manual: dashboard pending-peers panel exercised against a live
-   2-daemon mesh (one daemon with gate on, one peer pinned in
-   pending state, promote drains queue)
-5. Public-facing scrub via `git grep` for internal jargon
+3. `npm test` in `clients/ts-channel/` (29 tests)
+4. Public-facing scrub via `git grep` for internal jargon
+
+### Already completed against the live 3-node mesh
+
+End-to-end validation against a real LAN topology — wiz (Windows
+laptop), kingpi (Raspberry Pi), gatekeeper (UGREEN NAS) — all running
+stock `ironmesh run` daemons with the shared mesh passphrase:
+
+| Test | Result |
+|------|--------|
+| 3-node mesh handshake (wiz / kingpi / gatekeeper) | All three pinned each other; wiz audit log shows continuous `ROUTE_LEARNED` at cost=1 |
+| Bidirectional MSGs across all 6 directions | All 6 succeeded (kingpi→wiz, gatekeeper→wiz, wiz→kingpi, wiz→gatekeeper, kingpi→gatekeeper direct) |
+| Sustained load: 50 parallel MSGs kingpi→wiz | 50/50 sent, 0 errors, 0 dupes, ~1k msgs/sec |
+| v0.8.5 gate against real mesh (5 MSGs from kingpi, daemon with `--require-message-promotion`) | All 5 queued in `pending_trust_messages`; 0 reached message history pre-promote |
+| Operator promote via `/ws promote_peer` | `ok=true, drained=5`; all 5 MSGs landed in history in arrival order; trust state flipped pending → trusted |
+| Operator block via `/ws block_peer` | `ok=true`; trust state flipped pending → blocked |
+| MCP tools end-to-end via stdio JSON-RPC | All 21 tools registered; `ironmesh_list_pending_trust` reports `gate_enabled=true`; `trust_peer` / `block_peer` arg validation enforced |
+| Dashboard PENDING TRUST panel + auto-refresh | Verified manually in browser; promote/block buttons drive `/ws` actions; events refresh the panel |
+
+### Real-world bug surfaced + fixed during validation
+
+Multi-daemon trust file collision in **v0.8.4** (live in production
+right now): when two daemons on one host both default to
+`~/.ironmesh/known_peers.json` with different keypairs, each save
+invalidates the other's HMAC. Trust store silently resets to empty,
+peers re-pin on every reconnect (observed every 20–30s on a host
+running `ironmesh run` + `bench_responder`). Hit it three times on
+kingpi, once on gatekeeper, once on wiz during this test pass. **v0.8.5
+fixes it** via the new `--trust-path` CLI flag + `BridgeDaemon(trust_path=...)`
+kwarg, threaded through Agent and the integration test fixture.
 
 ## Compatibility
 

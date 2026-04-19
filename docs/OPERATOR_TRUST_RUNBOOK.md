@@ -60,6 +60,31 @@ environment:
   - IRONMESH_REQUIRE_MSG_PROMOTION=true
 ```
 
+MCP host (Claude Desktop, Claude Code) — the embedded daemon spawned
+by `python -m ironmesh_mcp` reads the same env vars, so any host that
+sets them in the MCP server's environment gets the gate too:
+
+```jsonc
+// ~/.config/claude/claude_desktop_config.json (or platform equivalent)
+{
+  "mcpServers": {
+    "ironmesh": {
+      "command": "python",
+      "args": ["-m", "ironmesh_mcp"],
+      "env": {
+        "IRONMESH_PASSPHRASE": "...",
+        "IRONMESH_REQUIRE_MSG_PROMOTION": "true",
+        "IRONMESH_TRUST_PATH": "/some/isolated/path/known_peers.json"
+      }
+    }
+  }
+}
+```
+
+`IRONMESH_TRUST_PATH` (also v0.8.5) lets you pin the trust file to a
+non-default location — required when running multiple daemons on one
+host so they don't clobber each other's HMAC.
+
 The daemon logs the gate state at startup; check the dashboard's
 `gate on` / `gate off` indicator under PENDING TRUST to confirm.
 

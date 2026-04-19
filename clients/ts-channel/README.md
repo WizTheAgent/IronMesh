@@ -4,12 +4,14 @@ OpenClaw channel plugin for IronMesh. Lets OpenClaw agents send and
 receive messages over the IronMesh peer-to-peer mesh — end-to-end
 encrypted, no cloud, your network only.
 
-> **Status:** alpha (`0.1.0-alpha.1`). Implements the minimum
-> ChannelPlugin surface (lifecycle / outbound / messaging / status /
-> config). No setup wizard, no security adapter, no group support, no
-> directory adapter, no streaming, no threading. Use it to evaluate
-> the design and surface friction; production-grade adapters come in
-> a later release.
+> **Status:** alpha (`0.1.0-alpha.5`). Implements the lifecycle /
+> outbound / messaging / directory / status / config surfaces of the
+> OpenClaw `ChannelPlugin` contract, plus a bundled-entry helper that
+> wires the package into OpenClaw's loader without glue code. Trust
+> gating is daemon-authoritative as of v0.8.5: pending peers' messages
+> queue at the IronMesh daemon (not the channel plugin) and operators
+> promote via the dashboard or MCP tools — see
+> [`docs/OPERATOR_TRUST_RUNBOOK.md`](../../docs/OPERATOR_TRUST_RUNBOOK.md).
 
 ## What it does
 
@@ -23,14 +25,11 @@ underlying transport is the encrypted IronMesh wire protocol via the
 
 - **Setup wizard** — accounts must be configured by hand
 - **Group / multi-peer rooms** — DMs only
-- **TOFU pending-trust UI** — peers are auto-pinned on first sight
-  with `trust: "pending"`; an operator-approval flow that gates
-  delivery on `trust: "trusted"` is not wired yet
 - **Offline replay** — messages received while OpenClaw was off are
   not surfaced when it comes back up
 - **Streaming partial replies**
 
-These are all on the roadmap for the v0.9.0 cut.
+These remain on the v0.8.6+ roadmap.
 
 ## Install
 
@@ -50,15 +49,51 @@ cd ../ts-channel && npm install && npx tsc
 
 ## Use
 
-Register the plugin with OpenClaw via your application's plugin entry:
+### Recommended: bundled entry helper
+
+The fastest path is the bundled entry helper — operators add one
+section to `openclaw.json` and one import to their plugin loader, and
+the channel just works:
+
+```ts
+// In your OpenClaw plugin loader entry file:
+import { defineIronMeshChannelEntry }
+  from "@wiztheagent/openclaw-ironmesh-channel/entry";
+
+export default await defineIronMeshChannelEntry();
+```
+
+```jsonc
+// openclaw.json
+{
+  "channels": {
+    "ironmesh": {
+      "default": {
+        "url": "ws://127.0.0.1:8765",
+        "passphrase": "your-mesh-wide-passphrase",
+        "name": "my-agent"
+      }
+    }
+  }
+}
+```
+
+The helper dynamic-imports OpenClaw's `defineBundledChannelEntry` (a
+peer dep), wires the channel plugin in with the standard
+`channels.ironmesh.<accountId>` config layout, and exposes the channel
+to OpenClaw's runtime. The exported `ChannelConfigSchema` is also
+surfaced so OpenClaw's `mcp set` / setup tooling can validate the
+config block.
+
+### Manual wiring (advanced)
+
+If your OpenClaw config tree puts the IronMesh section somewhere
+non-standard, build the plugin yourself:
 
 ```ts
 import { ironMeshChannelPlugin } from "@wiztheagent/openclaw-ironmesh-channel";
 
 const plugin = ironMeshChannelPlugin({
-  // Pull a per-account record out of OpenClaw's loaded config tree.
-  // The shape of cfg depends on how you've laid out openclaw.json —
-  // here we assume `channels.ironmesh.<accountId>`.
   listAccountIds: (cfg: any) => Object.keys(cfg?.channels?.ironmesh ?? {}),
   resolveAccount: (cfg: any, accountId) => {
     const a = cfg.channels.ironmesh[accountId ?? "default"];
@@ -76,9 +111,24 @@ const plugin = ironMeshChannelPlugin({
 
 When the lifecycle starts, the plugin opens a WebSocket to the
 configured IronMesh daemon and runs the full handshake (passphrase
-challenge + ECDH + signed HELLO). Inbound `MSG` frames are forwarded to
-any subscriber; outbound `text` payloads are sent as `MSG` frames to
-the handshake peer.
+challenge + ECDH + signed HELLO). Inbound `MSG` frames are forwarded
+to any subscriber; outbound `text` payloads are sent as `MSG` frames
+to the handshake peer.
+
+### Trust gating (operators)
+
+When the IronMesh daemon runs with `--require-message-promotion`
+(v0.8.5+), MSGs from peers in `trust_state="pending"` queue at the
+daemon until an operator promotes them. The channel plugin sees
+nothing from pending peers — only fully-trusted peers' MSGs reach the
+subscriber callback. Operators promote/block via:
+
+- The daemon dashboard's PENDING TRUST panel
+- The MCP tools `ironmesh_list_pending_trust`, `ironmesh_trust_peer`,
+  `ironmesh_block_peer`
+
+See [`docs/OPERATOR_TRUST_RUNBOOK.md`](../../docs/OPERATOR_TRUST_RUNBOOK.md)
+for the full workflow.
 
 ## Adapter coverage
 
@@ -93,6 +143,9 @@ the handshake peer.
 | `messaging.subscribe` | ✅ | inbound `MSG` → callback (refreshes peer last-seen) |
 | `directory.self` / `listPeers` / `listPeersLive` | ✅ | peers appear as OpenClaw contacts; persists across restart |
 | `status.describe` | ✅ | `linked` / `not linked` + peer node_id |
+| Bundled entry helper | ✅ | `defineIronMeshChannelEntry()` — dynamic-imports `openclaw` peer dep |
+| `configSchema` | ✅ | `ChannelConfigSchema` + `validateChannelConfig` for setup tooling |
+| Trust gating | ✅ | Daemon-side (v0.8.5 `--require-message-promotion`); operator UI in daemon dashboard |
 | `setup` / `setupWizard` | ❌ | manual config only |
 | `security`, `pairing`, `groups`, `mentions` | ❌ | |
 | `resolver`, `actions` | ❌ | |
@@ -106,11 +159,18 @@ the handshake peer.
 npm test
 ```
 
-12 unit tests covering plugin shape, adapter wiring, connection
-caching, outbound success + error paths, inbound MSG routing,
-non-MSG filtering, and the status reporter. The end-to-end
-"plugin against a real OpenClaw gateway" test is the next milestone
-once we have setup-wizard automation.
+29 unit tests:
+
+- **plugin** (15) — shape, adapter wiring, connection caching,
+  outbound success + error paths, inbound MSG routing, non-MSG
+  filtering, directory adapter, status reporter
+- **config-schema** (14) — validation accept/reject, account
+  resolution, schema descriptor
+
+End-to-end against a real OpenClaw gateway is verified manually as
+part of the v0.8.5 release process. Wire-level cross-host messaging
+between IronMesh daemons is covered by
+[`tests/integration/test_trust_gate_e2e.py`](../../tests/integration/test_trust_gate_e2e.py).
 
 ## License
 
