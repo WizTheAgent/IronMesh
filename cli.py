@@ -1364,7 +1364,7 @@ def cmd_setup(args):
     if allowed_peers:
         print(f"  Allowed peers    : {allowed_peers}")
     else:
-        print(f"  Allowed peers    : (none — default-deny)")
+        print("  Allowed peers    : (none — default-deny)")
     print(f"  Pending-trust    : {'enabled' if gate else 'disabled (opt-in)'}")
     print()
 
