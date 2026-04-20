@@ -74,9 +74,16 @@ tests/harness/final_chaos*.csv
 .claude/
 
 # Internal / work-in-progress artifacts (audit prompts, deployment notes,
-# agent prompt fragments, internal release plans) — never ship in public releases
+# agent prompt fragments, internal release plans, bug investigations,
+# audit reports) — never ship in public releases. Move to a private
+# location like ~/.kingpi-secure/ironmesh/internal-docs/ instead.
 .internal/
 docs/v*_PLAN.md
+docs/AUDIT_*.md
+docs/BUG-*.md
+docs/*_GAPS.md
+docs/*_INTERNAL.md
+IRONMESH_V*_ROADMAP.md
 
 # Node tooling — clients/ts/ has its own node_modules; npx invoked from
 # the repo root can also drop one here. clients/ts/package-lock.json
