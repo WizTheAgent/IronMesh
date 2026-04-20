@@ -26,6 +26,7 @@ import {
   FLAG_CRITICAL_PRIORITY,
 } from "./frame.js";
 import { performHandshake, type HandshakeResult } from "./handshake.js";
+import { verifyOrPin, PinMismatchError, PinNotFoundError } from "./pinstore.js";
 import type {
   ClientOptions,
   ClientEvents,
@@ -187,6 +188,33 @@ export class IronMeshClient {
         send,
         recv,
       });
+
+      // TOFU pin enforcement (v0.8.5.5). When `pinFile` is set, verify the
+      // peer's identity fingerprint against the stored pin. First contact
+      // writes the pin (unless tofu === "strict"). Mismatch refuses the
+      // connection — the daemon either rotated keys legitimately (clear
+      // the pin) or someone is impersonating it.
+      if (this.opts.pinFile) {
+        try {
+          const tofuMode = this.opts.tofu ?? "trust-on-first-use";
+          await verifyOrPin(
+            this.opts.pinFile,
+            this.opts.url,
+            result.peerNodeId,
+            tofuMode,
+          );
+        } catch (err) {
+          // Tear down the WebSocket so the user cannot proceed against
+          // an unverified peer. Re-throw so connect() rejects.
+          try { ws.close(); } catch { /* already closed */ }
+          this.state.ws = null;
+          if (err instanceof PinMismatchError || err instanceof PinNotFoundError) {
+            throw err;
+          }
+          throw new Error(`pin file check failed: ${(err as Error).message}`);
+        }
+      }
+
       this.state.hsResult = result;
 
       // Detach handshake-only listeners; install the long-lived loop.

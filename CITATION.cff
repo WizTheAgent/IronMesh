@@ -1,0 +1,43 @@
+# Citation File Format — https://citation-file-format.github.io/
+# Run `cffconvert --validate` to lint after editing.
+
+cff-version: 1.2.0
+title: "IronMesh: Local-first encrypted agent-to-agent mesh protocol"
+message: "If you use IronMesh in your work, please cite it using these metadata."
+type: software
+abstract: >-
+  IronMesh is an open-source local-first protocol for encrypted
+  agent-to-agent communication. It provides a three-stage cryptographic
+  handshake (passphrase HMAC, signed ephemeral X25519 ECDH,
+  XSalsa20-Poly1305 session), zero-config mDNS discovery, multi-hop
+  mesh routing with end-to-end SealedBox encryption, capability-based
+  service discovery, optional Reticulum / LoRa transport, and a trust
+  fabric that defaults to deny.
+authors:
+  - name: "WizTheAgent"
+    website: "https://github.com/WizTheAgent"
+repository-code: "https://github.com/WizTheAgent/IronMesh"
+url: "https://ironmesh.org"
+license: MIT
+keywords:
+  - agent-to-agent
+  - peer-to-peer
+  - mesh-networking
+  - end-to-end-encryption
+  - local-first
+  - reticulum
+  - lora
+  - mdns
+  - cryptographic-protocol
+
+# Update on every release. The version + date below are the current
+# stable release; the release-notes URL points at the matching tag.
+version: 0.8.5.5
+date-released: 2026-04-20
+identifiers:
+  - type: url
+    value: "https://github.com/WizTheAgent/IronMesh/releases/tag/v0.8.5.5"
+    description: "GitHub release v0.8.5.5"
+  - type: url
+    value: "https://pypi.org/project/ironmesh/0.8.5.5/"
+    description: "PyPI release v0.8.5.5"

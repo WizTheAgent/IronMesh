@@ -5,6 +5,103 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.5.5] — Big-batch quality-of-life patch
+
+Patch release on top of v0.8.5.4. No protocol or schema changes;
+every v0.8.x peer stays interoperable. Default behavior unchanged
+unless the new optional features are explicitly opted into.
+
+### Added
+
+- **OS keychain integration.** New `ironmesh keys keychain-store` /
+  `keychain-clear` / `keychain-check` subcommands plus
+  `IRONMESH_PASSPHRASE_KEYCHAIN=true` env var to read the mesh
+  passphrase from macOS Keychain / Windows Credential Manager / Linux
+  Secret Service. New optional dep group: `pip install ironmesh[keychain]`.
+- **CLI named profiles.** `ironmesh run --profile=secure|dev|offline`
+  bundles related flag presets. `secure` enables the pending-trust
+  gate and warns about insecure flag combinations. `dev` enables the
+  localhost-testing shortcuts. `offline` enables the Reticulum
+  transport.
+- **`ironmesh upgrade`** subcommand. Checks PyPI for a newer release,
+  prints the exact `pip install -U` and `docker pull` commands, and
+  links to the matching GitHub release notes. `--json` for automation.
+- **`ironmesh setup` already shipped in v0.8.5.4** but is now
+  documented under the named-profile + keychain workflow.
+- **Windows service wrapper.** `scripts/install-windows-service.ps1`
+  + `docs/WINDOWS_SERVICE.md`. NSSM-based PowerShell installer with
+  log redirection, automatic restart, graceful shutdown.
+- **Reverse-proxy-friendly dashboard mode.** New `--gui-bind`
+  flag (default `127.0.0.1`) lets the dashboard bind to a non-
+  loopback address. Setting it to anything other than loopback
+  emits an `INSECURE BIND` warning at startup. Full nginx / Caddy /
+  Traefik recipes in `docs/REVERSE_PROXY.md`.
+- **OpenTelemetry tracing.** New optional `ironmesh[otel]` extra
+  installs the OpenTelemetry SDK and OTLP-HTTP exporter.
+  `ironmesh/telemetry.py` is a no-op shim when the SDK is absent or
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is unset. First instrumented surface
+  is `ironmesh.send_message`; per-stage handshake / routing / MCP
+  spans are queued for subsequent releases. Reference Grafana
+  dashboard JSON at `docs/grafana/ironmesh-dashboard.json`.
+- **TS client graduates out of alpha to 0.2.0.** TOFU pin file
+  enforcement (`pinFile` option) is now actually enforced — pin
+  mismatch refuses the connection with a clear `PinMismatchError`;
+  strict mode (`tofu: "strict"`) refuses first contact with a
+  `PinNotFoundError`. New `clients/ts/src/pinstore.ts` module with
+  atomic-write persistence (write-to-tmp + fsync + rename). 10 new
+  tests in `clients/ts/tests/pinstore.test.ts`.
+- **`docs/CONFIGURATION.md`** — complete index of every CLI flag,
+  env var, file path, and profile preset. The single page to point
+  someone at when they ask "what can I configure?"
+- **`docs/NAT_TRAVERSAL.md` already shipped in v0.8.5.4** as the
+  operator-recipe doc; complemented now by:
+- **`docs/deployments/off-grid.md`** — Heltec V3 + Pi Zero 2 W +
+  LoRa reference recipe.
+- **`docs/deployments/multi-tenant.md`** — multiple isolated tenant
+  daemons on shared hardware with cryptographic + OS-account
+  isolation.
+- **`docs/OBSERVABILITY.md`** — end-to-end observability guide
+  covering Prometheus, structured JSON logs, OpenTelemetry, and
+  audit-log inspection.
+- **`docs/grafana/ironmesh-dashboard.json`** — importable starter
+  dashboard with peer health, RTT, lifetime quantiles, backpressure
+  events, and pending-trust gate panels.
+- **`.github/workflows/codeql.yml`** — CodeQL scanning on push, PR,
+  and weekly. Catches a class of vulnerabilities that ruff and
+  bandit don't.
+- **`CITATION.cff`** — academic citation file at the repo root.
+
+### Changed
+
+- **`scripts/leak-scan.sh`** exclusion list now supports glob
+  patterns (`docs/RELEASE_NOTES_v*.md`, `docs/migration/*.md`) so
+  future docs auto-exclude without a code change.
+- **`.github/RELEASE_CHECKLIST.md`** Section 5 now requires running
+  `ruff check` locally before tagging — closes the gap that landed a
+  red tag-CI on v0.8.5.4.
+- **README** gains the Codecov badge wired up in v0.8.5.4 (now
+  active once Codecov is authorized) and an updated install line
+  that mentions the new optional dep groups (`[keychain]`, `[otel]`).
+
+### Documentation
+
+- New `docs/RELEASE_NOTES_v0.8.5.5.md`.
+- README current-version references updated to `v0.8.5.5`.
+- `pyproject.toml` gains two new optional dep groups: `keychain` and
+  `otel`.
+
+### Verified
+
+- pytest: 700+ passed across 10+ affected modules
+- scripts/leak-scan.sh --all: clean
+- scripts/release-smoke.sh: PASS, version reads as 0.8.5.5
+- ironmesh demo: works
+- ironmesh upgrade: live PyPI check works
+- ironmesh keys keychain-check: AVAILABLE on Windows
+- ironmesh setup --non-interactive: writes files + prints run cmd
+- TS client: 61 tests pass including 10 new pinstore tests
+- ruff check: clean across all touched files
+
 ## [0.8.5.4] — Repo hygiene, onboarding, and credibility documentation
 
 Patch release on top of v0.8.5.3. No protocol or schema changes; every

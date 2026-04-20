@@ -55,6 +55,7 @@ from ironmesh.audit import (
 from ironmesh.capabilities import CapabilityRegistry
 from ironmesh.mesh import MeshRouter
 from ironmesh.store import MessageStore
+from ironmesh.telemetry import span as _otel_span
 
 logger = logging.getLogger("ironmesh.bridge")
 
@@ -1211,10 +1212,18 @@ class BridgeDaemon:
                  # backwards compatibility, but can be overridden so
                  # integration tests + multi-daemon hosts don't clobber
                  # each other's known_peers.json.
-                 trust_path: Optional[str] = None):
+                 trust_path: Optional[str] = None,
+                 # v0.8.5.5: GUI bind address. Defaults to 127.0.0.1
+                 # (loopback only); set to 0.0.0.0 to expose to a LAN
+                 # or behind a reverse proxy that's not on the same
+                 # host. The startup banner emits a loud warning when
+                 # this is non-loopback so it cannot quietly make it
+                 # into a production config.
+                 gui_bind: str = "127.0.0.1"):
         self.name = name
         self.port = port
         self.bind_address = bind_address
+        self.gui_bind = gui_bind
         if not passphrase:
             raise ValueError(
                 "Passphrase is required. Set --passphrase or IRONMESH_PASSPHRASE env var. "
@@ -2884,6 +2893,21 @@ class BridgeDaemon:
             2. v0.4 mesh route if MeshRouter has a known next hop.
             3. Offline queue (legacy fallback).
         """
+        with _otel_span(
+            "ironmesh.send_message",
+            **{
+                "ironmesh.peer.node_id": to_node[:32] if to_node else "",
+                "ironmesh.message.type": msg_type,
+                "ironmesh.message.priority": priority,
+                "ironmesh.message.size_bytes": len(payload) if payload else 0,
+            },
+        ) as _sp:
+            return await self._send_message_inner(
+                to_node, msg_type, payload, priority, _sp,
+            )
+
+    async def _send_message_inner(self, to_node, msg_type, payload, priority,
+                                  _otel_sp=None):
         msg_id = str(uuid.uuid4())
 
         # Store in history
@@ -4694,18 +4718,37 @@ class BridgeDaemon:
             await emit({"event": "finished"})
 
     async def _start_gui_server(self):
-        """Start the GUI WebSocket+HTTP server on port+1."""
+        """Start the GUI WebSocket+HTTP server on port+1.
+
+        Bind address comes from `self.gui_bind` (default 127.0.0.1).
+        Setting it to a non-loopback value emits a loud warning at
+        startup because exposing the dashboard directly to a network
+        bypasses any reverse-proxy hardening (TLS, rate limits, ACLs).
+        See docs/REVERSE_PROXY.md.
+        """
         gui_port = self.port + 1
+        bind = self.gui_bind
+        is_loopback = bind in ("127.0.0.1", "::1", "localhost")
+        if not is_loopback:
+            logger.warning(
+                "INSECURE BIND: GUI dashboard configured to bind %s:%d "
+                "(non-loopback). The dashboard's only auth is a bearer "
+                "token; without TLS in front of it (reverse proxy or "
+                "--tls-cert / --tls-key), the token can be sniffed on "
+                "the wire. See docs/REVERSE_PROXY.md for the recommended "
+                "deployment pattern.",
+                bind, gui_port,
+            )
         try:
             self._gui_server = await websockets.serve(
                 self._gui_ws_handler,
-                "127.0.0.1",
+                bind,
                 gui_port,
                 process_request=self._gui_process_request,
             )
             logger.info(
-                "GUI dashboard at http://127.0.0.1:%d/ (metrics at /metrics?token=%s)",
-                gui_port, self._gui_token,
+                "GUI dashboard at http://%s:%d/ (metrics at /metrics?token=%s)",
+                bind, gui_port, self._gui_token,
             )
         except Exception as e:
             logger.warning("GUI server failed to start on port %d: %s", gui_port, e)

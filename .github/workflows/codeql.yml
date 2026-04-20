@@ -1,0 +1,49 @@
+name: codeql
+
+# CodeQL — GitHub's free security linter. Catches a class of vulnerabilities
+# (taint-tracking, missing auth checks, unsafe deserialization, SSRF, etc.)
+# that ruff and bandit do not. Runs on push to main, on pull requests, and
+# weekly so new CVEs in CodeQL's query packs surface even when the repo is
+# quiet.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '23 6 * * 1'   # Mondays 06:23 UTC
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # Use the security-extended query suite — covers more than the
+          # default suite without the noise of security-and-quality.
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:${{ matrix.language }}'

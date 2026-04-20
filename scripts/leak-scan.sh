@@ -133,32 +133,38 @@ is_doc_file() {
 # Files that are EXPECTED to contain pattern names (because they document the
 # patterns themselves) — exclude from content scanning to avoid the meta-bug.
 EXCLUDED_FROM_CONTENT_SCAN=(
-    # Files that document the patterns themselves
+    # Files that document the patterns themselves (exact match)
     'scripts/leak-scan.sh'
     '.githooks/pre-commit'
     '.githooks/pre-push'
     '.github/workflows/leak-scan.yml'
     '.github/RELEASE_CHECKLIST.md'
     '.gitignore'
-    # Immutable release history — rewriting is more confusing than helpful
+    # Immutable release history (exact match for the catch-all CHANGELOG)
     'CHANGELOG.md'
-    'docs/RELEASE_NOTES_v0.7.2.md'
-    'docs/RELEASE_NOTES_v0.8.0.md'
-    'docs/RELEASE_NOTES_v0.8.1.md'
-    'docs/RELEASE_NOTES_v0.8.2.md'
-    'docs/RELEASE_NOTES_v0.8.3.md'
-    'docs/RELEASE_NOTES_v0.8.4.md'
-    'docs/RELEASE_NOTES_v0.8.5.md'
-    'docs/RELEASE_NOTES_v0.8.5.2.md'
-    'docs/RELEASE_NOTES_v0.8.5.3.md'
-    'docs/RELEASE_NOTES_v0.8.5.4.md'
+)
+
+# Glob patterns excluded from content scanning. Each entry is a bash
+# pattern matched with `[[ "$f" == $pat ]]`. Used for paths whose
+# names follow a stable prefix/suffix convention but where new files
+# get added over time (release notes, migration guides, etc.).
+EXCLUDED_PATTERNS_FROM_CONTENT_SCAN=(
+    'docs/RELEASE_NOTES_v*.md'
+    'docs/migration/*.md'
 )
 
 is_excluded_from_content_scan() {
     local f="$1"
-    local x
+    local x pat
+    # Exact-match list
     for x in "${EXCLUDED_FROM_CONTENT_SCAN[@]}"; do
         if [[ "$f" == "$x" ]]; then
+            return 0
+        fi
+    done
+    # Glob-pattern list — note: $pat is unquoted so bash treats it as a glob
+    for pat in "${EXCLUDED_PATTERNS_FROM_CONTENT_SCAN[@]}"; do
+        if [[ "$f" == $pat ]]; then
             return 0
         fi
     done

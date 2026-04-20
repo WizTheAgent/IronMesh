@@ -18,4 +18,14 @@ export {
   nodeId,
 } from "./crypto.js";
 
-export const VERSION = "0.1.0-alpha.2"; // tracks package.json
+export {
+  verifyOrPin,
+  clearPin,
+  listPins,
+  PinMismatchError,
+  PinNotFoundError,
+  type PinEntry,
+  type PinFile,
+} from "./pinstore.js";
+
+export const VERSION = "0.2.0"; // tracks package.json

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ironmesh"
-version = "0.8.5.4"
+version = "0.8.5.5"
 description = "Local-first agent-to-agent mesh protocol with multi-hop routing, end-to-end encryption, and capability discovery"
 readme = "README.md"
 license = {text = "MIT"}
@@ -36,6 +36,20 @@ dependencies = [
 [project.optional-dependencies]
 rns = [
     "rns>=0.9.0",
+]
+keychain = [
+    # OS-native passphrase storage backend. Optional; the daemon
+    # works fine without it via passphrase-file or env var.
+    "keyring>=24.0",
+]
+otel = [
+    # OpenTelemetry SDK + OTLP exporter. Spans are emitted on the
+    # handshake, message dispatch, and MCP surface. Configure via
+    # standard OTEL_EXPORTER_OTLP_* env vars. With this extra absent,
+    # all telemetry is a no-op — no overhead.
+    "opentelemetry-api>=1.25",
+    "opentelemetry-sdk>=1.25",
+    "opentelemetry-exporter-otlp-proto-http>=1.25",
 ]
 dev = [
     "pytest>=7.0",

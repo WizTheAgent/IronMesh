@@ -9,6 +9,7 @@ import getpass
 import logging
 import os
 import sys
+from typing import Optional
 
 
 def parse_args():
@@ -22,6 +23,18 @@ def parse_args():
     run_parser = sub.add_parser("run", help="Start the bridge daemon")
     run_parser.add_argument("--name", required=True, help="Agent name (e.g. alice, bob)")
     run_parser.add_argument("--port", type=int, default=8765, help="WebSocket port (default: 8765)")
+    run_parser.add_argument(
+        "--profile", default=None,
+        choices=["secure", "dev", "offline"],
+        help=(
+            "Bundled flag preset. 'secure' = production hardening "
+            "(pending-trust gate on, no plaintext-ws fallback, mDNS "
+            "default-deny). 'dev' = same-machine localhost shortcuts "
+            "(open discovery, plaintext ws — INSECURE). 'offline' = "
+            "Reticulum/LoRa transport only, mDNS off. Explicit flags "
+            "override the profile but emit a warning."
+        ),
+    )
     # --passphrase REMOVED from run parser — leaks in process list (ps aux).
     # Use --passphrase-file, IRONMESH_PASSPHRASE_FILE, or interactive getpass.
     run_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json")
@@ -35,6 +48,13 @@ def parse_args():
     run_parser.add_argument("--bind", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
     run_parser.add_argument("--rotate-keys", action="store_true", help="Rotate keys before starting")
     run_parser.add_argument("--gui", action="store_true", help="Enable web GUI dashboard on port+1 (off by default)")
+    run_parser.add_argument(
+        "--gui-bind", default="127.0.0.1",
+        help="Bind address for the GUI dashboard (default: 127.0.0.1, "
+             "loopback only). Set to 0.0.0.0 to expose to a LAN or to a "
+             "reverse proxy on a different host. INSECURE if not behind "
+             "TLS — see docs/REVERSE_PROXY.md.",
+    )
     run_parser.add_argument("--no-gui", action="store_true", help=argparse.SUPPRESS)  # Legacy compat
     run_parser.add_argument("--allowed-peers", default=None,
                            help="Comma-separated list of allowed mDNS peer names (allowlist)")
@@ -147,6 +167,32 @@ def parse_args():
     info_parser.add_argument("--path", default="~/.ironmesh/keys.json")
     info_parser.add_argument("--passphrase", default=None)
 
+    kc_store = keys_sub.add_parser(
+        "keychain-store",
+        help="Save the mesh passphrase to the OS keychain (requires "
+             "pip install ironmesh[keychain])",
+    )
+    kc_store.add_argument("--name", required=True,
+                          help="Node name; the keychain entry is "
+                               "service='ironmesh', user='<name>'")
+    kc_store.add_argument("--passphrase-from-env", action="store_true",
+                          help="Read the passphrase from "
+                               "IRONMESH_PASSPHRASE_NEW instead of prompting "
+                               "(useful for automation)")
+
+    kc_clear = keys_sub.add_parser(
+        "keychain-clear",
+        help="Remove the OS-keychain passphrase entry for a node",
+    )
+    kc_clear.add_argument("--name", required=True,
+                          help="Node name whose entry to remove")
+
+    keys_sub.add_parser(
+        "keychain-check",
+        help="Report whether the OS keychain backend is usable on this "
+             "system",
+    )
+
     # --- backup / restore ---
     backup_parser = sub.add_parser("backup", help="Create an encrypted backup of node state")
     backup_parser.add_argument("--out", required=True, help="Output backup file path")
@@ -231,6 +277,20 @@ def parse_args():
                               help="Overwrite existing key file / passphrase file without "
                                    "prompting.")
 
+    # --- upgrade ---
+    upgrade_parser = sub.add_parser(
+        "upgrade",
+        help="Check PyPI for a newer version and print the upgrade command",
+    )
+    upgrade_parser.add_argument(
+        "--timeout", type=float, default=5.0,
+        help="HTTP timeout in seconds for the PyPI metadata fetch (default: 5)",
+    )
+    upgrade_parser.add_argument(
+        "--json", action="store_true",
+        help="Emit a JSON status report instead of human-readable text",
+    )
+
     # --- demo ---
     demo_parser = sub.add_parser(
         "demo",
@@ -309,13 +369,20 @@ def _read_passphrase_file_safe(path: str) -> str:
     return text
 
 
-def get_passphrase():
+def get_passphrase(node_name: Optional[str] = None):
     """Obtain passphrase from secure sources only.
 
-    Priority: --passphrase-file > IRONMESH_PASSPHRASE_FILE > IRONMESH_PASSPHRASE > getpass.
+    Priority:
+        1. --passphrase-file > IRONMESH_PASSPHRASE_FILE
+        2. IRONMESH_PASSPHRASE_KEYCHAIN=true (or 1/yes) → query OS keychain
+           (requires `pip install ironmesh[keychain]`; service="ironmesh",
+           username=node_name)
+        3. IRONMESH_PASSPHRASE (env var, with warning)
+        4. Interactive getpass
+
     Never accepts passphrase via CLI argv (visible in ps aux).
     """
-    # Prefer IRONMESH_PASSPHRASE_FILE over env var (avoids /proc/environ exposure).
+    # 1. Prefer IRONMESH_PASSPHRASE_FILE over env var (avoids /proc/environ exposure).
     passphrase_file = os.environ.get("IRONMESH_PASSPHRASE_FILE")
     if passphrase_file:
         try:
@@ -325,13 +392,37 @@ def get_passphrase():
         except (IOError, OSError, ValueError) as e:
             print(f"ERROR: Cannot read passphrase file {passphrase_file}: {e}")
             sys.exit(1)
+    # 2. OS keychain backend if explicitly opted in
+    keychain_flag = os.environ.get("IRONMESH_PASSPHRASE_KEYCHAIN", "").lower()
+    if keychain_flag in ("1", "true", "yes"):
+        if not node_name:
+            print("ERROR: IRONMESH_PASSPHRASE_KEYCHAIN requires a node name.")
+            print("       Pass --name to ironmesh run, or set IRONMESH_NAME.")
+            sys.exit(1)
+        try:
+            from ironmesh import keychain as _kc
+            stored = _kc.load(node_name)
+            if stored:
+                return stored
+            print(f"ERROR: IRONMESH_PASSPHRASE_KEYCHAIN is set but no entry "
+                  f"found for service='ironmesh', user='{node_name}'.")
+            print("       Store one with:")
+            print(f"           ironmesh keys keychain-store --name {node_name}")
+            sys.exit(1)
+        except _kc.KeychainUnavailable as exc:  # type: ignore[attr-defined]
+            print(f"ERROR: IRONMESH_PASSPHRASE_KEYCHAIN is set but: {exc}")
+            sys.exit(1)
+        except Exception as exc:
+            print(f"ERROR: Failed to read passphrase from OS keychain: {exc}")
+            sys.exit(1)
+    # 3. Env var fallback
     env = os.environ.get("IRONMESH_PASSPHRASE")
     if env:
         # Warn about env var risk
         print("WARNING: Reading passphrase from IRONMESH_PASSPHRASE env var.")
         print("         Environment variables may be visible via /proc. Prefer IRONMESH_PASSPHRASE_FILE.\n")
         return env
-    # Interactive prompt via getpass (hidden input, not in process list)
+    # 4. Interactive prompt via getpass (hidden input, not in process list)
     if sys.stdin.isatty():
         try:
             passphrase = getpass.getpass("Enter IronMesh passphrase: ")
@@ -342,9 +433,11 @@ def get_passphrase():
             sys.exit(1)
     # No default — require explicit passphrase
     print("ERROR: Passphrase required. Secure methods:")
-    print("       1. --passphrase-file <path>  (file, chmod 600)")
-    print("       2. IRONMESH_PASSPHRASE_FILE  (env var pointing to file)")
-    print("       3. Interactive prompt         (getpass, not in ps aux)")
+    print("       1. --passphrase-file <path>     (file, chmod 600)")
+    print("       2. IRONMESH_PASSPHRASE_FILE      (env var pointing to file)")
+    print("       3. IRONMESH_PASSPHRASE_KEYCHAIN  (true/1/yes — requires "
+          "pip install ironmesh[keychain] and a stored entry)")
+    print("       4. Interactive prompt            (getpass, not in ps aux)")
     print("       --passphrase flag was REMOVED (leaks in process list).")
     sys.exit(1)
 
@@ -386,12 +479,63 @@ def setup_logging(level: str = "INFO", log_file: str = None,
         )
 
 
+def _apply_profile(args):
+    """Apply a `--profile=secure|dev|offline` preset.
+
+    Profiles set boolean flags to safe defaults but never override an
+    explicit user-supplied value. When the user combines a profile
+    with a flag that conflicts with the profile's intent, log a clear
+    WARNING and let the explicit flag win (argparse-consistent).
+
+    Returns the list of warning messages so the caller can also log
+    them through the structured logger once it is set up.
+    """
+    profile = getattr(args, "profile", None)
+    if profile is None:
+        return []
+
+    warnings = []
+
+    if profile == "secure":
+        # Production hardening: pending-trust gate ON, no plaintext-ws.
+        if not getattr(args, "require_message_promotion", False):
+            args.require_message_promotion = True
+        if getattr(args, "allow_plaintext_ws", False):
+            warnings.append(
+                "profile=secure was overridden: --allow-plaintext-ws is set "
+                "explicitly, secure profile would have left it OFF. "
+                "Consider removing the flag for a real deployment."
+            )
+        if getattr(args, "open_discovery", False):
+            warnings.append(
+                "profile=secure was overridden: --open-discovery is set "
+                "explicitly, secure profile would have left it OFF. "
+                "Consider removing the flag for a real deployment."
+            )
+    elif profile == "dev":
+        # Same-machine localhost shortcuts. Insecure by design.
+        if not getattr(args, "open_discovery", False):
+            args.open_discovery = True
+        if not getattr(args, "allow_plaintext_ws", False):
+            args.allow_plaintext_ws = True
+    elif profile == "offline":
+        # Reticulum/LoRa transport only.
+        if hasattr(args, "reticulum") and not getattr(args, "reticulum", False):
+            args.reticulum = True
+        # Note: leaving allowed_peers / open_discovery untouched —
+        # an offline mesh may still use mDNS on a local LAN segment.
+
+    return warnings
+
+
 def cmd_run(args):
     """Start the bridge daemon."""
     name = getattr(args, "name", None)
     if not name:
         print("ERROR: --name is required. Usage: ironmesh run --name alice")
         return 1
+
+    profile_warnings = _apply_profile(args)
 
     log_level = getattr(args, "log_level", "INFO")
     if getattr(args, "debug", False):
@@ -403,6 +547,14 @@ def cmd_run(args):
     )
     log = logging.getLogger("ironmesh.cli")
 
+    # Re-emit any profile-application warnings through the structured
+    # logger now that it is set up.
+    profile = getattr(args, "profile", None)
+    if profile is not None:
+        log.info("Profile active: %s", profile)
+    for w in profile_warnings:
+        log.warning(w)
+
     # Support --passphrase-file as highest priority
     passphrase_file = getattr(args, "passphrase_file", None)
     if passphrase_file:
@@ -412,7 +564,7 @@ def cmd_run(args):
             print(f"ERROR: Cannot read passphrase file {passphrase_file}: {e}")
             return 1
     else:
-        passphrase = get_passphrase()
+        passphrase = get_passphrase(node_name=name)
 
     from ironmesh import __version__
     banner = f"""
@@ -498,6 +650,7 @@ def cmd_run(args):
         bind_address=getattr(args, "bind", "0.0.0.0"),
         log_level=log_level,
         gui=getattr(args, "gui", False) and not getattr(args, "no_gui", False),
+        gui_bind=getattr(args, "gui_bind", "127.0.0.1"),
         allowed_peers=allowed_peers,
         open_discovery=open_discovery,
         allow_plaintext_ws=allow_plaintext_ws,
@@ -682,8 +835,77 @@ def cmd_keys(args):
         except ValueError as e:
             print(f"Error: {e}")
             return 1
+    elif keys_cmd == "keychain-store":
+        from ironmesh import keychain as _kc
+        node = args.name
+        if getattr(args, "passphrase_from_env", False):
+            passphrase = os.environ.get("IRONMESH_PASSPHRASE_NEW", "")
+            if not passphrase:
+                print("ERROR: --passphrase-from-env requires "
+                      "IRONMESH_PASSPHRASE_NEW to be set and non-empty.")
+                return 1
+        else:
+            try:
+                passphrase = getpass.getpass(
+                    f"Passphrase to store for service='ironmesh' user='{node}': "
+                )
+                confirm = getpass.getpass("Confirm: ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 1
+            if passphrase != confirm:
+                print("ERROR: Passphrases do not match.")
+                return 1
+        if len(passphrase) < 12:
+            print("ERROR: Passphrase must be at least 12 characters.")
+            return 1
+        try:
+            _kc.store(node, passphrase)
+        except _kc.KeychainUnavailable as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        except Exception as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        print(f"Stored passphrase in OS keychain (service='ironmesh', "
+              f"user='{node}').")
+        print("To use it on startup:")
+        print("  export IRONMESH_PASSPHRASE_KEYCHAIN=true")
+        print(f"  ironmesh run --name {node} ...")
+    elif keys_cmd == "keychain-clear":
+        from ironmesh import keychain as _kc
+        node = args.name
+        try:
+            removed = _kc.clear(node)
+        except _kc.KeychainUnavailable as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        except Exception as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        if removed:
+            print(f"Removed OS-keychain entry for service='ironmesh', "
+                  f"user='{node}'.")
+        else:
+            print(f"No OS-keychain entry found for service='ironmesh', "
+                  f"user='{node}'.")
+    elif keys_cmd == "keychain-check":
+        from ironmesh import keychain as _kc
+        if _kc.is_available():
+            print("OS keychain backend: AVAILABLE")
+            print("To use it: store a passphrase, then set "
+                  "IRONMESH_PASSPHRASE_KEYCHAIN=true:")
+            print("  ironmesh keys keychain-store --name <node>")
+            print("  export IRONMESH_PASSPHRASE_KEYCHAIN=true")
+        else:
+            print("OS keychain backend: NOT AVAILABLE")
+            print("Reason: either `keyring` is not installed "
+                  "(pip install ironmesh[keychain]) or no system backend "
+                  "is configured (Linux: kwallet/gnome-keyring/etc.).")
+            return 1
     else:
-        print("Usage: ironmesh keys [generate|info] --path <path>")
+        print("Usage: ironmesh keys [generate|info|"
+              "keychain-store|keychain-clear|keychain-check] [args...]")
 
     return 0
 
@@ -1151,6 +1373,119 @@ def cmd_demo(args):
                     pass
 
 
+def cmd_upgrade(args):
+    """Check PyPI for a newer version of ironmesh.
+
+    Network-only — does not actually upgrade. Prints the exact pip /
+    docker commands to run if a newer version is available. Exits 0
+    if up to date or if the user is on a *newer* version than PyPI's
+    latest (e.g. running from a local git checkout). Exits 1 only on
+    network failure or if PyPI returns a malformed response.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    from ironmesh import __version__ as installed
+
+    timeout = float(getattr(args, "timeout", 5.0))
+    as_json = bool(getattr(args, "json", False))
+
+    url = "https://pypi.org/pypi/ironmesh/json"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            payload = _json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        if as_json:
+            print(_json.dumps({
+                "installed": installed,
+                "latest": None,
+                "status": "error",
+                "error": str(exc),
+            }))
+        else:
+            print(f"ironmesh upgrade: could not reach PyPI ({exc})")
+        return 1
+    except (ValueError, KeyError) as exc:
+        if as_json:
+            print(_json.dumps({
+                "installed": installed,
+                "latest": None,
+                "status": "error",
+                "error": f"PyPI returned malformed metadata: {exc}",
+            }))
+        else:
+            print(f"ironmesh upgrade: PyPI returned malformed metadata ({exc})")
+        return 1
+
+    latest = payload.get("info", {}).get("version", "")
+    if not latest:
+        if as_json:
+            print(_json.dumps({
+                "installed": installed,
+                "latest": None,
+                "status": "error",
+                "error": "no version field in PyPI response",
+            }))
+        else:
+            print("ironmesh upgrade: PyPI response did not include a version")
+        return 1
+
+    # Tuple compare so 0.8.5.10 > 0.8.5.9 (lexicographic compare would fail)
+    def _vt(v):
+        out = []
+        for chunk in v.split("."):
+            try:
+                out.append(int(chunk))
+            except ValueError:
+                out.append(chunk)
+        return tuple(out)
+
+    try:
+        is_newer = _vt(latest) > _vt(installed)
+        is_older = _vt(latest) < _vt(installed)
+    except TypeError:
+        # Fall back to string compare on unparseable mixed versions
+        is_newer = latest > installed
+        is_older = latest < installed
+
+    if is_newer:
+        status = "outdated"
+    elif is_older:
+        status = "ahead"
+    else:
+        status = "current"
+
+    if as_json:
+        print(_json.dumps({
+            "installed": installed,
+            "latest": latest,
+            "status": status,
+        }))
+        return 0
+
+    print(f"Installed: ironmesh=={installed}")
+    print(f"Latest:    ironmesh=={latest}")
+    if status == "outdated":
+        print()
+        print(f"A newer release is available: v{latest}")
+        print()
+        print("Upgrade with one of:")
+        print(f"  pip install -U ironmesh=={latest}")
+        print(f"  docker pull wiztheagent/ironmesh:{latest}")
+        print()
+        print("Release notes:")
+        print(f"  https://github.com/WizTheAgent/IronMesh/releases/tag/v{latest}")
+    elif status == "ahead":
+        print()
+        print(f"You are on v{installed}, ahead of PyPI's latest v{latest}.")
+        print("(Probably running from a local git checkout — no action needed.)")
+    else:
+        print()
+        print("Up to date.")
+    return 0
+
+
 def cmd_setup(args):
     """Interactive first-run wizard.
 
@@ -1426,6 +1761,8 @@ def main():
         return cmd_demo(args)
     elif command == "setup":
         return cmd_setup(args)
+    elif command == "upgrade":
+        return cmd_upgrade(args)
     elif args.name:
         # Backward compatibility: no subcommand but --name given -> run
         return cmd_run(args)
@@ -1434,6 +1771,7 @@ def main():
         print("Usage:")
         print("  ironmesh demo                          # spawn two agents on localhost and exchange a ping")
         print("  ironmesh setup                         # interactive first-run wizard")
+        print("  ironmesh upgrade                       # check PyPI for a newer release")
         print("  ironmesh run --name <agent> [--port 8765]")
         print("  ironmesh trust list")
         print("  ironmesh trust revoke <node_id>")

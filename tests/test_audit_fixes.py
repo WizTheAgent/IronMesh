@@ -685,14 +685,21 @@ class TestRazorKeyEncryption:
 # CLI passphrase not in process list
 # -----------------------------------------------------------------------
 
-class TestRazorCLIPassphrase:
+class TestCLIPassphraseSafety:
     def test_get_passphrase_no_cli_arg(self):
-        """get_passphrase() must not accept argv arguments (removed for ps safety)."""
+        """get_passphrase() must not accept any argv-derived passphrase
+        argument (would leak in `ps aux`). It MAY accept other
+        non-passphrase parameters (e.g. node_name for keychain lookup
+        added in v0.8.5.5)."""
         import inspect
         from ironmesh.cli import get_passphrase
         sig = inspect.signature(get_passphrase)
-        # Should take no parameters
-        assert len(sig.parameters) == 0
+        # No parameter may carry the passphrase itself
+        for pname in sig.parameters:
+            assert "passphrase" not in pname.lower(), (
+                f"get_passphrase() parameter '{pname}' looks like it "
+                f"could carry a passphrase from argv — would leak in ps aux."
+            )
 
     def test_get_passphrase_from_file(self, tmp_path):
         """get_passphrase() should read from IRONMESH_PASSPHRASE_FILE."""

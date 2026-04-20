@@ -53,8 +53,9 @@ This is the section that catches the "GitHub README still says v0.8.5 after we s
 
 ## 5. Tests + CI
 
+- [ ] **Lint** — `ruff check . --exclude tests --exclude examples --exclude ironmesh_mcp/__pycache__` exits clean. **Required** — CI runs this and a failure here will redden the tag run after the artifacts have already shipped (we hit this on v0.8.5.4).
 - [ ] Full test suite passes locally (`pytest -q`)
-- [ ] Hypothesis fuzz tests pass (`pytest tests/test_*hypothesis*.py`)
+- [ ] Hypothesis fuzz tests pass (`pytest tests/test_*fuzz*.py`)
 - [ ] Concurrency tests pass (`pytest tests/test_*concurrency*.py`)
 - [ ] Integration tests pass (`pytest tests/integration` — requires test framework deps)
 - [ ] Live mesh validation pass on a real ≥3-node mesh with `llm_bridge.py` / Ollama (not synthetic localhost daemons)
