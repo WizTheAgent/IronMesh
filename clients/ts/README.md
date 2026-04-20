@@ -49,7 +49,7 @@ client.on("peerConnect", (peer) => console.log("up:", peer.agentName));
 client.on("message", (msg) => console.log("from", msg.fromNodeId, msg.payload));
 
 await client.connect();
-await client.sendMessage("kingpi", "hello", { priority: "NORMAL" });
+await client.sendMessage("alice", "hello", { priority: "NORMAL" });
 ```
 
 ## What's implemented
@@ -81,8 +81,8 @@ The current `bridge.py` exposes a single WebSocket at `/ws` that's
 GUI-token-scoped. For the channel plugin we need a plugin-scoped
 endpoint (likely `/ws-plugin`) that accepts a longer-lived token and
 speaks the full mesh protocol, not the dashboard JSON envelope.
-That's tracked under the M0 spike's "WebSocket-API gaps" deliverable
-in the plan doc.
+That's tracked under the initial-spike "WebSocket-API gaps"
+deliverable.
 
 ## Development
 

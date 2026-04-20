@@ -15,7 +15,7 @@ The dashboard is **disabled by default** and must be explicitly enabled with `--
 
 ```bash
 export IRONMESH_PASSPHRASE_FILE=~/.ironmesh/passphrase
-ironmesh run --name wiz --port 8765 --gui --allowed-peers kingpi
+ironmesh run --name bob --port 8765 --gui --allowed-peers alice
 # Startup banner prints: GUI token: <random-token>
 # Dashboard: http://127.0.0.1:8766/?token=<random-token>
 ```

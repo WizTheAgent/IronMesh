@@ -217,10 +217,10 @@ For high-security setups, verify peer fingerprints out-of-band (e.g., read them 
 1. **Use a strong passphrase.** A passphrase is **required** — minimum 12 characters enforced. IronMesh refuses to start without one.
 2. **Use passphrase files, not env vars.** Set `IRONMESH_PASSPHRASE_FILE` pointing to a `chmod 600` file. Env vars are visible via `/proc/environ`. The `--passphrase` CLI flag was removed entirely (visible in `ps aux`).
 3. **Key files are encrypted by default.** Argon2id-protected. If you have legacy plaintext keys, they auto-migrate to encrypted on next startup (as long as a passphrase is available).
-4. **Restrict peer discovery.** Use `--allowed-peers kingpi,wiz` to only connect to named agents. Default-deny blocks all mDNS auto-connect unless `--allowed-peers` or `--open-discovery` is set.
+4. **Restrict peer discovery.** Use `--allowed-peers alice,bob` to only connect to named agents. Default-deny blocks all mDNS auto-connect unless `--allowed-peers` or `--open-discovery` is set.
 5. **Keep the GUI off unless needed.** Dashboard is disabled by default. Enable with `--gui`. When enabled, all endpoints require the per-session bearer token printed at startup.
-6. **Bind to specific interfaces.** Use `--bind 192.168.1.50` instead of the default `0.0.0.0` to limit exposure.
-7. **Firewall the WebSocket port.** Only allow connections from your LAN. `ufw allow from 192.168.0.0/24 to any port 8765`
+6. **Bind to specific interfaces.** Use `--bind 192.0.2.10` (or your actual LAN address) instead of the default `0.0.0.0` to limit exposure.
+7. **Firewall the WebSocket port.** Only allow connections from your LAN. `ufw allow from 192.0.2.0/24 to any port 8765`
 8. **Use TLS/WSS for defense in depth.** `--tls-cert /path/to/cert.pem --tls-key /path/to/key.pem` (TLS 1.2+ enforced, no compression, server cipher preference). Client-side connections try wss:// first.
 9. **Use full-disk encryption** on any machine running IronMesh, especially Raspberry Pis that could be physically stolen.
 10. **Monitor the audit log.** Security events are logged to `~/.ironmesh/audit.log` with tamper-evident HMAC chain. Verify integrity periodically.

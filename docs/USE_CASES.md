@@ -128,7 +128,7 @@ chmod 600 ~/.ironmesh/passphrase
 export IRONMESH_PASSPHRASE_FILE=~/.ironmesh/passphrase
 
 # Agents bind only to the isolated lab interface
-ironmesh run --name analyst-1 --bind 10.42.0.5 --allowed-peers analyst-2,analyst-3
+ironmesh run --name analyst-1 --bind 192.0.2.10 --allowed-peers analyst-2,analyst-3
 ```
 
 Audit events land in `~/.ironmesh/audit.log` with a chained HMAC;

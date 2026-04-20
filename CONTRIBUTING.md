@@ -4,6 +4,19 @@ Thanks for considering a contribution. IronMesh is an early-stage
 project and we want it to stay sharp — that means high test coverage,
 honest documentation, and conservative protocol changes.
 
+## First-time setup
+
+Run once after cloning to install the leak-scan git hooks:
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+This points your local clone at the tracked `.githooks/` directory so
+every commit and push is screened against `scripts/leak-scan.sh`.
+The same scanner runs in CI, so anything that slips past the local
+hooks will still be caught before merge.
+
 ## Before you open a PR
 
 1. **Run the test suite** — `pytest tests/ -q` — it should be green

@@ -60,7 +60,7 @@ for p in d["peers"]:
 ## Expected output (healthy 3-node mesh)
 
 ```
-Node: kingpi (611979d276ae...)
+Node: alice (abc123def456...)
 Uptime: 429s
 Peers: 3/3 online
 Lifetime (n=14): p50=165.8ms  p90=167.5ms  p99=168.5ms

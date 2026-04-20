@@ -39,7 +39,7 @@ The passphrase must be at least 12 characters and identical on both agents.
 ## 3. Start Agent A (e.g., your Raspberry Pi)
 
 ```bash
-ironmesh run --name kingpi --port 8765 --allowed-peers wiz
+ironmesh run --name alice --port 8765 --allowed-peers bob
 ```
 
 You'll see the startup banner and "WebSocket server started" in the logs. The agent is now announcing itself via mDNS and listening for peers.
@@ -49,14 +49,14 @@ You'll see the startup banner and "WebSocket server started" in the logs. The ag
 On another machine, same LAN:
 
 ```bash
-ironmesh run --name wiz --port 8765 --allowed-peers kingpi
+ironmesh run --name bob --port 8765 --allowed-peers alice
 ```
 
 Within seconds you should see both agents discover each other:
 
 ```
-Discovered agent: kingpi @ 192.168.1.50:8765
-Peer kingpi (abc123...) online -- ephemeral ECDH complete
+Discovered agent: alice @ 192.0.2.10:8765
+Peer alice (abc123...) online -- ephemeral ECDH complete
 ```
 
 That's it. Both agents are now communicating over an encrypted channel. No internet involved.
@@ -103,7 +103,7 @@ asyncio.run_coroutine_threadsafe(
 The dashboard is **off by default** for security. Enable it with `--gui`:
 
 ```bash
-ironmesh run --name wiz --port 8765 --gui --allowed-peers kingpi
+ironmesh run --name bob --port 8765 --gui --allowed-peers alice
 ```
 
 The startup banner will print a bearer token:
@@ -149,10 +149,10 @@ ironmesh trust revoke <node_id>
 ```bash
 # Set up passphrase file first (see step 2)
 # Machine A
-python examples/basic_chat.py --name kingpi --port 8765
+python examples/basic_chat.py --name alice --port 8765
 
 # Machine B
-python examples/basic_chat.py --name wiz --port 8765
+python examples/basic_chat.py --name bob --port 8765
 ```
 
 Type messages and see them appear encrypted on the other side.
@@ -171,7 +171,7 @@ Type messages and see them appear encrypted on the other side.
   - IronMesh requires a passphrase (minimum 12 characters). Set `IRONMESH_PASSPHRASE_FILE` pointing to a file, or `IRONMESH_PASSPHRASE` env var. Interactive getpass prompt works if stdin is a TTY.
 
 - **"Agents don't auto-connect":**
-  - mDNS auto-connect is now default-deny. Use `--allowed-peers wiz,kingpi` or `--open-discovery` to enable.
+  - mDNS auto-connect is now default-deny. Use `--allowed-peers bob,alice` or `--open-discovery` to enable.
 
 - **Works on localhost but not across machines:**
   - Your router/firewall may be blocking mDNS multicast. Try connecting manually: the `connect_to_peer()` API takes a host and port directly.

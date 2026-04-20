@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# pre-commit hook — runs leak-scan against staged files.
+# To enable in your local clone: bash scripts/install-hooks.sh
+exec bash "$(git rev-parse --show-toplevel)/scripts/leak-scan.sh" --staged

@@ -72,8 +72,8 @@ Ask your agent:
 > List the peers currently online on the mesh.
 
 It should call `ironmesh_list_peers` and report node IDs, agent names,
-RTT, and message counters. If you have other agents running (kingpi,
-gatekeeper, etc.), they should appear here.
+RTT, and message counters. If you have other agents running, they
+should appear here.
 
 Try a discovery query:
 

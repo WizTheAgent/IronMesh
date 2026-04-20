@@ -113,7 +113,7 @@ Client (A)                                    Server (B)
    |------ HELLO (signed Ed25519) ------------------>|
    |        ephemeral_public: <X25519 pub A>         |
    |        identity_public:  <Ed25519 pub A>        |
-   |        name: "kingpi"                           |
+   |        name: "alice"                           |
    |        channel_binding: <auth_nonce.hex()>      |
    |        signature: Ed25519(canonical_payload)     |
    |                                                 |
@@ -123,7 +123,7 @@ Client (A)                                    Server (B)
    |<----- HELLO (signed Ed25519) -------------------|
    |        ephemeral_public: <X25519 pub B>         |
    |        identity_public:  <Ed25519 pub B>        |
-   |        name: "wiz"                              |
+   |        name: "bob"                              |
    |        channel_binding: <auth_nonce.hex()>      |
    |        signature: Ed25519(canonical_payload)     |
    |                                                 |
@@ -303,13 +303,13 @@ Dev: `pytest`, `pytest-asyncio`, `pytest-cov`, `ruff`, `mypy`
 echo "YOUR_SHARED_SECRET" > ~/.ironmesh/passphrase && chmod 600 ~/.ironmesh/passphrase
 export IRONMESH_PASSPHRASE_FILE=~/.ironmesh/passphrase
 
-ironmesh run --name kingpi --port 8765 --allowed-peers wiz --gui
+ironmesh run --name alice --port 8765 --allowed-peers bob --gui
 ```
 
 **Wiz (Gaming PC):**
 ```bash
 export IRONMESH_PASSPHRASE_FILE=~/.ironmesh/passphrase
-ironmesh run --name wiz --port 8765 --allowed-peers kingpi --gui
+ironmesh run --name bob --port 8765 --allowed-peers alice --gui
 ```
 
 The passphrase must match on both sides. A passphrase is required (minimum 12 characters) — IronMesh will not start without one. The `--passphrase` CLI flag was removed for OPSEC (visible in `ps aux`). Use `--passphrase-file`, `IRONMESH_PASSPHRASE_FILE`, or interactive `getpass` prompt.

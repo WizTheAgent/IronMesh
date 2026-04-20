@@ -14,13 +14,13 @@ import sys
 def parse_args():
     parser = argparse.ArgumentParser(
         description="IronMesh — Zero-config encrypted A2A protocol",
-        epilog="Example: ironmesh --name kingpi --port 8765 --passphrase secret123",
+        epilog="Example: ironmesh --name alice --port 8765 --passphrase secret123",
     )
     sub = parser.add_subparsers(dest="command", help="Available commands")
 
     # --- run (default) ---
     run_parser = sub.add_parser("run", help="Start the bridge daemon")
-    run_parser.add_argument("--name", required=True, help="Agent name (e.g. kingpi, wiz)")
+    run_parser.add_argument("--name", required=True, help="Agent name (e.g. alice, bob)")
     run_parser.add_argument("--port", type=int, default=8765, help="WebSocket port (default: 8765)")
     # --passphrase REMOVED from run parser — leaks in process list (ps aux).
     # Use --passphrase-file, IRONMESH_PASSPHRASE_FILE, or interactive getpass.
@@ -360,7 +360,7 @@ def cmd_run(args):
     """Start the bridge daemon."""
     name = getattr(args, "name", None)
     if not name:
-        print("ERROR: --name is required. Usage: ironmesh run --name kingpi")
+        print("ERROR: --name is required. Usage: ironmesh run --name alice")
         return 1
 
     log_level = getattr(args, "log_level", "INFO")

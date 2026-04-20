@@ -67,7 +67,7 @@ layers in effect:
 ```bash
 export IRONMESH_PASSPHRASE='your-shared-passphrase-12-plus'
 python examples/ai_to_ai_dialogue.py \
-    --peer-a gatekeeper --peer-b kingpi \
+    --peer-a alice --peer-b bob \
     --seed "Debate whether a Raspberry Pi is a good home server." \
     --turns 4
 ```

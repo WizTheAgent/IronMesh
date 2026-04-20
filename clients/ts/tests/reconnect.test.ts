@@ -1,8 +1,8 @@
-// Group 2: H2 (sequence reset on reconnect) and H3 (real exponential
-// backoff with jitter). H2 is exercised by the live e2e (a separate
-// add) and via direct state inspection here. H3 uses the test seams
-// (`_random` for deterministic jitter, `_setTimeout` to capture the
-// scheduled delays without sleeping).
+// Reconnect-time invariants: sequence reset on reconnect, and real
+// exponential backoff with jitter. The first is exercised by the live
+// e2e (a separate add) and via direct state inspection here. The
+// second uses the test seams (`_random` for deterministic jitter,
+// `_setTimeout` to capture the scheduled delays without sleeping).
 
 import { describe, expect, it } from "vitest";
 import { IronMeshClient } from "../src/index.js";
@@ -16,7 +16,7 @@ function newClient(reconnectInitialDelayMs = 500): IronMeshClient {
   });
 }
 
-describe("H2: sequence reset on reconnect", () => {
+describe("sequence reset on reconnect", () => {
   it("starts at 0 fresh and stays at 0 until a connect attempt", () => {
     const c = newClient();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -43,7 +43,7 @@ describe("H2: sequence reset on reconnect", () => {
   });
 });
 
-describe("H3: exponential backoff with jitter", () => {
+describe("exponential backoff with jitter", () => {
   it("base schedule (zero jitter) doubles each attempt up to 30 s", () => {
     const c = newClient(500);
     // Force jitter to exactly the midpoint (no randomness)

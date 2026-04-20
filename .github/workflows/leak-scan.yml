@@ -1,0 +1,37 @@
+name: leak-scan
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  scan:
+    name: scan diff for internal-only content
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run leak-scan against the change range
+        shell: bash
+        run: |
+          # Determine the comparison base for this push/PR
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            # For pushes, compare against the previous commit if known,
+            # otherwise scan the whole tree
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+            if [[ "$base" == "0000000000000000000000000000000000000000" || -z "$base" ]]; then
+              echo "leak-scan: new branch or unknown base — scanning entire tree"
+              bash scripts/leak-scan.sh --all
+              exit $?
+            fi
+          fi
+          echo "leak-scan: range $base..$head"
+          bash scripts/leak-scan.sh --range "$base..$head"

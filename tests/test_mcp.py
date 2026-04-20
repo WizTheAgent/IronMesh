@@ -239,14 +239,14 @@ def _add_peer(daemon, node_id, name, online=True, caps=None):
 class TestDiscoverCapabilities:
     def test_glob_matches_remote_caps(self, daemon, loop):
         _attach_registry(daemon)
-        _add_peer(daemon, "a" * 32, "kingpi", caps=["llm:llama3", "role:assistant"])
-        _add_peer(daemon, "b" * 32, "gatekeeper", caps=["llm:hermes3", "tool:fs"])
+        _add_peer(daemon, "a" * 32, "alice", caps=["llm:llama3", "role:assistant"])
+        _add_peer(daemon, "b" * 32, "bob", caps=["llm:hermes3", "tool:fs"])
         mcp = IronMeshMCP(daemon, loop)
         rows = mcp.tool_discover_capabilities({"pattern": "llm:*"})
         caps = sorted(r["capability"] for r in rows)
         assert caps == ["llm:hermes3", "llm:llama3"]
         # Names propagate
-        assert {r["agent_name"] for r in rows} == {"kingpi", "gatekeeper"}
+        assert {r["agent_name"] for r in rows} == {"alice", "bob"}
 
     def test_empty_when_registry_empty(self, daemon, loop):
         _attach_registry(daemon)
@@ -270,9 +270,9 @@ class TestDiscoverCapabilities:
 class TestGetPeerCapabilities:
     def test_known_peer_by_name(self, daemon, loop):
         _attach_registry(daemon)
-        _add_peer(daemon, "d" * 32, "kingpi", caps=["llm:llama3", "role:assistant"])
+        _add_peer(daemon, "d" * 32, "alice", caps=["llm:llama3", "role:assistant"])
         mcp = IronMeshMCP(daemon, loop)
-        out = mcp.tool_get_peer_capabilities({"target": "kingpi"})
+        out = mcp.tool_get_peer_capabilities({"target": "alice"})
         assert out["node_id"] == "d" * 32
         assert out["capabilities"] == ["llm:llama3", "role:assistant"]
 
@@ -301,9 +301,9 @@ class TestRequestService:
         assert "error" in out
 
     def test_offline_peer(self, daemon, loop):
-        _add_peer(daemon, "f" * 32, "kingpi", online=False)
+        _add_peer(daemon, "f" * 32, "alice", online=False)
         mcp = IronMeshMCP(daemon, loop)
-        out = mcp.tool_request_service({"target": "kingpi", "prompt": "hi"})
+        out = mcp.tool_request_service({"target": "alice", "prompt": "hi"})
         assert "error" in out and "online" in out["error"]
 
     def test_missing_prompt(self, daemon, loop):
@@ -314,7 +314,7 @@ class TestRequestService:
     def test_correlation_id_routes_response(self, daemon, loop, monkeypatch):
         """End-to-end: send_message returns; bus event with matching cid
         wakes the waiter and the body is returned."""
-        _add_peer(daemon, "g" * 32, "kingpi")
+        _add_peer(daemon, "g" * 32, "alice")
         mcp = IronMeshMCP(daemon, loop)
 
         captured = {}
@@ -336,18 +336,18 @@ class TestRequestService:
             return "msg-id-1"
         monkeypatch.setattr(daemon, "send_message", fake_send)
 
-        out = mcp.tool_request_service({"target": "kingpi", "prompt": "ping",
+        out = mcp.tool_request_service({"target": "alice", "prompt": "ping",
                                          "timeout": 5})
         assert out.get("ok") is True
         assert out["response"] == "pong"
 
     def test_timeout_returns_timeout_marker(self, daemon, loop, monkeypatch):
-        _add_peer(daemon, "h" * 32, "kingpi")
+        _add_peer(daemon, "h" * 32, "alice")
         mcp = IronMeshMCP(daemon, loop)
         async def fake_send(*a, **k):
             return "msg-id-2"
         monkeypatch.setattr(daemon, "send_message", fake_send)
-        out = mcp.tool_request_service({"target": "kingpi", "prompt": "x",
+        out = mcp.tool_request_service({"target": "alice", "prompt": "x",
                                          "timeout": 0.2})
         assert out.get("timeout") is True
 

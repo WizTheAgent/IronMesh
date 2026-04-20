@@ -9,8 +9,8 @@ and goodput.  Writes results to CSV.
 Usage::
 
     python -m tests.harness.mesh_bench \\
-        --target-host 192.168.1.20 --target-port 8765 \\
-        --target-name kingpi \\
+        --target-host 192.0.2.20 --target-port 8765 \\
+        --target-name alice \\
         --passphrase-file ~/.ironmesh/passphrase \\
         --sizes 64,256,1024,4096 --trials 50 \\
         --output results.csv

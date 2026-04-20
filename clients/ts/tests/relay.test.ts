@@ -1,8 +1,8 @@
-// C2: outer-signature failure on inbound binary frames must NOT drop
+// Outer-signature failure on inbound binary frames must NOT drop
 // the frame. Mesh-relayed frames are signed by the relayer's identity,
 // not the originator's; verifying against the handshake peer's
-// identity will fail in that case. We treat the failure as a soft
-// warning and dispatch on AEAD authenticity alone.
+// identity will fail in that case. The client treats the failure as a
+// soft warning and dispatches on AEAD authenticity alone.
 
 import { Buffer } from "node:buffer";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -40,7 +40,7 @@ function craftRelayFrame(
   });
 }
 
-describe("C2: relayed frame outer-sig", () => {
+describe("relayed frame outer-sig handling", () => {
   let client: IronMeshClient;
   let sessionKey: Uint8Array;
   let handshakePeerIdentity: { publicKey: Uint8Array; secretKey: Uint8Array };
