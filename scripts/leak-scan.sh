@@ -151,6 +151,7 @@ EXCLUDED_FROM_CONTENT_SCAN=(
     'docs/RELEASE_NOTES_v0.8.5.md'
     'docs/RELEASE_NOTES_v0.8.5.2.md'
     'docs/RELEASE_NOTES_v0.8.5.3.md'
+    'docs/RELEASE_NOTES_v0.8.5.4.md'
 )
 
 is_excluded_from_content_scan() {

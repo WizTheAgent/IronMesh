@@ -1,6 +1,7 @@
 # IronMesh
 
 [![CI](https://github.com/WizTheAgent/IronMesh/actions/workflows/ci.yml/badge.svg)](https://github.com/WizTheAgent/IronMesh/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/WizTheAgent/IronMesh/branch/main/graph/badge.svg)](https://codecov.io/gh/WizTheAgent/IronMesh)
 [![PyPI](https://img.shields.io/pypi/v/ironmesh.svg)](https://pypi.org/project/ironmesh/)
 [![Python](https://img.shields.io/pypi/pyversions/ironmesh.svg)](https://pypi.org/project/ironmesh/)
 [![Docker](https://img.shields.io/docker/v/wiztheagent/ironmesh?label=docker&sort=semver)](https://hub.docker.com/r/wiztheagent/ironmesh)
@@ -8,7 +9,7 @@
 
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **v0.8.5.3 — pre-1.0 release.** 686 tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus a 3-node live-mesh validation pass.
+> **v0.8.5.4 — pre-1.0 release.** 688 tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus a 3-node live-mesh validation pass.
 > Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -141,7 +142,7 @@ Requires Python 3.10 or newer. On Linux the firewall must allow UDP 5353
 
 ```bash
 pip install ironmesh            # PyPI
-# or: docker pull wiztheagent/ironmesh:0.8.5.3
+# or: docker pull wiztheagent/ironmesh:0.8.5.4
 # or: ./scripts/install.sh       (Linux / macOS systemd)
 # or: see docs/TERMUX.md         (Android)
 ```
@@ -527,7 +528,19 @@ pytest tests/ -v --cov=ironmesh
 
 ## Recent changes
 
-**v0.8.5.3 (current):** Quickstart hardening and onboarding polish. The
+**v0.8.5.4 (current):** Repo-hygiene and credibility-documentation
+patch on top of v0.8.5.3. Three new layers (pre-commit hook, pre-push
+hook, CI workflow) catch internal-only content before it can enter the
+public repo. Personal identifiers in shipped CLI examples and docs
+replaced with generic `alice`/`bob`/TEST-NET-1 placeholders. New
+[`WHATS_NEW.md`](WHATS_NEW.md) (six-month trajectory),
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) (real LAN + LoRa numbers),
+and [`docs/TESTING.md`](docs/TESTING.md) (test-philosophy walkthrough).
+Coverage badge wired (Codecov). No protocol or schema changes; every
+v0.8.x peer stays interoperable. See [`CHANGELOG.md`](CHANGELOG.md) and
+[`docs/RELEASE_NOTES_v0.8.5.4.md`](docs/RELEASE_NOTES_v0.8.5.4.md).
+
+**v0.8.5.3:** Quickstart hardening and onboarding polish. The
 `--open-discovery` and `--allow-plaintext-ws` shortcut flags now emit
 explicit `INSECURE` warnings on startup so they cannot quietly make it
 into a production config; the README quickstart leads with the secure
@@ -603,8 +616,8 @@ Full list: [CHANGELOG.md](CHANGELOG.md). Planned work: [docs/ROADMAP.md](docs/RO
 
 Where to get it and what's still rough:
 
-- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport). Latest: **v0.8.5.3**.
-- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.8.5.3`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
+- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport). Latest: **v0.8.5.4**.
+- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.8.5.4`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
 - **GitHub releases** — signed tags, wheel + sdist attached: [releases page](https://github.com/WizTheAgent/IronMesh/releases).
 - **Go client** — `clients/go/` (reference implementation, crypto primitives verified against Python).
 - **LoRa end-to-end latency** — Measured live at 915 MHz SF8/BW125 between two RNode-equipped nodes (1 hop, strong signal): 16-byte probe 1.07 — 1.23 s, 64-byte probe 1.17 — 1.25 s, 256-byte probe 1.77 — 1.98 s, 100% delivery across 9 probes. Multi-hop + long-range interference sweeps are still pending — see [`docs/LORA_VALIDATION.md`](docs/LORA_VALIDATION.md).
@@ -707,6 +720,12 @@ IronMesh exists because we believe:
 - **General / operator questions** — [info@ironmesh.org](mailto:info@ironmesh.org)
 - **Security issues** — [info@ironmesh.org](mailto:info@ironmesh.org) — please **don't** open a public issue first. See [SECURITY.md](SECURITY.md) for disclosure policy.
 - **Bugs / feature requests** — [GitHub Issues](https://github.com/WizTheAgent/IronMesh/issues) (use the templates)
+
+## Sponsor
+
+IronMesh is solo-maintained, MIT-licensed, and self-funded. If the project saves you time, removes a cloud dependency, or matches the freedom-tooling thesis you want to see more of, a sponsorship helps fund the external security audit, the infrastructure budget for cross-platform CI, and the time to land the v1.0 hard gates.
+
+[Sponsor on GitHub](https://github.com/sponsors/WizTheAgent) — no monthly target, no perks tier, no public donor wall. Just funded time on the protocol.
 
 ## License
 

@@ -1,0 +1,64 @@
+# IronMesh — instant-demo docker compose
+#
+# Two preconfigured nodes (alice + bob) on an isolated bridge network.
+# Hardcoded demo passphrase — DO NOT USE FOR ANYTHING REAL.
+#
+# Quick start:
+#   docker compose -f docker-compose.demo.yml up
+#
+# Then open the dashboard:
+#   http://localhost:8866           (alice — token printed in logs)
+#   http://localhost:8868           (bob   — token printed in logs)
+#
+# Tear down:
+#   docker compose -f docker-compose.demo.yml down -v
+
+services:
+  alice:
+    image: wiztheagent/ironmesh:0.8.5.4
+    container_name: ironmesh-demo-alice
+    restart: "no"
+    ports:
+      - "127.0.0.1:8865:8765"   # mesh ws
+      - "127.0.0.1:8866:8766"   # dashboard
+    environment:
+      IRONMESH_NAME: alice
+      IRONMESH_PORT: "8765"
+      IRONMESH_ALLOWED_PEERS: bob
+      IRONMESH_OPEN_DISCOVERY: "false"
+      IRONMESH_GUI: "true"
+      # Demo passphrase — would emit a startup warning in real use.
+      IRONMESH_PASSPHRASE: ironmesh-demo-passphrase-do-not-reuse
+    networks:
+      - meshnet
+    volumes:
+      - alice-data:/data/ironmesh
+
+  bob:
+    image: wiztheagent/ironmesh:0.8.5.4
+    container_name: ironmesh-demo-bob
+    restart: "no"
+    ports:
+      - "127.0.0.1:8867:8765"
+      - "127.0.0.1:8868:8766"
+    environment:
+      IRONMESH_NAME: bob
+      IRONMESH_PORT: "8765"
+      IRONMESH_ALLOWED_PEERS: alice
+      IRONMESH_OPEN_DISCOVERY: "false"
+      IRONMESH_GUI: "true"
+      IRONMESH_PASSPHRASE: ironmesh-demo-passphrase-do-not-reuse
+    networks:
+      - meshnet
+    volumes:
+      - bob-data:/data/ironmesh
+    depends_on:
+      - alice
+
+networks:
+  meshnet:
+    driver: bridge
+
+volumes:
+  alice-data:
+  bob-data:

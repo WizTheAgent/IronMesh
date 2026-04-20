@@ -5,6 +5,115 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.5.4] — Repo hygiene, onboarding, and credibility documentation
+
+Patch release on top of v0.8.5.3. No protocol or schema changes; every
+v0.8.x peer stays interoperable. Default behavior unchanged.
+
+### Added
+
+- **Three-layer leak-scan defense.** A pre-commit hook
+  (`.githooks/pre-commit`), a pre-push hook (`.githooks/pre-push`),
+  and a CI workflow (`.github/workflows/leak-scan.yml`) all share a
+  single scanner (`scripts/leak-scan.sh`) that screens for filename
+  patterns reserved for internal content (audit reports, plan docs,
+  gap analyses, top-level roadmap files) and for content markers that
+  should never appear in shipped code (audit hardening codes,
+  decision-tree shorthand, personal identifiers, mesh-fleet personal
+  names). Run `bash scripts/install-hooks.sh` once after cloning to
+  wire it up locally. Documented in `CONTRIBUTING.md`.
+- **`ironmesh setup` first-run wizard.** New CLI subcommand walks the
+  operator through node name, port, passphrase, key generation, peer
+  allowlist, and pending-trust gate. Writes the passphrase file
+  (`chmod 600`) and the encrypted keypair, then prints the exact
+  `ironmesh run` command to start the daemon. Supports `--non-interactive`
+  + `--passphrase-from-env` (`IRONMESH_SETUP_PASSPHRASE`) for CI /
+  automation use. Idempotent: re-running detects existing files and
+  asks before overwriting (or honors `--force`).
+- **`docker-compose.demo.yml`** — two preconfigured nodes (alice +
+  bob) on an isolated bridge network with hardcoded demo passphrase.
+  `docker compose -f docker-compose.demo.yml up` for an instant
+  two-peer mesh demo with both dashboards exposed on localhost.
+- **`WHATS_NEW.md`** — one-page narrative of the v0.7.2 → v0.8.5.4
+  trajectory plus what's coming on the v1.0 path and beyond.
+- **`docs/BENCHMARKS.md`** — published LAN (WebSocket) and LoRa
+  (Reticulum/RNode) numbers with delivery rate, p50, p95, goodput,
+  resource footprint by hardware class, and reproduction steps.
+- **`docs/TESTING.md`** — test-philosophy walkthrough covering all
+  four layers (unit, Hypothesis fuzz, concurrency, framework
+  integration) and how to add a test in the right one.
+- **`docs/NAT_TRAVERSAL.md`** — operator recipes for running IronMesh
+  across NATs by layering on Tailscale, Yggdrasil, or Reticulum.
+  Three step-by-step setups with trade-offs explicit. Native
+  hole-punching is still on the v1.1+ roadmap; this is the
+  recommended path until then.
+- **`docs/deployments/homelab.md`** — first reference deployment
+  recipe: two IronMesh nodes + local Ollama (`llama3.2:3b`) + a
+  CrewAI two-agent crew talking over the encrypted mesh. End-to-end
+  walkthrough from `pip install` to running the crew.
+- **`docs/migration/v0_9_default_deny.md`** — migration walkthrough
+  for the pending-trust gate becoming default-on in v0.9. Covers
+  prepare-now (opt in early), prepare-later (use the planned
+  `--no-message-promotion` legacy flag), wire-protocol stability,
+  and operator-visible failure modes to expect.
+- **GitHub Sponsors configuration.** New `.github/FUNDING.yml`
+  pointing at the maintainer's GitHub Sponsors profile, plus a
+  short "Sponsor" section in the README. (Sponsors must be enabled
+  by the repo owner before the link resolves.)
+- **Coverage badge wired (Codecov).** CI uploads `coverage.xml` from
+  every matrix combo; README gains a live coverage-percentage badge
+  next to the existing CI / PyPI / Docker badges. (Requires repo
+  owner to authorize Codecov and add `CODECOV_TOKEN` secret.)
+
+### Changed
+
+- **Personal identifiers in shipped code and docs replaced with
+  generic placeholders.** Personal node names previously used as
+  CLI examples in README, ARCHITECTURE.md, QUICKSTART.md,
+  SECURITY.md, USE_CASES.md, DASHBOARD.md, OPENCLAW_MCP_SETUP.md,
+  PROTOCOL_SPEC.md, examples/README.md, examples/ai_to_ai_dialogue.py,
+  cli.py, protocol.py, the TS client README, the ironmesh-status
+  skill, and tests/test_mcp.py replaced with the generic alice / bob
+  convention. Personal LAN IP examples replaced with TEST-NET-1
+  (192.0.2.0/24, RFC 5737) addresses across QUICKSTART.md,
+  SECURITY.md, USE_CASES.md, and the mesh_bench harness docstring.
+  Test-name prefixes that started with audit-class identifiers
+  (`H2:`, `H3:`, `C2:`) in `clients/ts/tests/*.test.ts` renamed to
+  plain descriptive labels. The leak-scan workflow keeps the
+  baseline clean from this commit forward.
+- **Internal milestone reference (`M0 spike`)** in
+  `clients/ts/README.md` reworded to plain language.
+- **README `Recent changes` section** gets a new v0.8.5.4 paragraph;
+  v0.8.5.3 demoted to historical.
+- **README test-count claim** updated 686 → 688 to match current
+  pytest collection.
+- **`docker-compose.yml`** image tag bumped from `0.8.5` to `0.8.5.4`
+  (was stale through three patch releases — caught by the release
+  checklist's version-sync sweep).
+- **`tests/test_cli.py`** fixture name updated `wiz` → `alice` to
+  match the rest of the codebase's generic-name convention. Four new
+  tests cover the `setup` wizard's non-interactive code paths.
+
+### Removed (from prior commit on main)
+
+- Four internal-only documents (`docs/AUDIT_v0.8.3.md`,
+  `docs/BUG-PY310-TIMEOUTERROR-CLASS-SPLIT.md`,
+  `docs/BUG-RNS-HANDSHAKE-RACE.md`, `docs/OPENCLAW_WS_API_GAPS.md`)
+  removed from the repo and from full git history via
+  `git filter-repo`. They were committed in earlier sessions before
+  the broader internal-docs ignore patterns existed.
+- `IRONMESH_V1_ROADMAP.md` (untracked at the repo root) moved to a
+  private location.
+
+### Documentation
+
+- New `docs/RELEASE_NOTES_v0.8.5.4.md`.
+- README current-version references (top banner, docker-pull
+  commands, `Latest:` line) all updated to `v0.8.5.4`.
+- `.gitignore` extended with `docs/AUDIT_*.md`, `docs/BUG-*.md`,
+  `docs/*_GAPS.md`, `*_INTERNAL.md`, top-level `*_ROADMAP.md` so
+  the leak class cannot recur.
+
 ## [0.8.5.3] — Quickstart hardening and onboarding polish
 
 Patch release on top of v0.8.5.2. No protocol or schema changes; every

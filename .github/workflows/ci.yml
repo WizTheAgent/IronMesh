@@ -85,6 +85,18 @@ jobs:
         run: |
           ./scripts/ci-pytest.sh pytest tests/ --ignore=tests/integration -v --cov=. --cov-report=term-missing --cov-report=xml --cov-fail-under=60
 
+      - name: Upload coverage to Codecov
+        # Best-effort: Codecov outages should not fail CI. Multiple uploads
+        # per commit are deduplicated server-side; uploading from every
+        # matrix combo gives accurate per-OS / per-Python flag breakdowns.
+        uses: codecov/codecov-action@v4
+        if: always() && hashFiles('coverage.xml') != ''
+        with:
+          file: ./coverage.xml
+          flags: ${{ matrix.os }}-py${{ matrix.python-version }}
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
   integration:
     # Real framework-adapter integration tests. Installs the actual
     # third-party packages (langchain-core, crewai, pyautogen) and

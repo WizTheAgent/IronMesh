@@ -1,0 +1,10 @@
+# Funding configuration for the GitHub Sponsor button on the repo.
+# Enable Sponsors at https://github.com/sponsors first; this file
+# becomes active once the profile exists.
+
+github: [WizTheAgent]
+
+# Optional alternative funding paths — uncomment if/when you set them up:
+# open_collective: ironmesh
+# ko_fi: <handle>
+# custom: ['https://ironmesh.org/sponsor']

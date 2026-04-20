@@ -201,6 +201,36 @@ def parse_args():
     doctor_parser.add_argument("--bind", default="0.0.0.0",
                                 help="Bind address — checked alongside --port")
 
+    # --- setup ---
+    setup_parser = sub.add_parser(
+        "setup",
+        help="Interactive first-run wizard: node name, passphrase, keys, trust gate",
+    )
+    setup_parser.add_argument("--name", default=None,
+                              help="Agent name (default: prompt with hostname)")
+    setup_parser.add_argument("--port", type=int, default=None,
+                              help="Daemon port (default: prompt with 8765)")
+    setup_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json",
+                              help="Where to write the encrypted keypair")
+    setup_parser.add_argument("--passphrase-file", default="~/.ironmesh/passphrase",
+                              help="Where to write the passphrase file")
+    setup_parser.add_argument("--allowed-peers", default=None,
+                              help="Comma-separated peer allowlist (default: prompt)")
+    setup_parser.add_argument("--enable-trust-gate", action="store_true",
+                              help="Enable the pending-trust gate (default: prompt)")
+    setup_parser.add_argument("--no-trust-gate", action="store_true",
+                              help="Skip the pending-trust gate (default: prompt)")
+    setup_parser.add_argument("--non-interactive", action="store_true",
+                              help="Take defaults for any unspecified option; do not prompt. "
+                                   "Requires --passphrase-file to point at an existing file "
+                                   "OR --passphrase-from-env to read IRONMESH_SETUP_PASSPHRASE.")
+    setup_parser.add_argument("--passphrase-from-env", action="store_true",
+                              help="In --non-interactive mode, read the passphrase from "
+                                   "IRONMESH_SETUP_PASSPHRASE instead of prompting.")
+    setup_parser.add_argument("--force", action="store_true",
+                              help="Overwrite existing key file / passphrase file without "
+                                   "prompting.")
+
     # --- demo ---
     demo_parser = sub.add_parser(
         "demo",
@@ -1121,6 +1151,257 @@ def cmd_demo(args):
                     pass
 
 
+def cmd_setup(args):
+    """Interactive first-run wizard.
+
+    Walks the operator through node name, port, passphrase, key
+    generation, peer allowlist, and pending-trust gate. Writes the
+    passphrase file (chmod 600) and the encrypted keypair, prints the
+    exact ironmesh run command to start the daemon.
+
+    --non-interactive runs the same flow without prompts using the
+    flag values + safe defaults; required for CI / automation.
+    """
+    import os
+    import socket
+    import stat
+    from pathlib import Path
+
+    interactive = not args.non_interactive
+
+    def _prompt(label, default=None):
+        if not interactive:
+            return default
+        suffix = f" [{default}]" if default is not None else ""
+        try:
+            value = input(f"{label}{suffix}: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return default
+        return value or default
+
+    def _yes_no(label, default=True):
+        if not interactive:
+            return default
+        suffix = " [Y/n]" if default else " [y/N]"
+        try:
+            ans = input(f"{label}{suffix}: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return default
+        if not ans:
+            return default
+        return ans in ("y", "yes")
+
+    print()
+    print("IronMesh first-run setup")
+    print("=" * 40)
+    print()
+    if interactive:
+        print("This wizard configures one IronMesh node end-to-end:")
+        print("  1. Pick a node name and port")
+        print("  2. Set the shared passphrase (must match every peer)")
+        print("  3. Generate an encrypted identity keypair")
+        print("  4. Optionally enable the pending-trust message gate")
+        print()
+        print("Press Ctrl-C at any time to abort. No files are written")
+        print("until the final confirmation.")
+        print()
+
+    # 1. Node name
+    default_name = args.name or socket.gethostname().split(".")[0]
+    name = _prompt("Node name", default_name)
+    if not name:
+        print("ERROR: node name is required.")
+        return 1
+
+    # 2. Port
+    default_port = args.port or 8765
+    port_raw = _prompt("Port", str(default_port))
+    try:
+        port = int(port_raw)
+    except (TypeError, ValueError):
+        print(f"ERROR: invalid port '{port_raw}'.")
+        return 1
+
+    # 3. Passphrase
+    pass_path = Path(os.path.expanduser(args.passphrase_file))
+    pass_existing = pass_path.is_file()
+    write_pass = True
+    passphrase = None
+
+    if pass_existing and not args.force:
+        if interactive:
+            keep = _yes_no(
+                f"Found existing passphrase at {pass_path} — keep it?",
+                default=True,
+            )
+        else:
+            keep = True
+        if keep:
+            write_pass = False
+            try:
+                passphrase = pass_path.read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                print(f"ERROR: cannot read existing passphrase file: {exc}")
+                return 1
+
+    if write_pass:
+        if not interactive:
+            if args.passphrase_from_env:
+                passphrase = os.environ.get("IRONMESH_SETUP_PASSPHRASE", "")
+                if not passphrase:
+                    print("ERROR: --passphrase-from-env set but "
+                          "IRONMESH_SETUP_PASSPHRASE is empty.")
+                    return 1
+            elif pass_existing:
+                # Already covered above; should not reach here
+                pass
+            else:
+                print("ERROR: --non-interactive requires either an existing "
+                      "passphrase file at --passphrase-file OR "
+                      "--passphrase-from-env with IRONMESH_SETUP_PASSPHRASE.")
+                return 1
+        else:
+            print()
+            print("Set the shared passphrase. Every peer on the mesh must")
+            print("use this exact passphrase. Minimum 12 characters.")
+            while True:
+                p1 = getpass.getpass("Passphrase: ")
+                if len(p1) < 12:
+                    print("Too short — minimum 12 characters.")
+                    continue
+                p2 = getpass.getpass("Confirm:    ")
+                if p1 != p2:
+                    print("Passphrases do not match. Try again.")
+                    continue
+                passphrase = p1
+                break
+
+        # Write the passphrase file with strict permissions
+        pass_path.parent.mkdir(parents=True, exist_ok=True)
+        pass_path.write_text(passphrase, encoding="utf-8")
+        try:
+            pass_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+        except OSError:
+            # Windows / non-POSIX filesystems may reject chmod; skip silently
+            pass
+
+    if not passphrase or len(passphrase) < 12:
+        print("ERROR: passphrase is missing or too short.")
+        return 1
+
+    # 4. Identity keys
+    keys_path = Path(os.path.expanduser(args.keys_path))
+    write_keys = True
+    if keys_path.is_file() and not args.force:
+        if interactive:
+            keep_keys = _yes_no(
+                f"Found existing keypair at {keys_path} — keep it?",
+                default=True,
+            )
+        else:
+            keep_keys = True
+        if keep_keys:
+            write_keys = False
+
+    if write_keys:
+        from ironmesh.keys import generate_keypair, save_keys
+        keys_path.parent.mkdir(parents=True, exist_ok=True)
+        keypair = generate_keypair()
+        save_keys(keypair, str(keys_path), passphrase=passphrase)
+        try:
+            keys_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+        except OSError:
+            pass
+        fingerprint = keypair.get_fingerprint()
+    else:
+        from ironmesh.keys import load_keys
+        try:
+            keypair = load_keys(str(keys_path), passphrase=passphrase)
+            fingerprint = keypair.get_fingerprint()
+        except Exception as exc:
+            print(f"ERROR: could not load existing keypair: {exc}")
+            return 1
+
+    # 5. Allowed peers
+    if args.allowed_peers is not None:
+        allowed_peers = args.allowed_peers
+    else:
+        allowed_peers = _prompt(
+            "Allowed peer names (comma-separated, blank = none)",
+            default="",
+        )
+        if allowed_peers is None:
+            allowed_peers = ""
+
+    # 6. Pending-trust gate
+    if args.enable_trust_gate:
+        gate = True
+    elif args.no_trust_gate:
+        gate = False
+    elif interactive:
+        print()
+        print("Pending-trust gate: when enabled, messages from any peer")
+        print("you have not yet promoted are queued at the daemon and")
+        print("require operator approval before delivery. Becomes the")
+        print("default in v0.9.")
+        gate = _yes_no("Enable the pending-trust gate now?", default=True)
+    else:
+        gate = True
+
+    # Summary
+    print()
+    print("Setup complete")
+    print("=" * 40)
+    print(f"  Node name        : {name}")
+    print(f"  Port             : {port}")
+    print(f"  Passphrase file  : {pass_path}  "
+          f"{'(new)' if write_pass else '(existing)'}")
+    print(f"  Identity keys    : {keys_path}  "
+          f"{'(new)' if write_keys else '(existing)'}")
+    print(f"  Fingerprint      : {fingerprint}")
+    if allowed_peers:
+        print(f"  Allowed peers    : {allowed_peers}")
+    else:
+        print(f"  Allowed peers    : (none — default-deny)")
+    print(f"  Pending-trust    : {'enabled' if gate else 'disabled (opt-in)'}")
+    print()
+
+    # Build the run command
+    run_cmd = [
+        "ironmesh run",
+        f"--name {name}",
+        f"--port {port}",
+        f"--passphrase-file {pass_path}",
+        f"--keys-path {keys_path}",
+    ]
+    if allowed_peers:
+        run_cmd.append(f"--allowed-peers {allowed_peers}")
+    if gate:
+        run_cmd.append("--require-message-promotion")
+
+    print("Start the daemon with:")
+    print()
+    print("  " + " \\\n      ".join(run_cmd))
+    print()
+    print("Or set the env var once and shorten the command:")
+    print(f"  export IRONMESH_PASSPHRASE_FILE={pass_path}")
+    if gate:
+        print("  export IRONMESH_REQUIRE_MSG_PROMOTION=true")
+    print(f"  ironmesh run --name {name} --port {port}"
+          f"{' --allowed-peers ' + allowed_peers if allowed_peers else ''}")
+    print()
+    print("Next steps:")
+    print("  - Repeat this wizard on a second machine with the SAME")
+    print("    passphrase file (copy it via USB / age / paper).")
+    print("  - Add each node's name to the other's --allowed-peers.")
+    print("  - See docs/QUICKSTART.md for the full walkthrough,")
+    print("    docs/deployments/homelab.md for a CrewAI + Ollama recipe,")
+    print("    docs/NAT_TRAVERSAL.md for cross-network setups.")
+    return 0
+
+
 def main():
     args = parse_args()
     command = getattr(args, "command", None)
@@ -1143,6 +1424,8 @@ def main():
         return cmd_run(args)
     elif command == "demo":
         return cmd_demo(args)
+    elif command == "setup":
+        return cmd_setup(args)
     elif args.name:
         # Backward compatibility: no subcommand but --name given -> run
         return cmd_run(args)
@@ -1150,6 +1433,7 @@ def main():
         print("IronMesh — Zero-config encrypted A2A protocol\n")
         print("Usage:")
         print("  ironmesh demo                          # spawn two agents on localhost and exchange a ping")
+        print("  ironmesh setup                         # interactive first-run wizard")
         print("  ironmesh run --name <agent> [--port 8765]")
         print("  ironmesh trust list")
         print("  ironmesh trust revoke <node_id>")

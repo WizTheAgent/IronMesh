@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -24,9 +26,9 @@ def _parse(argv):
 class TestSubcommandParsing:
 
     def test_run_subcommand(self):
-        args = _parse(["run", "--name", "wiz", "--port", "8765"])
+        args = _parse(["run", "--name", "alice", "--port", "8765"])
         assert args.command == "run"
-        assert args.name == "wiz"
+        assert args.name == "alice"
         assert args.port == 8765
 
     def test_demo_subcommand_defaults(self):
@@ -121,3 +123,90 @@ class TestPassphraseNotInProcList:
                          and "--keys-passphrase" not in l
                          and "--rns-" not in l]
         assert not visible_lines, f"Unexpected --passphrase documentation: {visible_lines}"
+
+
+# ---------------------------------------------------------------------------
+# Setup wizard (cmd_setup) — non-interactive path used by automation / CI.
+# ---------------------------------------------------------------------------
+
+class TestSetupWizard:
+    """Non-interactive `ironmesh setup` walkthrough.
+
+    Interactive prompts are exercised by manual smoke testing only;
+    these tests cover the scriptable path that automation depends on.
+    """
+
+    def _run_setup(self, tmpdir, **flags):
+        """Invoke cmd_setup with the given flag overrides; return exit code."""
+        keys_path = tmpdir / "keys.json"
+        pass_path = tmpdir / "passphrase"
+        argv = [
+            "ironmesh", "setup",
+            "--non-interactive",
+            "--passphrase-from-env",
+            "--keys-path", str(keys_path),
+            "--passphrase-file", str(pass_path),
+        ]
+        for key, value in flags.items():
+            cli_flag = "--" + key.replace("_", "-")
+            if value is True:
+                argv.append(cli_flag)
+            elif value is False:
+                continue
+            else:
+                argv.extend([cli_flag, str(value)])
+        with patch.object(sys, "argv", argv):
+            return cli.main()
+
+    def test_non_interactive_creates_passphrase_and_keys(self, tmp_path):
+        env = {"IRONMESH_SETUP_PASSPHRASE": "wizard-test-passphrase-12-plus"}
+        with patch.dict(os.environ, env, clear=False):
+            rc = self._run_setup(
+                tmp_path,
+                name="testnode",
+                port=18999,
+                allowed_peers="alice,bob",
+                enable_trust_gate=True,
+            )
+        assert rc == 0
+        assert (tmp_path / "passphrase").is_file()
+        assert (tmp_path / "keys.json").is_file()
+        assert (tmp_path / "passphrase").read_text(
+            encoding="utf-8"
+        ) == "wizard-test-passphrase-12-plus"
+
+    def test_non_interactive_requires_passphrase_source(self, tmp_path, capsys):
+        # Neither an existing file nor IRONMESH_SETUP_PASSPHRASE -> hard fail
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("IRONMESH_SETUP_PASSPHRASE", None)
+            rc = self._run_setup(tmp_path, name="testnode", port=18999)
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "passphrase" in out.lower()
+
+    def test_non_interactive_rejects_short_env_passphrase(self, tmp_path, capsys):
+        # Empty env value should fail clearly, not silently use ""
+        env = {"IRONMESH_SETUP_PASSPHRASE": ""}
+        with patch.dict(os.environ, env, clear=False):
+            rc = self._run_setup(tmp_path, name="testnode", port=18999)
+        assert rc == 1
+
+    def test_non_interactive_keeps_existing_passphrase_file(self, tmp_path):
+        # Pre-create a passphrase file; wizard should reuse it without
+        # needing the env var
+        existing = "preexisting-passphrase-12-plus"
+        pass_path = tmp_path / "passphrase"
+        pass_path.write_text(existing, encoding="utf-8")
+        # No IRONMESH_SETUP_PASSPHRASE set; should still succeed because
+        # the file already exists
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("IRONMESH_SETUP_PASSPHRASE", None)
+            rc = self._run_setup(
+                tmp_path,
+                name="testnode",
+                port=18999,
+                no_trust_gate=True,
+            )
+        assert rc == 0
+        # Existing passphrase preserved
+        assert pass_path.read_text(encoding="utf-8") == existing
