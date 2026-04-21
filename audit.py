@@ -150,7 +150,7 @@ EVENT_PEER_CAP_SET_CHANGED = "PEER_CAP_SET_CHANGED"
 EVENT_PEER_CAP_BASELINE = "PEER_CAP_BASELINE"
 EVENT_PEER_CAP_ACCEPTED = "PEER_CAP_ACCEPTED"
 EVENT_MSG_REPLAY_CROSS_TRANSPORT = "MSG_REPLAY_CROSS_TRANSPORT"
-# v0.8.5.6 T#74 fix: close CLI audit gaps. `ironmesh trust revoke`
+# v0.8.5.6: close CLI audit gaps. `ironmesh trust revoke`
 # (local-only) and `ironmesh trust set-state` were operator actions
 # that mutated the trust store without leaving an audit trail — a
 # forensic reviewer walking the log after an incident would miss
@@ -159,7 +159,7 @@ EVENT_MSG_REPLAY_CROSS_TRANSPORT = "MSG_REPLAY_CROSS_TRANSPORT"
 # or one of these new ones.
 EVENT_PEER_REVOKED_LOCAL = "PEER_REVOKED_LOCAL"
 EVENT_PEER_STATE_CHANGED = "PEER_STATE_CHANGED"
-# v0.8.5.6 B8 fix: fired when the bridge observed a capability-set
+# v0.8.5.6: fired when the bridge observed a capability-set
 # change but the trust-store mutation (stash + demote) did NOT fully
 # reach disk (disk error, MAC-mismatch read-only latch, lock contention
 # beyond retry). Distinguishes "we saw + applied the change" from
@@ -314,7 +314,7 @@ class AuditLog:
         # loss benign (next reader walks back to the previous valid
         # line; chain continues).
         #
-        # v0.8.5.6 B10 fix: if the file's last byte isn't a newline,
+        # v0.8.5.6: if the file's last byte isn't a newline,
         # the previous writer crashed mid-line. Prepend a newline so
         # our entry doesn't concatenate onto the torn line. The torn
         # line stays on disk for forensic inspection (verify() will

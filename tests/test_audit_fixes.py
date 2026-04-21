@@ -1592,7 +1592,7 @@ class TestAuditMultiWriterLock:
         assert len(lines) == 2 * N, f"lost entries: got {len(lines)}, want {2*N}"
 
     def test_torn_trailing_line_does_not_break_chain(self, tmp_path):
-        """B10 regression: a SIGKILL between f.write() and the OS
+        """Regression: a SIGKILL between f.write() and the OS
         flush can leave a torn (incomplete or unparseable) line at
         EOF. _read_last_hmac must walk past it to the previous
         valid entry — otherwise the next write chains off GENESIS

@@ -115,7 +115,7 @@ write it to the private directory, not `docs/`.
 ## Conventions that aren't enforced but should be followed
 
 - Docstrings reference the bug ID or feature version when fixing
-  something non-obvious (e.g. "B7 regression:", "v0.8.5.6:").
+  something non-obvious (e.g. a version anchor like "v0.8.5.6:").
 - Commit messages lead with `release(vX.Y.Z):` or `fix(...):` /
   `feat(...):` / `chore(...):` / `docs(...):`.
 - Never write multi-paragraph docstrings; a single clear line is

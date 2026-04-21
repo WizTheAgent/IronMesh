@@ -112,7 +112,7 @@ PEER_PUB_B64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 
 class TestMacMismatchReadOnlyLatch:
-    """B7 regression: a TrustStore that loaded a file with an
+    """Regression: a TrustStore that loaded a file with an
     unverifiable MAC must REFUSE to ``_save()``. Otherwise any later
     mutation (TOFU pin, capability observe) writes a near-empty file
     on top of a real one — silently wiping every pinned peer.
@@ -151,7 +151,7 @@ class TestMacMismatchReadOnlyLatch:
         prod2 = TrustStore(agent_key=b"\xaa" * 32, path=path)
         names = {p["node_id"] for p in prod2.list_peers()}
         assert names == {"p1" * 16, "p2" * 16, "p3" * 16}, (
-            "B7 regression: rogue TrustStore wrote over the production "
+            "Regression: rogue TrustStore wrote over the production "
             "trust file. Disk now has " + repr(names)
         )
 
@@ -281,7 +281,7 @@ class TestMetricsCounters:
             assert key in md, f"metric {key!r} missing from to_dict()"
 
     def test_scanner_rescues_events_across_rotation(self, tmp_path):
-        """B24 regression: when the audit log rotates BETWEEN scans,
+        """Regression: when the audit log rotates BETWEEN scans,
         events that landed in the rotated `.1` file after our last
         offset must still be counted. Rotation is detected via inode
         comparison (catches the case where the post-rotation live
@@ -329,7 +329,7 @@ class TestMetricsCounters:
         )
 
     def test_scanner_counts_peer_promoted_and_blocked(self, tmp_path):
-        """B22 regression: PEER_PROMOTED and PEER_BLOCKED fire from
+        """Regression: PEER_PROMOTED and PEER_BLOCKED fire from
         CLI `set-state trusted` and `set-state blocked` respectively.
         Scanner must map both to their counters so dashboards can
         distinguish them from PEER_STATE_CHANGED.
@@ -360,7 +360,7 @@ class TestMetricsCounters:
         assert daemon.metrics.peer_blocked == 1
 
     def test_audit_scanner_bumps_counter_for_external_event(self, tmp_path):
-        """B21 regression: an audit event written by a SEPARATE process
+        """Regression: an audit event written by a SEPARATE process
         (CLI, MCP, anything that isn't the daemon itself) must still
         produce a counter bump. The audit-log scanner is the single
         source of truth that reconciles in-process and out-of-process
@@ -818,7 +818,7 @@ class TestBridgeCapBindingIntegration:
         assert rec.get("capability_set_pending") == ["role:admin"]
 
     def test_partial_binding_fires_distinct_audit_event(self, tmp_path):
-        """B8 regression: when the stash / demote half of
+        """Regression: when the stash / demote half of
         _handle_cap_observation fails to persist, the bridge must
         fire EVENT_PEER_CAP_BINDING_PARTIAL rather than claim
         EVENT_PEER_CAP_SET_CHANGED. Forensic review must be able to
@@ -883,11 +883,11 @@ class TestBridgeCapBindingIntegration:
         )
         events = [e for e, _ in captured]
         assert EVENT_PEER_CAP_BINDING_PARTIAL in events, (
-            "B8 regression: partial-failure did not emit distinct event. "
+            "Regression: partial-failure did not emit distinct event. "
             f"got events={events}"
         )
         assert EVENT_PEER_CAP_SET_CHANGED not in events, (
-            "B8 regression: full-success event fired despite partial "
+            "Regression: full-success event fired despite partial "
             "failure. got events={}".format(events)
         )
 

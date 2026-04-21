@@ -85,6 +85,26 @@ class TestGUIHTML:
         assert "TOFU-PINNED" in GUI_HTML
         assert "MISMATCH" in GUI_HTML
 
+    def test_html_version_pill_is_dynamic_placeholder(self):
+        # Regression guard: the version pill must use the runtime placeholder,
+        # never a hardcoded semver literal. A prior release shipped a dashboard
+        # badge reading "v0.8.5" after the package had moved to 0.8.5.6 / 0.8.5.7
+        # because the literal was never bumped. Pinning to the placeholder + a
+        # render-time substitution keeps the badge in sync with __version__.
+        assert "{{IRONMESH_VERSION}}" in GUI_HTML
+        assert 'class="version-pill"' in GUI_HTML
+
+    def test_rendered_html_shows_current_version(self):
+        # Simulates the HTTP handler's substitution path. If someone swaps the
+        # placeholder out for a literal again, this test fails loudly.
+        from ironmesh import __version__ as _imv
+        rendered = GUI_HTML.replace("{{IRONMESH_VERSION}}", f"v{_imv}")
+        assert f"v{_imv}" in rendered
+        assert "{{IRONMESH_VERSION}}" not in rendered
+        # And the stale literal must not leak back in.
+        assert ">v0.8.5 ·" not in rendered
+        assert ">v0.8.5<" not in rendered
+
 
 # ---------------------------------------------------------------------------
 # BridgeDaemon GUI init

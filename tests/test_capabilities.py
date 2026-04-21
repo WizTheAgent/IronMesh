@@ -33,7 +33,7 @@ class TestCapabilityRegistryLocal:
         assert reg.local_capabilities() == []
 
     def test_set_local_replaces_not_merges(self, tmp_path):
-        """B12 regression (ghost capabilities): a daemon that loads a
+        """Regression — ghost capabilities: a daemon that loads a
         persisted capability set and then sets its new config-provided
         caps must NOT announce the union of old + new. Before the fix,
         the load+advertise_local pattern produced ghost caps that
@@ -64,7 +64,7 @@ class TestCapabilityRegistryLocal:
         reg_new.set_local(["role:coder", "llm:llama3"])
         got = set(reg_new.local_capabilities())
         assert got == {"role:coder", "llm:llama3"}, (
-            "B12 regression: set_local leaked ghost caps. got=" + repr(got)
+            "Regression: set_local leaked ghost caps. got=" + repr(got)
         )
         assert "role:assistant" not in got
 

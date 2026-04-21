@@ -9,8 +9,8 @@ Correctness criteria:
 * no MAC corruption on the final trust file (it re-verifies cleanly)
 * final on-disk baseline matches the pending set each peer had stashed
 
-This is the regression script for B14 (silent concurrent-save
-corruption on Windows) and B19 (missing thread-granularity on the
+This is the regression script for the silent concurrent-save
+corruption on Windows and the missing thread-granularity lock on the
 trust-file lock). Run it locally before any v0.8.x release or as a
 nightly CI job to catch future regressions.
 

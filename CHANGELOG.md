@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Dashboard version badge no longer lies.** The version pill in the
+  operator console was a hardcoded string literal (`v0.8.5 · PRE-1.0`)
+  that never got bumped alongside `__version__`, so the dashboard
+  served by v0.8.5.6 and v0.8.5.7 both rendered "v0.8.5" even though
+  the package and wire handshake were correct. Replaced the literal
+  with a `{{IRONMESH_VERSION}}` placeholder and a render-time
+  substitution driven by `ironmesh.__version__`. Added two regression
+  tests in `test_gui.py` that assert the placeholder is present in
+  the template and that the rendered HTML matches the current
+  `__version__` — future drift fails loudly at CI.
+
 ## [0.8.5.7] — Finish shipping cap-binding
 
 Patch release on top of v0.8.5.6. No protocol or schema changes;

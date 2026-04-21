@@ -363,7 +363,7 @@ class TestGateEndToEnd:
             ),
             bus=SimpleNamespace(publish=lambda *a, **k: None),
             trust_path=trust_path,
-            # v0.8.5.2-R5: per-peer audit-write rate-limit dict.
+            # v0.8.5.2: per-peer audit-write rate-limit dict.
             _gate_audit_last_write={},
             # v0.8.5.7 B21 / B22: reservation dict + lock for the
             # _reserve_counter_bump path; the audit-log scanner is

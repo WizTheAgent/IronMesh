@@ -103,7 +103,7 @@ class TestDedupCache:
         assert cache.is_duplicate("src", "msg1") is False
 
     def test_cleanup_expired_thread_safe_with_concurrent_add(self):
-        """B9 regression: cleanup_expired must hold self._lock so it
+        """Regression: cleanup_expired must hold self._lock so it
         can't race with concurrent add()/check_and_add(). Pre-fix it
         iterated self._sources WITHOUT the lock, and a concurrent
         adder calling self._sources.move_to_end / self._sources.popitem
@@ -546,7 +546,7 @@ class TestMeshRouterAnnouncements:
 
     @pytest.mark.asyncio
     async def test_handle_route_announce_rejects_malicious_destination(self):
-        """B16 regression: a malicious peer can send a ROUTE_ANNOUNCE
+        """Regression: a malicious peer can send a ROUTE_ANNOUNCE
         with a non-string destination (e.g., a list). Pre-fix, the
         loop's add_route call would propagate TypeError because dict
         keys must be hashable. Handler must skip bad entries and

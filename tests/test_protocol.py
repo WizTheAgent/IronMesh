@@ -37,7 +37,7 @@ class TestFrame:
         assert f2.destination == f.destination
 
     def test_from_json_message_rejects_non_string_msg_id(self):
-        """B15 regression: legacy JSON dispatch path lacked the strict
+        """Regression: legacy JSON dispatch path lacked the strict
         type validation that from_dict got in v0.8.5.2. A peer
         sending {"msg_id": [1,2,3]} would crash downstream code that
         assumed msg_id is a string. from_json_message must reject
@@ -63,7 +63,7 @@ class TestFrame:
                 Frame.from_json_message(bad, b"payload")
 
     def test_from_json_message_accepts_valid_minimal_input(self):
-        """B15 regression — sanity check the happy path still works."""
+        """Regression — sanity check the happy path still works."""
         f = Frame.from_json_message(
             {"type": "MSG", "from": "alice", "to": "bob"},
             b"hello",

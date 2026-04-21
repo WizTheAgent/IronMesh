@@ -161,7 +161,7 @@ def save_keys(keys: AgentKeys, path: str, passphrase: Optional[str] = None,
         data["ed25519_secret"] = base64.b64encode(keys.ed25519_secret).decode()
         data["encrypted"] = False
 
-    # v0.8.5.6 B13 fix: atomic write via temp + rename + fsync.
+    # v0.8.5.6: atomic write via temp + rename + fsync.
     # save_keys is called rarely (initial generation + key rotation),
     # but an interrupted write here permanently destroys the
     # daemon's identity — unrecoverable without external backups.

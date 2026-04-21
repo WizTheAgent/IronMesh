@@ -158,7 +158,7 @@ class CapabilityRegistry:
                        hashlib.sha256).hexdigest()
         try:
             os.makedirs(os.path.dirname(self._persist_path) or ".", exist_ok=True)
-            # v0.8.5.6 B11 fix: atomic write via temp + rename.
+            # v0.8.5.6: atomic write via temp + rename.
             # Non-atomic truncate+write could leave an empty
             # capabilities.json under SIGKILL, losing every known
             # cap on next start.

@@ -353,7 +353,7 @@ class Frame:
         has metadata extracted from the JSON envelope plus the supplied
         already-decrypted payload bytes.
 
-        v0.8.5.6 B15 fix: mirror the strict type validation that
+        v0.8.5.6: mirror the strict type validation that
         ``from_dict`` got in v0.8.5.2. The legacy JSON path was the
         last decode entry point that still trusted whatever the wire
         sent — a peer could ship ``{"msg_id": [1,2,3]}`` and crash

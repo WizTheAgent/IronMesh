@@ -10,7 +10,7 @@ import pytest_asyncio
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-# v0.8.5.6 T#76 fix: isolate EVERY test's IronMesh state from the
+# v0.8.5.6: isolate EVERY test's IronMesh state from the
 # real `~/.ironmesh/` directory. Before this, integration tests like
 # itest-alice / gate-alice / lc-toolkit-smoke spawned `Agent(...)`
 # processes with auto-generated identity keys but DEFAULT trust paths,

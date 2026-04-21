@@ -196,7 +196,7 @@ class RoutingTable:
         }
 
     def save(self, path: str, hmac_key: bytes) -> None:
-        # v0.8.5.6 B11 fix: atomic write via temp + rename so a
+        # v0.8.5.6: atomic write via temp + rename so a
         # SIGKILL / power loss between truncate and write can't
         # leave an empty routes.json (which wiped every learned
         # route on the next daemon start). Mirrors the pattern in
@@ -753,7 +753,7 @@ class MeshRouter:
 
         learned = 0
         for entry in routes:
-            # v0.8.5.6 B16 fix: bound + validate every per-entry field
+            # v0.8.5.6: bound + validate every per-entry field
             # before letting it reach add_route (which uses ``dst`` as
             # a dict key — non-hashable values would crash the whole
             # handler). Also enforce a sane upper bound on the route
@@ -836,7 +836,7 @@ class MeshRouter:
                     # emit an OTel event so cross-transport replay is
                     # observable without scraping the audit log.
                     # _reserve_counter_bump tells the audit-log scanner
-                    # to skip the matching event (B21: CLI / MCP paths
+                    # to skip the matching event (CLI / MCP paths
                     # rely on the scanner for their counter bumps).
                     try:
                         self.daemon._reserve_counter_bump(

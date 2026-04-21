@@ -259,7 +259,7 @@ class Metrics:
         self.msg_replay_cross_transport = 0
         self.peer_revoked_local = 0
         self.peer_state_changed = 0
-        # v0.8.5.7 B22 fix: trust-state operator transitions.
+        # v0.8.5.7: trust-state operator transitions.
         # Pre-existing PEER_PROMOTED and PEER_BLOCKED audit event types
         # didn't have counters in any prior release. The audit-log
         # scanner landed in v0.8.5.7 B21; now's the time to mirror
@@ -539,7 +539,7 @@ footer.ops .legal{color:var(--text-faint);font-size:10px;letter-spacing:.5px}
 <!-- HEADER -->
 <header class="chrome">
  <div class="wordmark">IRONMESH</div>
- <span class="version-pill">v0.8.5 · PRE-1.0</span>
+ <span class="version-pill">{{IRONMESH_VERSION}} · PRE-1.0</span>
  <div class="node-fp" id="node-fp" title="click to copy full fingerprint">— · —</div>
  <div class="mesh-state" id="mesh-state" data-state="ISOLATED">
   <span class="dot"></span>
@@ -1415,12 +1415,12 @@ class BridgeDaemon:
         # Audit log — initialized after keys are loaded
         self._audit: Optional[AuditLog] = None
 
-        # v0.8.5.7 B21: audit-log counter sync state.
+        # v0.8.5.7: audit-log counter sync state.
         # _audit_counter_offset — where the next scan picks up.
         # _audit_counter_inode — tracks file identity. If the live
         #   audit log has a different inode than we last saw, rotation
         #   happened (even if the live file is now LARGER than the
-        #   offset we stored from the old file). B24 fix — the
+        #   offset we stored from the old file). The
         #   `current_size < offset` heuristic missed the case where
         #   post-rotation writes re-grew the live file past the
         #   pre-rotation offset before the next scan.
@@ -1449,7 +1449,7 @@ class BridgeDaemon:
         self._auth_max_failures = 3
         self._auth_failure_window = 300  # 5 minutes
 
-        # v0.8.5.2-R5: per-peer gate-audit write rate-limit. Prevents a
+        # v0.8.5.2: per-peer gate-audit write rate-limit. Prevents a
         # blocked peer from flooding the audit log with MSG_GATED_DROP
         # events faster than rotation retention, which could push
         # earlier forensic evidence out of the retained archives.
@@ -1688,7 +1688,7 @@ class BridgeDaemon:
             self._capabilities.load()
         except Exception as e:
             logger.debug("Capability load failed: %s", e)
-        # v0.8.5.6 B12 fix: when the operator (CLI / SDK / config)
+        # v0.8.5.6: when the operator (CLI / SDK / config)
         # provides an explicit capability list, treat it as
         # authoritative. The previous additive pattern
         # (load + advertise_local-per-cap) merged old persisted caps
@@ -2461,7 +2461,7 @@ class BridgeDaemon:
             self._db.pending_trust_dropped += 1
             logger.debug("Trust gate: dropping MSG from blocked peer %s",
                          originator[:12])
-            # v0.8.5.2-R5: rate-limit audit writes for blocked peers to
+            # v0.8.5.2: rate-limit audit writes for blocked peers to
             # 1 per peer per second. Without this cap, a malicious
             # blocked peer sending 1000 MSGs/sec could grow the audit
             # log at ~200 KB/sec, rotating older entries out within
@@ -2565,7 +2565,7 @@ class BridgeDaemon:
             except Exception as e:
                 logger.warning("Promote-drain re-publish failed for %s msg=%s: %s",
                                target_node_id, m["msg_id"], e)
-        # v0.8.5.7 B22: reserve counter bump so scanner doesn't double-count
+        # v0.8.5.7: reserve counter bump so scanner doesn't double-count
         self._reserve_counter_bump("peer_promoted")
         if self._audit:
             try:
@@ -2597,7 +2597,7 @@ class BridgeDaemon:
             return {"ok": False, "discarded": 0,
                     "error": f"peer {target_node_id} not in trust store"}
         discarded = await self._db.discard_pending_trust(target_node_id)
-        # v0.8.5.7 B22: reserve counter bump so scanner doesn't double-count
+        # v0.8.5.7: reserve counter bump so scanner doesn't double-count
         self._reserve_counter_bump("peer_blocked")
         if self._audit:
             try:
@@ -2698,7 +2698,7 @@ class BridgeDaemon:
             # Prometheus counter so Grafana alerts can fire on baseline
             # pinning events (the cap-binding TOFU-for-caps moment).
             # _reserve_counter_bump bumps now + tells the audit-log
-            # scanner to skip the next matching event (B21 fix: CLI +
+            # scanner to skip the next matching event (CLI +
             # MCP-spawned-daemon paths are the OTHER counter source).
             self._reserve_counter_bump("peer_cap_baseline")
             _otel_span_event("peer.cap.baseline", peer_id, {
@@ -2750,7 +2750,7 @@ class BridgeDaemon:
             )
             return
         if status == "changed":
-            # v0.8.5.6 B8 fix: both the stash and the demote must
+            # v0.8.5.6: both the stash and the demote must
             # succeed before we fire PEER_CAP_SET_CHANGED. Pre-fix,
             # stash/demote failures were silently downgraded to
             # debug logs while the audit event still fired claiming
@@ -3156,7 +3156,7 @@ class BridgeDaemon:
             peer_state.last_seen = time.time()
             if self._capabilities is not None:
                 try:
-                    # v0.8.5.6 B17 fix: validate types up front so
+                    # v0.8.5.6: validate types up front so
                     # downstream code that uses `origin` as a dict key
                     # (TrustStore.get_peer, CapabilityRegistry._remote)
                     # can't be tripped up by a malicious peer sending
@@ -4067,7 +4067,7 @@ class BridgeDaemon:
             except Exception as e:
                 logger.warning("Cleanup loop error: %s", e)
 
-    # v0.8.5.7 B21 fix: single source of truth for event-driven counters.
+    # v0.8.5.7: single source of truth for event-driven counters.
     # The daemon in-process bumps covered events it ORIGINATED, but CLI
     # and MCP-in-a-separate-process paths fire the same audit events
     # without access to daemon.metrics. Rather than have each process
@@ -4104,7 +4104,7 @@ class BridgeDaemon:
         "MSG_REPLAY_CROSS_TRANSPORT": "msg_replay_cross_transport",
         "PEER_REVOKED_LOCAL":         "peer_revoked_local",
         "PEER_STATE_CHANGED":         "peer_state_changed",
-        # v0.8.5.7 B22: pre-existing events that now get Prometheus
+        # v0.8.5.7: pre-existing events that now get Prometheus
         # mirrors via the same scanner path.
         "PEER_PROMOTED":              "peer_promoted",
         "PEER_BLOCKED":               "peer_blocked",
@@ -4162,7 +4162,7 @@ class BridgeDaemon:
         current_inode = st.st_ino
 
         rotated_path = log_path + ".1"
-        # v0.8.5.7 B24: inode change → rotation. Rescue events the
+        # v0.8.5.7: inode change → rotation. Rescue events the
         # scanner hadn't yet read from the file that just became `.1`,
         # then reset offset.
         if (self._audit_counter_inode is not None
@@ -4752,7 +4752,7 @@ class BridgeDaemon:
              "Local operator revoked a pinned peer via CLI (no network-wide propagation)"),
             ("peer_state_changed", "ironmesh_peer_state_changed_total", "counter",
              "Trust-state transitions via operator CLI (covers states other than PROMOTED/BLOCKED)"),
-            # v0.8.5.7 B22 — mirror the pre-existing PEER_PROMOTED /
+            # v0.8.5.7: mirror the pre-existing PEER_PROMOTED /
             # PEER_BLOCKED audit events into Prometheus counters.
             ("peer_promoted", "ironmesh_peer_promoted_total", "counter",
              "Operator promoted a pending peer to trusted (drained any queued messages)"),
@@ -5030,7 +5030,8 @@ class BridgeDaemon:
 
         if clean_path == "/" or clean_path == "/index.html":
             # Serve HTML without auth — the HTML itself is not sensitive
-            body = GUI_HTML.encode()
+            from ironmesh import __version__ as _imv
+            body = GUI_HTML.replace("{{IRONMESH_VERSION}}", f"v{_imv}").encode()
             headers["Content-Type"] = "text/html; charset=utf-8"
             headers["Content-Length"] = str(len(body))
             return websockets.http11.Response(200, "OK", headers, body)
@@ -5150,7 +5151,7 @@ class BridgeDaemon:
                 }))
 
         elif action == "get_history":
-            # v0.8.5.6 B18 fix: clamp `limit` to a sane upper bound.
+            # v0.8.5.6: clamp `limit` to a sane upper bound.
             # Pre-fix, an authenticated GUI client could request
             # `limit=10**9` and force the daemon into a multi-GB SQL
             # SELECT that drove the process to OOM. 5000 is well above

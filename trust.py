@@ -23,7 +23,7 @@ DEFAULT_TRUST_PATH = "~/.ironmesh/known_peers.json"
 
 
 # ---------------------------------------------------------------------------
-# v0.8.5.6 B14 fix: cross-process exclusive lock on the trust file.
+# v0.8.5.6: cross-process exclusive lock on the trust file.
 #
 # Without inter-process locking, concurrent operator actions on the same
 # host (e.g. two `ironmesh trust cap-promote` invocations, or one CLI
@@ -42,7 +42,7 @@ DEFAULT_TRUST_PATH = "~/.ironmesh/known_peers.json"
 # writer can't shred a half-modified file out from under us.
 # ---------------------------------------------------------------------------
 
-# v0.8.5.6 B19 fix: Windows msvcrt.locking is a PROCESS-level lock.
+# v0.8.5.6: Windows msvcrt.locking is a PROCESS-level lock.
 # When two THREADS in one process try to acquire it on the same fd, the
 # OS returns "Resource deadlock avoided" (EDEADLK) because it sees the
 # lock is already held by THIS process — there's no thread granularity.
@@ -69,7 +69,7 @@ def _get_inproc_lock(path: str) -> threading.Lock:
 
 @contextlib.contextmanager
 def _trust_file_lock(path: str):
-    # v0.8.5.6 B19: acquire the in-process lock first so concurrent
+    # v0.8.5.6: acquire the in-process lock first so concurrent
     # threads inside this Python process serialize before contending
     # for the OS file lock. (msvcrt.locking and fcntl.flock are both
     # process-level, not thread-level.)
@@ -132,7 +132,7 @@ def _trust_file_lock(path: str):
             os.close(fd)
         except OSError:
             pass
-        # v0.8.5.6 B19: release the in-process lock LAST so the next
+        # v0.8.5.6: release the in-process lock LAST so the next
         # waiting thread doesn't see a stale OS-lock state.
         inproc.release()
 
@@ -215,7 +215,7 @@ class TrustStore:
         # accept any write (e.g. an opportunistic TOFU pin from a routine
         # peer reconnect), we'd serialize {peers: {}, peers...} on top
         # of the actual file — silently wiping every other pinned peer.
-        # B7 (the catastrophic v0.8.5.6 wipe) was exactly this: a colliding
+        # The catastrophic v0.8.5.6 wipe was exactly this: a colliding
         # process on the same host wrote the file with a different MAC key,
         # and our daemon's next save flattened the file to a single peer.
         # This flag latches True on a MAC mismatch and causes every _save()
@@ -273,7 +273,7 @@ class TrustStore:
                                 len(raw.get("peers", {})) if isinstance(raw, dict) else 0,
                             )
                             self._peers = {}
-                            # v0.8.5.6 B7 fix: lock writes. The on-disk
+                            # v0.8.5.6: lock writes. The on-disk
                             # file was written by a process with a
                             # different MAC key — never overwrite it
                             # blindly, or we'll wipe every pinned peer.
@@ -292,14 +292,14 @@ class TrustStore:
         """Persist current state to disk under a cross-process lock.
 
         Returns True on successful durable write, False if the write
-        was refused (B7 read-only latch) or failed (I/O error,
+        was refused (read-only latch) or failed (I/O error,
         Windows tmp-file collision under contention). Callers that
         mutate then call ``_save()`` should treat ``False`` as "the
         in-memory mutation did not reach disk" and react accordingly
         (e.g. roll back the in-memory state, or surface an error to
         the operator).
         """
-        # v0.8.5.6 B7 fix: refuse to write when the on-disk file has a
+        # v0.8.5.6: refuse to write when the on-disk file has a
         # MAC we don't recognize. Otherwise every pinned peer in that
         # file gets clobbered the next time anyone calls _save().
         if self._readonly_due_to_mac_failure:
@@ -312,7 +312,7 @@ class TrustStore:
                 self.path,
             )
             return False
-        # v0.8.5.6 B14 fix: hold a cross-process flock around the
+        # v0.8.5.6: hold a cross-process flock around the
         # tmp-write + rename. Use a per-process tmp filename so two
         # processes can't trash each other's in-flight tmp file.
         tmp_path = "{}.{}.{}.tmp".format(self.path, os.getpid(), threading.get_ident())
@@ -495,8 +495,8 @@ class TrustStore:
         rec = self._peers.get(node_id)
         if rec is None:
             return False
-        # v0.8.5.6 B8 fix: honor _save()'s return value. If the save
-        # was refused (B7 read-only latch) or failed (disk error),
+        # v0.8.5.6: honor _save()'s return value. If the save
+        # was refused (read-only latch) or failed (disk error),
         # roll back the in-memory mutation and return False so the
         # caller can surface the failure rather than claiming success.
         old_state = rec.get("trust_state")
@@ -681,7 +681,7 @@ class TrustStore:
         MCP / dashboard handler) is responsible for that separate
         action (typically ``set_trust_state(..., "trusted")``).
         """
-        # v0.8.5.6 B14 fix: take the trust file lock and re-read from
+        # v0.8.5.6: take the trust file lock and re-read from
         # disk inside the lock. Without this, two concurrent operator
         # cap-promote calls each load the file, both see pending,
         # both call accept, and both fire PEER_CAP_ACCEPTED audit
@@ -787,7 +787,7 @@ class TrustStore:
             return False
         observed_set = sorted({str(c).strip() for c in (observed_caps or [])
                                if c and str(c).strip()})
-        # v0.8.5.6 B8 fix: honor _save()'s return value. Roll back on
+        # v0.8.5.6: honor _save()'s return value. Roll back on
         # failure so callers can detect it and skip downstream side
         # effects (e.g. the PEER_CAP_SET_CHANGED audit event should
         # NOT fire if the stash didn't reach disk).

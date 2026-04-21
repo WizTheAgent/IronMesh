@@ -72,7 +72,7 @@ class Budget:
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> Optional["Budget"]:
-        # v0.8.5.7 B25 fix: be strict about the input type. A peer
+        # v0.8.5.7: be strict about the input type. A peer
         # sending ``{"budget": "0"}`` or ``{"budget": [1,2,3]}`` used
         # to crash with AttributeError in ``d.get(...)`` because
         # non-dict values weren't guarded. Reject at the boundary.

@@ -74,7 +74,7 @@ and the Prometheus counter
 
 **Meaning:** the daemon observed a cap change but either the stash or
 the trust-state demote didn't reach disk (disk full, permissions issue,
-or — most commonly — the B7 read-only latch tripped because another
+or — most commonly — the read-only latch tripped because another
 process wrote the trust file with a different identity key).
 
 **Triage:**

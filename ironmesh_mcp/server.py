@@ -207,7 +207,7 @@ class IronMeshMCP:
                 with self._pending_lock:
                     slot = self._pending.get(cid)
                 if slot is not None:
-                    # H1: only the peer the request was addressed to may
+                    # Access control: only the peer the request was addressed to may
                     # close out the slot. Without this, any peer that
                     # observes the correlation_id (it travels in plaintext
                     # inside the encrypted envelope, but a buggy/malicious
@@ -477,7 +477,7 @@ class IronMeshMCP:
         consulting connected peers. Returns the input verbatim if it
         already looks like a node_id (32+ hex chars).
 
-        v0.8.5.7 B26 fix: accept any input type; non-string targets
+        v0.8.5.7: accept any input type; non-string targets
         (int, list, dict from malformed MCP args) used to crash
         ``len(target)``. Now they return None cleanly and the caller
         surfaces a "could not resolve" error.
@@ -672,7 +672,7 @@ class IronMeshMCP:
         new_state = "blocked" if want_block else "trusted"
         if not ts.set_trust_state(node_id, new_state):
             return {"error": "set_trust_state returned False"}
-        # v0.8.5.7 B23 fix: fire the audit event so the scanner bumps
+        # v0.8.5.7: fire the audit event so the scanner bumps
         # the matching Prometheus counter and forensic review sees the
         # operator action. Without this, an MCP-driven reject left no
         # audit trail at all.
@@ -828,7 +828,7 @@ class IronMeshMCP:
             "event": threading.Event(),
             "response": None,
             "from": None,
-            # H1: only the peer the request was addressed to may close
+            # Access control: only the peer the request was addressed to may close
             # the slot. Bus listener checks this.
             "expected_peer": node_id,
         }
@@ -1492,7 +1492,7 @@ def main() -> int:
         serve(daemon, loop)
     except KeyboardInterrupt:
         pass
-    # v0.8.5.2-R4: graceful shutdown on stdio EOF. Previously main()
+    # v0.8.5.2: graceful shutdown on stdio EOF. Previously main()
     # only called loop.stop(), which doesn't cancel the many long-
     # running background tasks (heartbeat, cleanup, reconnect,
     # discovery, capability announce, audit rotation, mDNS zeroconf,

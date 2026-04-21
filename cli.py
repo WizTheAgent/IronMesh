@@ -421,7 +421,7 @@ def parse_args():
     return parser.parse_args()
 
 
-# v0.8.5.2-R5: maximum bytes read from a passphrase file. A legitimate
+# v0.8.5.2: maximum bytes read from a passphrase file. A legitimate
 # passphrase is at most a few hundred chars; 4096 is generous and
 # prevents hanging on /dev/urandom or exhausting memory on a huge file.
 _PASSPHRASE_FILE_MAX_BYTES = 4096
@@ -818,7 +818,7 @@ def cmd_trust(args):
     else:
         store = TrustStore(agent_key=keypair.ed25519_secret[:32])
 
-    # v0.8.5.6 T#74: shared audit-log helper for every CLI mutation.
+    # v0.8.5.6: shared audit-log helper for every CLI mutation.
     # Opens lazily so read-only commands don't touch the audit log.
     _audit_cache = {"log": None}
 
@@ -941,7 +941,7 @@ def cmd_trust(args):
     elif trust_cmd == "set-state":
         node_id = args.node_id
         new_state = args.state
-        # v0.8.5.6 T#74: capture the prior state so the audit event
+        # v0.8.5.6: capture the prior state so the audit event
         # records the actual transition. Must peek BEFORE mutating.
         rec = store.get_peer(node_id)
         old_state = rec.get("trust_state") if rec else None
@@ -1094,8 +1094,8 @@ def cmd_trust(args):
         # in one shot for the common "this change is suspicious"
         # response flow.
         from ironmesh.audit import (
-            EVENT_PEER_STATE_CHANGED,
             EVENT_PEER_BLOCKED,
+            EVENT_PEER_STATE_CHANGED,
         )
         targets = []
         if getattr(args, "all", False):

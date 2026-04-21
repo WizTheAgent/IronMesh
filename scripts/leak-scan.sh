@@ -82,6 +82,16 @@ CONTENT_PATTERNS=(
     # Decision-tree shorthand from internal plans
     'RAZOR #?[0-9]+'
     'Path [AB]\b'
+    # Internal bug-tracker codes in comments or prose ("B7 fix:", "B21 fix —",
+    # "B14 regression"). Narrow to "B<digits> <verb>" to avoid false positives
+    # on e.g. bandit "nosec B310", flake8 rule codes, or legitimate identifiers.
+    '(?<!nosec )\bB[0-9]+ (fix|regression|patch(ed)?)\b'
+    # Task-tracker shorthand ("T#74", "T#76").
+    '\bT#[0-9]+\b'
+    # Razor suffixes on version strings ("v0.8.5.2-R5:", "v0.8.5.2-R4:").
+    # Matches the razor tag without catching legitimate release suffixes like
+    # "-rc1" or "-beta".
+    '-R[0-9]+(?=[^a-zA-Z0-9]|$)'
     # Milestone codes — only flag when in a context word ("M0:", "milestone M0",
     # "(M0)", "M0 spike"). Bare "M5 15" in SVG paths is excluded.
     '\bmilestone[s]? M[0-9]\b'
