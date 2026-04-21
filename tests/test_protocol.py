@@ -36,6 +36,43 @@ class TestFrame:
         assert f2.source == f.source
         assert f2.destination == f.destination
 
+    def test_from_json_message_rejects_non_string_msg_id(self):
+        """B15 regression: legacy JSON dispatch path lacked the strict
+        type validation that from_dict got in v0.8.5.2. A peer
+        sending {"msg_id": [1,2,3]} would crash downstream code that
+        assumed msg_id is a string. from_json_message must reject
+        at the boundary, like from_dict does.
+        """
+        import pytest
+        bad_inputs = [
+            {"type": "MSG", "msg_id": [1, 2, 3]},
+            {"type": "MSG", "msg_id": 42},
+            {"type": "MSG", "msg_id": {"x": 1}},
+            {"type": 123},  # non-string type
+            {"type": "MSG", "from": ["not", "a", "string"]},
+            {"type": "MSG", "to": 42},
+            {"type": "MSG", "sequence": -5},
+            {"type": "MSG", "sequence": "not a number"},
+            {"type": "MSG", "ttl": 999},  # > 255
+            {"type": "MSG", "ttl": -1},
+            {"type": "MSG", "hops": [1, 2, 3]},  # non-string hops
+            {"type": "MSG", "hops": "not a list"},
+        ]
+        for bad in bad_inputs:
+            with pytest.raises(ValueError):
+                Frame.from_json_message(bad, b"payload")
+
+    def test_from_json_message_accepts_valid_minimal_input(self):
+        """B15 regression — sanity check the happy path still works."""
+        f = Frame.from_json_message(
+            {"type": "MSG", "from": "alice", "to": "bob"},
+            b"hello",
+        )
+        assert f.msg_type == "MSG"
+        assert f.source == "alice"
+        assert f.destination == "bob"
+        assert f.payload == b"hello"
+
     def test_encrypt_and_deserialize(self, shared_secret):
         f = Frame(msg_type=MessageType.MSG, payload=b"secret data", source="alice")
         binary = f.encrypt_and_serialize(shared_secret)

@@ -10,6 +10,59 @@ import pytest_asyncio
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+# v0.8.5.6 T#76 fix: isolate EVERY test's IronMesh state from the
+# real `~/.ironmesh/` directory. Before this, integration tests like
+# itest-alice / gate-alice / lc-toolkit-smoke spawned `Agent(...)`
+# processes with auto-generated identity keys but DEFAULT trust paths,
+# silently clobbering the real trust file on a developer's box (B7
+# cascade). This autouse session fixture redirects the HOME env var
+# and IronMesh's DEFAULT_* path constants to a temp tree before any
+# test module imports `ironmesh`.
+_TEST_HOME = None
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_ironmesh_state():
+    """Redirect default-path resolution for ~/.ironmesh/* to a temp
+    home, so integration tests that spawn real Agent processes can't
+    poison the developer's / CI host's production trust store, keys
+    file, capabilities cache, routes table, or audit log.
+    """
+    global _TEST_HOME
+    _TEST_HOME = tempfile.mkdtemp(prefix="ironmesh-test-home-")
+    os.makedirs(os.path.join(_TEST_HOME, ".ironmesh"), exist_ok=True)
+    # Win32 honors USERPROFILE for os.path.expanduser("~"); POSIX
+    # uses HOME. Override both to be safe.
+    old_home = os.environ.get("HOME")
+    old_userprofile = os.environ.get("USERPROFILE")
+    os.environ["HOME"] = _TEST_HOME
+    os.environ["USERPROFILE"] = _TEST_HOME
+    # Also expose an explicit IRONMESH_TRUST_PATH env for code paths
+    # that consult it directly (MCP server, CLI).
+    old_trust = os.environ.get("IRONMESH_TRUST_PATH")
+    os.environ["IRONMESH_TRUST_PATH"] = os.path.join(
+        _TEST_HOME, ".ironmesh", "known_peers.json",
+    )
+    try:
+        yield _TEST_HOME
+    finally:
+        # Restore (some CI systems assert on env stability across sessions)
+        for k, v in (
+            ("HOME", old_home),
+            ("USERPROFILE", old_userprofile),
+            ("IRONMESH_TRUST_PATH", old_trust),
+        ):
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        try:
+            import shutil
+            shutil.rmtree(_TEST_HOME, ignore_errors=True)
+        except Exception:
+            pass
+
+
 @pytest.fixture
 def tmp_dir(tmp_path):
     """Provide a temporary directory for test artifacts."""

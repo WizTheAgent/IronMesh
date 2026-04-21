@@ -1531,3 +1531,105 @@ class TestPeerBandwidthThrottle:
         # Peer B still has a fresh bucket
         ok_b = await d._gate_peer_bandwidth("peerB", 1000)
         assert ok_b is True
+
+
+# ---------------------------------------------------------------------------
+# v0.8.5.6: multi-process audit log writer race (B2 from Phase 1 audit)
+# -----------------------------------------------------------------------
+
+class TestAuditMultiWriterLock:
+    """Reproduce + verify the fix for the audit-log multi-process race.
+
+    Before v0.8.5.6, two AuditLog instances on the same file path could
+    each compute their next entry's HMAC against a stale read of the
+    chain tail, then both write their entries — breaking the chain at
+    the intersection. The v0.8.5.6 fix is a sentinel-file lock acquired
+    around each write plus a re-read of the chain tail under the lock.
+    """
+
+    def test_concurrent_writers_preserve_chain(self, tmp_path):
+        """Two AuditLog instances writing to the same path concurrently
+        must produce a verifiable HMAC chain."""
+        from concurrent.futures import ThreadPoolExecutor
+        from ironmesh.audit import AuditLog
+
+        path = str(tmp_path / "audit.log")
+        hmac_key = b"\xaa" * 32
+
+        # Two log instances pointed at the same file (simulates two
+        # processes — each gets its own threading.Lock and its own
+        # cached _last_hmac, so without inter-process locking they'd
+        # race).
+        log_a = AuditLog(path=path, hmac_key=hmac_key)
+        log_b = AuditLog(path=path, hmac_key=hmac_key)
+
+        N = 50  # small enough to keep test fast, large enough to see the race
+        from ironmesh.audit import EVENT_PEER_CONNECT
+
+        def write_burst(log, prefix):
+            for i in range(N):
+                log.log(EVENT_PEER_CONNECT, {
+                    "peer": f"{prefix}-{i:03d}",
+                    "iteration": i,
+                })
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(write_burst, log_a, "a")
+            f2 = pool.submit(write_burst, log_b, "b")
+            f1.result(timeout=30)
+            f2.result(timeout=30)
+
+        # Verify the resulting chain
+        ok, checked, first_invalid = log_a.verify()
+        assert ok, (
+            f"chain broken after concurrent writes: "
+            f"checked={checked}, first_invalid_line={first_invalid}"
+        )
+
+        # Both writers' entries should be present
+        with open(path) as f:
+            lines = [ln for ln in f if ln.strip()]
+        assert len(lines) == 2 * N, f"lost entries: got {len(lines)}, want {2*N}"
+
+    def test_torn_trailing_line_does_not_break_chain(self, tmp_path):
+        """B10 regression: a SIGKILL between f.write() and the OS
+        flush can leave a torn (incomplete or unparseable) line at
+        EOF. _read_last_hmac must walk past it to the previous
+        valid entry — otherwise the next write chains off GENESIS
+        and audit verify reports TAMPER for every entry afterward.
+        """
+        from ironmesh.audit import AuditLog, EVENT_PEER_CONNECT
+
+        path = str(tmp_path / "audit.log")
+        hmac_key = b"\xab" * 32
+        log = AuditLog(path=path, hmac_key=hmac_key)
+        # Write 5 valid entries
+        for i in range(5):
+            log.log(EVENT_PEER_CONNECT, {"peer": f"p{i}"})
+        # Verify clean
+        ok, checked, first_invalid = log.verify()
+        assert ok and checked == 5
+
+        # Simulate a SIGKILL mid-write: append a partial line
+        with open(path, "a") as f:
+            f.write('{"timestamp":1,"event":"PEER_CONNECT","details":{"peer":"torn",')  # truncated, no newline
+
+        # New AuditLog instance picks up the chain — it must skip the
+        # torn line and chain off entry #5
+        log2 = AuditLog(path=path, hmac_key=hmac_key)
+        log2.log(EVENT_PEER_CONNECT, {"peer": "after-recovery"})
+
+        # The verify() call walks line-by-line. Because the torn line
+        # is unparseable JSON, verify itself records it as invalid.
+        # That's the correct historical record. But the NEW write
+        # must produce a valid chain on the lines BEFORE the torn one
+        # plus the recovery line at EOF — i.e. the only invalid line
+        # is the deliberately-torn one, not the recovery line after.
+        with open(path) as f:
+            lines = [ln.strip() for ln in f if ln.strip()]
+        assert len(lines) == 7  # 5 originals + 1 torn + 1 recovery
+        # The recovery line is parseable + carries a valid 64-hex hmac
+        import json as _json
+        last = _json.loads(lines[-1])
+        assert last["details"]["peer"] == "after-recovery"
+        assert isinstance(last.get("hmac"), str) and len(last["hmac"]) == 64

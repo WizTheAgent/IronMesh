@@ -44,6 +44,10 @@ from ironmesh.audit import (
     EVENT_MSG_GATED_DROP,
     EVENT_MSG_GATED_QUEUE,
     EVENT_PEER_BLOCKED,
+    EVENT_PEER_CAP_ACCEPTED,
+    EVENT_PEER_CAP_BASELINE,
+    EVENT_PEER_CAP_BINDING_PARTIAL,
+    EVENT_PEER_CAP_SET_CHANGED,
     EVENT_PEER_CONNECT,
     EVENT_PEER_DROPPED_LONG,
     EVENT_PEER_PROMOTED,
@@ -1405,6 +1409,37 @@ class BridgeDaemon:
             logger.info("Key rotation triggered")
             self._keypair = await rotate_keys(self.keys_path, self.keys_passphrase)
 
+        # v0.8.5.6: silence the websockets-server "did not receive a valid
+        # HTTP request" ERROR that fires every time a peer dials wss://
+        # against our plaintext-ws server (TLS-first fallback). The
+        # peer's second connection succeeds with ws:// and the IronMesh
+        # handshake completes — these errors are cosmetic noise, paired
+        # 1:1 with successful HELLOs in the log. Real WS handshake
+        # failures still reach DEBUG and any unexpected error type still
+        # reaches ERROR, so we don't lose actionable signal.
+        class _SuppressTLSFallbackNoise(logging.Filter):
+            def filter(self, record):
+                if record.levelno != logging.ERROR:
+                    return True
+                msg = record.getMessage()
+                exc = getattr(record, "exc_info", None)
+                exc_text = repr(exc[1]) if exc else ""
+                noise = (
+                    "did not receive a valid HTTP request" in msg
+                    or "did not receive a valid HTTP request" in exc_text
+                    or "InvalidMessage" in exc_text
+                )
+                if noise:
+                    # Re-emit at DEBUG so operators can still inspect them
+                    # under --log-level DEBUG without polluting INFO logs.
+                    logger.debug("websockets WS-upgrade reject (likely "
+                                 "TLS-first fallback): %s", msg)
+                    return False
+                return True
+        logging.getLogger("websockets.server").addFilter(
+            _SuppressTLSFallbackNoise()
+        )
+
         # Initialize audit log with HMAC key derived from identity key
         audit_key = hashlib.sha256(
             self._keypair.ed25519_secret + b"ironmesh-audit-v1"
@@ -1523,9 +1558,16 @@ class BridgeDaemon:
             self._capabilities.load()
         except Exception as e:
             logger.debug("Capability load failed: %s", e)
-        for cap in self.config.capabilities:
-            self._capabilities.advertise_local(cap)
+        # v0.8.5.6 B12 fix: when the operator (CLI / SDK / config)
+        # provides an explicit capability list, treat it as
+        # authoritative. The previous additive pattern
+        # (load + advertise_local-per-cap) merged old persisted caps
+        # into the new set, producing "ghost capabilities" that kept
+        # being announced after a role / model change. set_local
+        # replaces the entire local set so the announce reflects the
+        # current config exactly.
         if self.config.capabilities:
+            self._capabilities.set_local(self.config.capabilities)
             try:
                 self._capabilities.save()
             except Exception:
@@ -1917,10 +1959,19 @@ class BridgeDaemon:
             asyncio.ensure_future(self._flush_pending(peer_id))
 
             # --- STAGE 3: Encrypted Message Loop ---
+            # v0.8.5.6: tag inbound transport so dedup can detect cross-
+            # transport replay attempts.
+            _transport_name = (
+                "rns" if RNSLinkAdapter is not None
+                and isinstance(websocket, RNSLinkAdapter)
+                else "ws"
+            )
             async for raw in websocket:
                 try:
                     self.metrics.bytes_received += len(raw)
-                    await self._handle_message(peer_id, raw)
+                    await self._handle_message(
+                        peer_id, raw, transport=_transport_name,
+                    )
                 except (json.JSONDecodeError, ValueError) as e:
                     # Audit M-13: expected parse/validation errors get a
                     # narrow warning. Unexpected exceptions fall through
@@ -2470,6 +2521,205 @@ class BridgeDaemon:
         return out
 
     # ------------------------------------------------------------------
+    # v0.8.5.6: capability-set binding
+    # ------------------------------------------------------------------
+
+    def _open_trust_store(self):
+        """Open a fresh TrustStore bound to this daemon's identity key.
+
+        Mirrors the pattern used by the other trust-touching methods in
+        this class — TrustStore is constructed on demand rather than
+        held as an instance attribute, because its on-disk state is the
+        single source of truth and another daemon (or the operator CLI)
+        may have mutated it since the last call. Returns ``None`` if
+        the keypair isn't loaded yet (early startup).
+        """
+        if self._keypair is None:
+            return None
+        try:
+            from ironmesh.trust import TrustStore
+            mac_key = self._keypair.ed25519_secret[:32]
+            return TrustStore(agent_key=mac_key, path=self.trust_path)
+        except Exception as exc:
+            logger.debug("_open_trust_store failed: %s", exc)
+            return None
+
+    def _handle_cap_observation(self, peer_id: str, result: dict,
+                                trust_store=None) -> None:
+        """React to a TrustStore.observe_capabilities result.
+
+        The three non-error cases:
+            - first-observation: log a baseline audit event; no state change
+            - match: no action
+            - changed: stash the pending set, demote the peer to
+              pending-cap-change, emit PEER_CAP_SET_CHANGED
+
+        ``trust_store`` is the same store used to compute ``result`` —
+        passed in to avoid reopening + re-MAC-verifying on the hot path.
+        Falls back to opening a fresh one if not supplied.
+        """
+        status = result.get("status")
+        if status == "first-observation":
+            if self._audit:
+                try:
+                    self._audit.log(EVENT_PEER_CAP_BASELINE, {
+                        "peer": peer_id,
+                        "capability_hash": result.get("hash"),
+                        "capability_count": len(result.get("set") or []),
+                    })
+                except Exception:
+                    pass
+            return
+        if status == "match":
+            return
+        if status == "pending-match":
+            # Peer is already demoted and just re-announced the same
+            # pending set. Stay silent — the change was already recorded.
+            return
+        if status == "reverted":
+            # Peer reverted to the accepted baseline while in
+            # pending-cap-change. Trust store has already cleared the
+            # pending stash. We don't auto-promote (that's an operator
+            # decision — they may want to investigate the flap) but we
+            # DO surface the revert in the audit log.
+            if self._audit:
+                try:
+                    self._audit.log(EVENT_PEER_CAP_SET_CHANGED, {
+                        "peer": peer_id,
+                        "old_hash": result.get("cleared_pending_hash"),
+                        "new_hash": result.get("hash"),
+                        "added": [],
+                        "removed": [],
+                        "trust_state_effective":
+                            "pending-cap-change (reverted to baseline)",
+                        "note": "peer reverted to previously-accepted "
+                                "capability set; operator action still "
+                                "required to re-promote",
+                    })
+                except Exception:
+                    pass
+            logger.info(
+                "Peer %s reverted to baseline capability set — "
+                "pending stash cleared, trust state unchanged",
+                peer_id,
+            )
+            return
+        if status == "changed":
+            # v0.8.5.6 B8 fix: both the stash and the demote must
+            # succeed before we fire PEER_CAP_SET_CHANGED. Pre-fix,
+            # stash/demote failures were silently downgraded to
+            # debug logs while the audit event still fired claiming
+            # "trust_state_effective: pending-cap-change" — leaving
+            # an operator following the audit trail to later find
+            # that cap-promote returns "no pending capability change"
+            # because the stash never reached disk. Now we propagate
+            # failures and fire a distinct PEER_CAP_BINDING_PARTIAL
+            # event so the audit trail stays truthful.
+            ts = trust_store if trust_store is not None else self._open_trust_store()
+            stashed = False
+            demoted = False
+            demote_needed = False
+            if ts is not None:
+                try:
+                    stashed = bool(ts.stash_pending_capability_change(
+                        peer_id, result.get("new_set") or [],
+                    ))
+                except Exception as exc:
+                    logger.warning(
+                        "stash_pending_capability_change FAILED for %s: %s",
+                        peer_id, exc,
+                    )
+                try:
+                    current = ts.get_trust_state(peer_id)
+                    demote_needed = (current != "pending-cap-change")
+                    if demote_needed:
+                        demoted = bool(ts.set_trust_state(
+                            peer_id, "pending-cap-change",
+                        ))
+                    else:
+                        # Already pending-cap-change; no demote needed.
+                        demoted = True
+                except Exception as exc:
+                    logger.warning(
+                        "trust-state demote FAILED for %s: %s",
+                        peer_id, exc,
+                    )
+            fully_applied = stashed and demoted
+            event = (EVENT_PEER_CAP_SET_CHANGED if fully_applied
+                     else EVENT_PEER_CAP_BINDING_PARTIAL)
+            if self._audit:
+                try:
+                    self._audit.log(event, {
+                        "peer": peer_id,
+                        "old_hash": result.get("old_hash"),
+                        "new_hash": result.get("new_hash"),
+                        "added": list(result.get("added") or []),
+                        "removed": list(result.get("removed") or []),
+                        "trust_state_effective":
+                            "pending-cap-change" if fully_applied
+                            else "unchanged (persistence failure)",
+                        "stashed": stashed,
+                        "demoted": demoted,
+                    })
+                except Exception:
+                    pass
+            if fully_applied:
+                logger.warning(
+                    "Peer %s demoted to pending-cap-change: "
+                    "+%d cap(s), -%d cap(s)",
+                    peer_id, len(result.get("added") or []),
+                    len(result.get("removed") or []),
+                )
+            else:
+                logger.error(
+                    "Peer %s cap change detected but not fully applied "
+                    "(stashed=%s, demoted=%s). Trust state unchanged. "
+                    "This typically indicates a disk / lock error — "
+                    "check trust store integrity and retry.",
+                    peer_id, stashed, demoted,
+                )
+
+    async def accept_pending_cap_change(self, node_id: str) -> dict:
+        """Operator action: accept the pending capability-set change for
+        a peer that was demoted to pending-cap-change. Re-promotes the
+        peer to the prior trust state (or "trusted" if none known) and
+        records the new capability baseline.
+
+        Returns a small status dict suitable for CLI / MCP / dashboard
+        surface. Raises ValueError if the peer isn't actually in
+        pending-cap-change.
+        """
+        ts = self._open_trust_store()
+        if ts is None:
+            return {"ok": False, "error": "trust store unavailable"}
+        rec = ts.get_peer(node_id)
+        if rec is None:
+            return {"ok": False, "error": "unknown peer"}
+        current_state = ts.get_trust_state(node_id)
+        if current_state != "pending-cap-change":
+            return {"ok": False, "error": f"peer is in state {current_state}"}
+        if rec.get("capability_hash_pending") is None:
+            return {"ok": False, "error": "no pending capability change"}
+        # Accept the pending set as the new baseline
+        old_hash = rec.get("capability_hash")
+        new_hash = rec.get("capability_hash_pending")
+        accepted = ts.accept_capability_change(node_id)
+        if not accepted:
+            return {"ok": False, "error": "accept_capability_change returned False"}
+        ts.set_trust_state(node_id, "trusted")
+        if self._audit:
+            try:
+                self._audit.log(EVENT_PEER_CAP_ACCEPTED, {
+                    "peer": node_id,
+                    "old_hash": old_hash,
+                    "new_hash": new_hash,
+                    "trust_state_effective": "trusted",
+                })
+            except Exception:
+                pass
+        return {"ok": True, "old_hash": old_hash, "new_hash": new_hash}
+
+    # ------------------------------------------------------------------
     # TOFU (Trust-On-First-Use)
     # ------------------------------------------------------------------
 
@@ -2546,11 +2796,15 @@ class BridgeDaemon:
     # Message handling (encrypted)
     # ------------------------------------------------------------------
 
-    async def _handle_message(self, peer_id: str, raw):
+    async def _handle_message(self, peer_id: str, raw, transport: str = "ws"):
         """Handle an incoming message from a peer.
 
         Accepts both binary frames (preferred) and legacy JSON (backward compat).
         Binary frames hide all metadata inside the encrypted envelope.
+
+        ``transport`` (v0.8.5.6) tags the inbound transport so the dedup
+        cache can detect cross-transport replay attempts. The WebSocket
+        path passes ``"ws"``; the Reticulum path passes ``"rns"``.
         """
         peer_state = self.peers.get(peer_id)
         if not peer_state or not peer_state.session_key:
@@ -2572,17 +2826,24 @@ class BridgeDaemon:
 
         # Detect binary vs JSON wire format
         if isinstance(raw, bytes) and len(raw) >= ew_protocol.Frame.HEADER_SIZE and raw[:2] == ew_protocol.Frame.MAGIC:
-            return await self._handle_binary_frame(peer_id, raw, peer_state)
+            return await self._handle_binary_frame(peer_id, raw, peer_state,
+                                                    transport=transport)
         elif isinstance(raw, bytes):
             try:
                 raw = raw.decode("utf-8")
             except UnicodeDecodeError:
                 logger.warning("Unrecognized binary data from %s — dropping", peer_id)
                 return
-        return await self._handle_json_message(peer_id, raw, peer_state)
+        return await self._handle_json_message(peer_id, raw, peer_state,
+                                                transport=transport)
 
-    async def _handle_binary_frame(self, peer_id: str, raw: bytes, peer_state):
-        """Handle a binary wire-format frame (preferred path)."""
+    async def _handle_binary_frame(self, peer_id: str, raw: bytes, peer_state,
+                                    transport: str = "ws"):
+        """Handle a binary wire-format frame (preferred path).
+
+        ``transport`` (v0.8.5.6) propagates to the dedup cache for
+        cross-transport replay detection.
+        """
         if not peer_state.identity_public:
             logger.warning("Cannot verify binary frame from %s — no identity key", peer_id)
             return
@@ -2609,10 +2870,14 @@ class BridgeDaemon:
             return
 
         # Dispatch to common handler
-        await self._dispatch_message(peer_id, peer_state, frame)
+        await self._dispatch_message(peer_id, peer_state, frame, transport=transport)
 
-    async def _handle_json_message(self, peer_id: str, raw: str, peer_state):
-        """Handle a legacy JSON message (backward compat)."""
+    async def _handle_json_message(self, peer_id: str, raw: str, peer_state,
+                                    transport: str = "ws"):
+        """Handle a legacy JSON message (backward compat).
+
+        ``transport`` (v0.8.5.6) propagates to the dedup cache.
+        """
         # Parse the incoming message
         msg = json.loads(raw)
         msg_id = msg.get("msg_id", str(uuid.uuid4()))
@@ -2662,10 +2927,11 @@ class BridgeDaemon:
         frame = ew_protocol.Frame.from_json_message(msg, payload)
         frame.sequence = sequence
         frame.timestamp = timestamp
-        await self._dispatch_message(peer_id, peer_state, frame)
+        await self._dispatch_message(peer_id, peer_state, frame, transport=transport)
 
     async def _dispatch_message(self, peer_id: str, peer_state,
-                                frame: "ew_protocol.Frame"):
+                                frame: "ew_protocol.Frame",
+                                transport: str = "ws"):
         """Common message dispatch — shared by binary frame and JSON paths.
 
         Args:
@@ -2709,10 +2975,42 @@ class BridgeDaemon:
             peer_state.last_seen = time.time()
             if self._capabilities is not None:
                 try:
+                    # v0.8.5.6 B17 fix: validate types up front so
+                    # downstream code that uses `origin` as a dict key
+                    # (TrustStore.get_peer, CapabilityRegistry._remote)
+                    # can't be tripped up by a malicious peer sending
+                    # `{"origin": [1,2,3], "capabilities": [...]}`.
+                    if not isinstance(payload, (bytes, bytearray, str)):
+                        return
+                    if isinstance(payload, (bytes, bytearray)) and \
+                            len(payload) > 1_048_576:
+                        logger.warning(
+                            "CAPABILITY_ANNOUNCE from %s too large: %d bytes",
+                            peer_id, len(payload),
+                        )
+                        return
                     data = json.loads(payload)
+                    if not isinstance(data, dict):
+                        return
                     origin = data.get("origin", peer_id)
+                    if not isinstance(origin, str) or not origin:
+                        return
                     caps = data.get("capabilities", [])
-                    if isinstance(caps, list) and origin != self.node_id:
+                    if not isinstance(caps, list):
+                        return
+                    # Drop non-string / empty cap tokens before letting
+                    # them reach the registry. Cap a sanity-bound on
+                    # the number of caps to limit per-announce work.
+                    caps = [c for c in caps
+                            if isinstance(c, str) and c]
+                    if len(caps) > 1024:
+                        logger.warning(
+                            "CAPABILITY_ANNOUNCE from %s claims %d "
+                            "caps; truncating to 1024",
+                            peer_id, len(caps),
+                        )
+                        caps = caps[:1024]
+                    if origin != self.node_id:
                         delta = self._capabilities.learn_remote(origin, caps)
                         if delta and self._audit:
                             try:
@@ -2722,6 +3020,26 @@ class BridgeDaemon:
                                 })
                             except Exception:
                                 pass
+                        # v0.8.5.6: bind the observed capability set to the
+                        # origin peer's pinned trust record. If it differs
+                        # from the last-accepted baseline, demote the peer
+                        # to pending-cap-change and emit an audit event.
+                        # Only do this for peers that are already pinned
+                        # (i.e. we've completed TOFU with them) — otherwise
+                        # there's no trust record to bind against.
+                        if isinstance(caps, list):
+                            try:
+                                ts = self._open_trust_store()
+                                if ts is not None and ts.get_peer(origin) is not None:
+                                    result = ts.observe_capabilities(origin, caps)
+                                    self._handle_cap_observation(
+                                        origin, result, trust_store=ts,
+                                    )
+                            except Exception as e:
+                                logger.debug(
+                                    "cap-binding observe failed for %s: %s",
+                                    origin, e,
+                                )
                 except Exception as e:
                     logger.debug("Bad CAPABILITY_ANNOUNCE from %s: %s", peer_id, e)
             return
@@ -2734,7 +3052,9 @@ class BridgeDaemon:
                 and self._mesh is not None):
             peer_state.last_seen = time.time()
             try:
-                await self._mesh.relay_message(frame, from_peer=peer_id)
+                await self._mesh.relay_message(
+                    frame, from_peer=peer_id, transport=transport,
+                )
             except Exception as e:
                 logger.warning("Relay failed for %s -> %s: %s",
                                frame.source, frame.destination, e)
@@ -3421,10 +3741,18 @@ class BridgeDaemon:
         # once the message loop ended, which blocked the reconnect loop
         # (which skips peers not in OFFLINE state).
         try:
+            # v0.8.5.6: tag inbound transport.
+            _transport_name = (
+                "rns" if RNSLinkAdapter is not None
+                and isinstance(ws, RNSLinkAdapter)
+                else "ws"
+            )
             async for raw in ws:
                 try:
                     self.metrics.bytes_received += len(raw)
-                    await self._handle_message(peer_id, raw)
+                    await self._handle_message(
+                        peer_id, raw, transport=_transport_name,
+                    )
                 except Exception as e:
                     logger.warning("Error from %s: %s", peer_id, e)
         finally:
@@ -4449,8 +4777,24 @@ class BridgeDaemon:
                 }))
 
         elif action == "get_history":
+            # v0.8.5.6 B18 fix: clamp `limit` to a sane upper bound.
+            # Pre-fix, an authenticated GUI client could request
+            # `limit=10**9` and force the daemon into a multi-GB SQL
+            # SELECT that drove the process to OOM. 5000 is well above
+            # any UI's actual paging needs and bounds peak memory at
+            # a few MB worth of message rows.
             peer_id = cmd.get("peer_id")
-            limit = cmd.get("limit", 50)
+            if peer_id is not None and not isinstance(peer_id, str):
+                await websocket.send(json.dumps({
+                    "type": "send_error",
+                    "error": "peer_id must be a string",
+                }))
+                return
+            try:
+                limit = int(cmd.get("limit", 50))
+            except (TypeError, ValueError):
+                limit = 50
+            limit = max(1, min(limit, 5000))
             try:
                 messages = await self._db.get_messages(peer_id=peer_id, limit=limit)
                 await websocket.send(json.dumps({

@@ -5,6 +5,219 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.5.6] — Trust binding (capability-set + cross-transport replay)
+
+Patch release on top of v0.8.5.5. No protocol or schema changes;
+every v0.8.x peer stays interoperable. Default behavior unchanged for
+existing deployments — the new audit events fire when relevant
+conditions are met, and existing `known_peers.json` files auto-migrate
+on first load.
+
+Closes two security gaps surfaced during external security review:
+authenticated peers retaining over-privileged state across reconnects
+with changed capability sets, and silent cross-transport replay drops.
+
+### Added
+
+- **Capability-set binding in the pending-trust gate.** New trust-store
+  field `capability_hash` (SHA-256 over a canonical serialization of
+  the peer's advertised capability set). On reconnect, if the observed
+  hash differs from the stored baseline, the peer is auto-demoted to a
+  new `pending-cap-change` trust state and inbound messages queue at
+  the daemon until an operator re-promotes. See
+  `docs/TRUST_BINDING.md`.
+- **Cross-transport replay detection.** `DedupCache` gains
+  `check_and_add_with_transport(source, msg_id, transport)`. When a
+  duplicate arrives via a *different* transport than the original
+  (e.g. WebSocket then Reticulum/LoRa), the new
+  `MSG_REPLAY_CROSS_TRANSPORT` audit event fires before the drop.
+  Operators get a signal where there used to be silence.
+- **Four new audit event types** in `audit.py`:
+  `PEER_CAP_SET_CHANGED`, `PEER_CAP_BASELINE`, `PEER_CAP_ACCEPTED`,
+  `MSG_REPLAY_CROSS_TRANSPORT`. All HMAC-chained with the existing
+  audit log.
+- **Operator surface (CLI):**
+  - `ironmesh trust cap-promote <node_id>` (or `--all`) — accept
+    pending capability change and re-promote
+  - `ironmesh trust list-cap-pending` — list peers in
+    `pending-cap-change` with the cap diff
+  - `ironmesh trust cap-diff <node_id>` — show baseline vs pending
+    capability sets
+  - `ironmesh trust set-state` accepts the new
+    `pending-cap-change` value
+- **Operator surface (MCP):** two new tools — total grows from 21 to
+  23.
+  - `ironmesh_pending_cap_changes` — list peers in
+    `pending-cap-change` with diff
+  - `ironmesh_cap_promote_peer` — accept the change and re-promote
+- **Operator surface (programmatic):** `BridgeDaemon.accept_pending_
+  cap_change(node_id)` for in-process operator code that bypasses
+  CLI/MCP.
+- **`docs/TRUST_BINDING.md`** — threat model, what v0.8.5.6 covers,
+  operator surface walkthrough.
+- **`docs/TRUST_BINDING_WIRE_v0.9.md`** — full design for the
+  three wire-protocol extensions queued for v0.9 (deterministic
+  session ID, rolling transcript hash, reconnect continuity
+  challenge). Backwards-compat strategy + HELLO extension
+  negotiation documented.
+- **23 new tests** in `tests/test_trust_binding.py`. Includes
+  Hypothesis fuzz tests proving the canonical capability hash is
+  stable across reordering and duplication for any sequence of
+  capability tokens.
+
+### Changed
+
+- **`TrustStore.set_trust_state`** and **`pin_peer`** now accept
+  `pending-cap-change` as a valid state.
+- **`TrustStore.list_by_trust_state`** rows now include
+  `capability_hash` and `capability_set` fields.
+- **Bridge `_handle_message` / `_handle_binary_frame` /
+  `_handle_json_message` / `_dispatch_message`** thread a
+  `transport` string through the dispatch chain so the dedup cache
+  can tag inbound frames with their originating transport
+  (`"ws"` or `"rns"`).
+- **`MeshRouter.relay_message`** accepts an optional `transport`
+  argument; when supplied, uses the new transport-aware dedup path.
+  Existing callers that don't pass it are unaffected (legacy dedup
+  preserved).
+
+### Migration
+
+Existing `known_peers.json` trust files don't have the
+`capability_hash` field. On first load after upgrade, entries
+without the field get `capability_hash: null`. The next successful
+handshake with each peer records the observed hash as the baseline
+(treating this as TOFU-for-capabilities, mirroring the existing
+TOFU-for-identity pattern). No operator action is required to
+upgrade. Security improvement engages from the next capability
+change forward.
+
+### Fixed
+
+The release-preparation audit — static code review, protocol fuzz,
+concurrent-operator race, SIGKILL chaos, and an extended live-mesh
+soak — identified and fixed nineteen bugs. Most were pre-existing
+defects in IronMesh; a few landed with the new cap-binding code and
+ship fixed in the same release.
+
+**Critical:**
+
+- Trust store could be silently wiped when the on-disk MAC did not
+  verify (e.g. a colliding process on the same host). `TrustStore`
+  now latches read-only on MAC mismatch and refuses to save, so a
+  foreign writer can no longer cause the production daemon to blow
+  away every pinned peer on its next save.
+- `save_keys()` is now fully atomic (tmp + `fsync` + rename). The
+  prior `open(path, "w")` pattern could leave `keys.json` truncated
+  if the process was killed mid-write, making the daemon's identity
+  unrecoverable.
+
+**High:**
+
+- Capability-binding wire-in used a stale attribute reference and
+  would raise `AttributeError` on every `CAPABILITY_ANNOUNCE` from
+  a pinned peer, silently disabling the entire feature. A new
+  helper constructs the trust store ad-hoc — matching the pattern
+  used elsewhere in the daemon.
+- Audit-log HMAC chain could be corrupted when multiple processes
+  on the same host shared one audit file. A cross-platform
+  sentinel-file exclusive lock now wraps every write, plus a
+  chain-tail re-read under the lock in case the cached in-memory
+  tail is stale.
+- `TrustStore._save()` had no inter-process lock. On Windows,
+  concurrent operator actions collided on a shared `<path>.tmp`
+  filename (WinError 32) and silently lost writes, while
+  `accept_capability_change` returned True regardless of whether
+  the save reached disk. Now layered with a thread + flock lock,
+  per-pid + per-thread tmp filenames, and `_save()` propagates its
+  success bit to callers so mutating methods can roll back and
+  report failure honestly.
+
+**Medium:**
+
+- Duplicate `PEER_CAP_SET_CHANGED` audit events fired every ~30s
+  while a peer sat in `pending-cap-change` with an unchanged
+  pending set; a new `pending-match` status keeps the handler
+  silent on re-announce.
+- Pending-cap-change stash was not cleared when a peer reverted to
+  its accepted baseline, so a later operator acceptance could
+  promote stale data.
+- CLI `trust cap-promote` accepted pending changes without
+  emitting `PEER_CAP_ACCEPTED`. Now fires the event via a shared
+  CLI audit helper with an `actor: "cli"` marker.
+- Cap-binding handler swallowed stash / demote failures silently
+  while still firing `PEER_CAP_SET_CHANGED`, lying about pending
+  state. New `PEER_CAP_BINDING_PARTIAL` event distinguishes "change
+  detected + applied" from "change detected + persistence failed".
+- `DedupCache.cleanup_expired` iterated without holding the cache
+  lock, racing with concurrent inbound-frame adders.
+- Audit log `_write_entry` lacked `fsync` and leading-newline
+  recovery; a SIGKILL between write and flush could leave a torn
+  line that the next reader would concatenate onto. Fixed with a
+  single `os.write` under the lock, `fsync`, and a leading-newline
+  prepend when the prior write didn't terminate.
+- `routes.json` and `capabilities.json` saved via non-atomic
+  truncate+write; SIGKILL mid-write emptied the files. Both now
+  use tmp + `fsync` + rename.
+- "Ghost capabilities" after a role change: the bridge called
+  `CapabilityRegistry.load()` then `advertise_local()` per config
+  cap, producing the union of persisted + configured caps. New
+  `set_local(caps)` replaces the entire local set when config is
+  authoritative.
+- `Frame.from_json_message` lacked the strict type validation that
+  `from_dict` received in v0.8.5.2; a peer sending
+  `{"msg_id": [1,2,3]}` could crash downstream code.
+- `ROUTE_ANNOUNCE` and `CAPABILITY_ANNOUNCE` handlers didn't
+  validate that string-typed fields (`destination`, `origin`, cap
+  tokens) were actually strings. Both now reject non-string or
+  oversized input at the boundary.
+- Dashboard `get_history` accepted an unbounded `limit` argument;
+  now clamped to `[1, 5000]` and `peer_id` must be a string.
+- Trust store lock had no thread granularity (`msvcrt.locking` and
+  `fcntl.flock` are process-level); concurrent threads in a single
+  daemon process collided. A process-wide `threading.Lock` per
+  canonical path now layers over the file lock.
+
+**Low:**
+
+- `websockets.server` ERROR-level "did not receive a valid HTTP
+  request" noise from peers' TLS-first dial fallback is now
+  filtered (re-emitted at DEBUG for operators who want it).
+
+**Audit-coverage follow-ups:**
+
+- CLI `trust revoke` and `trust set-state` now emit audit events
+  (`PEER_REVOKED_LOCAL`, `PEER_STATE_CHANGED`, or the existing
+  `PEER_PROMOTED` / `PEER_BLOCKED` for the matching states) via a
+  shared helper. Every CLI-driven trust mutation now leaves an
+  audit trail with `actor: "cli"`.
+- Test-infrastructure isolation: a new autouse session fixture in
+  `tests/conftest.py` redirects `HOME`, `USERPROFILE`, and
+  `IRONMESH_TRUST_PATH` to a per-session temp directory before any
+  test module loads `ironmesh`. Integration tests that spawn real
+  `Agent(...)` processes with auto-generated identity keys can no
+  longer collide with a developer's or CI host's production trust
+  store.
+
+New audit event types introduced by this release (in addition to
+the four documented above): `PEER_CAP_BINDING_PARTIAL`,
+`PEER_REVOKED_LOCAL`, `PEER_STATE_CHANGED`.
+
+### Verified
+
+- pytest: 718 passed, 2 skipped, 1 xpassed (full unit suite;
+  integration-only tests excluded because they require a live mesh)
+- Property-based fuzz of the binary frame deserializer (5000 random
+  / corrupted inputs): zero unhandled exceptions
+- Concurrent-operator stress (2000 threads × 20 peers): exactly 1
+  winner per peer, no MAC corruption, completes in under 3 seconds
+- X25519 small-order-point rejection: all 7 known small-order
+  representations rejected by the underlying libsodium binding
+- Every MAC / signature comparison uses `hmac.compare_digest`
+  (constant-time)
+- `ruff check`: clean across all touched files
+- `scripts/leak-scan.sh --all`: clean
+
 ## [0.8.5.5] — Big-batch quality-of-life patch
 
 Patch release on top of v0.8.5.4. No protocol or schema changes;

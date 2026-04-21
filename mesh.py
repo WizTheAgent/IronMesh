@@ -38,6 +38,7 @@ from ironmesh.audit import (
     EVENT_DUPLICATE_DROPPED,
     EVENT_MESH_PARTITION_SUSPECTED,
     EVENT_MESSAGE_RELAYED,
+    EVENT_MSG_REPLAY_CROSS_TRANSPORT,
     EVENT_NO_ROUTE,
     EVENT_ROUTE_ANNOUNCED,
     EVENT_ROUTE_EXPIRED,
@@ -195,12 +196,24 @@ class RoutingTable:
         }
 
     def save(self, path: str, hmac_key: bytes) -> None:
+        # v0.8.5.6 B11 fix: atomic write via temp + rename so a
+        # SIGKILL / power loss between truncate and write can't
+        # leave an empty routes.json (which wiped every learned
+        # route on the next daemon start). Mirrors the pattern in
+        # trust._save.
         path = os.path.expanduser(path)
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         body = json.dumps(self.to_serializable(), separators=(",", ":"), sort_keys=True)
         mac = hmac.new(hmac_key, body.encode("utf-8"), hashlib.sha256).hexdigest()
-        with open(path, "w") as f:
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w") as f:
             json.dump({"hmac": mac, "body": body}, f)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except (OSError, AttributeError):
+                pass
+        os.replace(tmp_path, path)
 
     def load(self, path: str, hmac_key: bytes,
              refresh_ttl: float = 30.0) -> bool:
@@ -320,19 +333,108 @@ class DedupCache:
             self._add_locked(source, msg_id, ts)
             return False
 
+    def check_and_add_with_transport(
+        self, source: str, msg_id: str, transport: str,
+        now: Optional[float] = None,
+    ) -> dict:
+        """v0.8.5.6 — atomic test-and-add with transport tracking.
+
+        Returns a result dict:
+
+            {"duplicate": False}
+                — New entry; caller should process the frame.
+
+            {"duplicate": True,
+             "original_transport": <str>,
+             "this_transport": <str>,
+             "cross_transport": <bool>,
+             "time_delta_s": <float>}
+                — Duplicate. ``cross_transport`` is True when the same
+                  (source, msg_id) was first seen on a *different*
+                  transport than ``transport``. Caller should drop the
+                  frame either way and, if ``cross_transport`` is True,
+                  emit the ``MSG_REPLAY_CROSS_TRANSPORT`` audit event.
+
+        Existing ``check_and_add`` callers are unaffected — they don't
+        track transport and remain backwards-compatible.
+
+        Internal storage: each bucket entry is now a tuple
+        ``(timestamp, transport)``. Old-format bucket entries (bare
+        ``float``) are still readable; the transport is reported as
+        ``None`` for them.
+        """
+        ts = now if now is not None else time.time()
+        with self._lock:
+            bucket = self._sources.get(source)
+            if bucket and msg_id in bucket:
+                stored = bucket[msg_id]
+                if isinstance(stored, tuple):
+                    original_ts, original_transport = stored
+                else:
+                    # Legacy entry from check_and_add (bare float).
+                    original_ts, original_transport = stored, None
+                cross = (original_transport is not None
+                         and original_transport != transport)
+                return {
+                    "duplicate": True,
+                    "original_transport": original_transport,
+                    "this_transport": transport,
+                    "cross_transport": cross,
+                    "time_delta_s": max(0.0, ts - original_ts),
+                }
+            self._add_locked_with_transport(source, msg_id, ts, transport)
+            return {"duplicate": False}
+
+    def _add_locked_with_transport(
+        self, source: str, msg_id: str, ts: float, transport: str,
+    ) -> None:
+        """Lock-free add that records the originating transport.
+
+        Caller MUST hold ``self._lock``. Storage shape: tuple
+        ``(timestamp, transport)`` for transport-aware adds; bare
+        ``float`` for legacy ``add`` / ``_add_locked`` callers.
+        """
+        bucket = self._sources.get(source)
+        if bucket is None:
+            bucket = OrderedDict()
+            self._sources[source] = bucket
+        else:
+            self._sources.move_to_end(source)
+
+        bucket[msg_id] = (ts, transport)
+        bucket.move_to_end(msg_id)
+
+        while len(bucket) > self._per_source_max:
+            bucket.popitem(last=False)
+        while len(self._sources) > self._sources_max:
+            self._sources.popitem(last=False)
+
     def cleanup_expired(self, now: Optional[float] = None) -> int:
+        # v0.8.5.6: must hold self._lock for the entire scan + delete pass.
+        # Pre-fix, cleanup_expired iterated self._sources WITHOUT the lock
+        # while every other mutator (add / check_and_add /
+        # check_and_add_with_transport) took the lock. Concurrent frame
+        # arrival could mutate the OrderedDict mid-iteration, raising
+        # "dict changed size during iteration" or skipping entries.
         ts = now if now is not None else time.time()
         removed = 0
-        empty_sources = []
-        for source, bucket in self._sources.items():
-            stale = [k for k, v in bucket.items() if ts - v > self._ttl]
-            for k in stale:
-                bucket.pop(k, None)
-                removed += 1
-            if not bucket:
-                empty_sources.append(source)
-        for source in empty_sources:
-            self._sources.pop(source, None)
+        with self._lock:
+            empty_sources = []
+            for source, bucket in self._sources.items():
+                # Bucket values may be bare ``float`` (legacy add path) or
+                # ``(float, transport)`` tuples (v0.8.5.6 transport-aware path).
+                stale = []
+                for k, v in bucket.items():
+                    stored_ts = v[0] if isinstance(v, tuple) else v
+                    if ts - stored_ts > self._ttl:
+                        stale.append(k)
+                for k in stale:
+                    bucket.pop(k, None)
+                    removed += 1
+                if not bucket:
+                    empty_sources.append(source)
+            for source in empty_sources:
+                self._sources.pop(source, None)
         return removed
 
     def size(self) -> int:
@@ -651,12 +753,21 @@ class MeshRouter:
 
         learned = 0
         for entry in routes:
+            # v0.8.5.6 B16 fix: bound + validate every per-entry field
+            # before letting it reach add_route (which uses ``dst`` as
+            # a dict key — non-hashable values would crash the whole
+            # handler). Also enforce a sane upper bound on the route
+            # list to limit per-announce work.
+            if not isinstance(entry, dict):
+                continue
             try:
                 dst = entry.get("destination")
                 cost = int(entry.get("cost", INFINITY_COST))
             except Exception:
                 continue
-            if not dst or dst == self.daemon.node_id:
+            if not isinstance(dst, str) or not dst:
+                continue
+            if dst == self.daemon.node_id:
                 continue
             # Routes via this neighbor cost +1
             new_cost = cost + 1
@@ -679,8 +790,18 @@ class MeshRouter:
 
     # ----- relay -----
 
-    async def relay_message(self, frame, from_peer: str) -> bool:
-        """Forward a frame whose destination is not us. Returns True on success."""
+    async def relay_message(self, frame, from_peer: str,
+                            transport: Optional[str] = None) -> bool:
+        """Forward a frame whose destination is not us. Returns True on success.
+
+        ``transport`` (v0.8.5.6) is the name of the transport that
+        delivered this frame to us — typically ``"ws"`` or ``"rns"``.
+        When supplied, the dedup cache tracks origin transport per
+        msg_id and emits the ``MSG_REPLAY_CROSS_TRANSPORT`` audit event
+        when a duplicate arrives via a different transport than the
+        original. Callers that don't know or don't care leave it as
+        ``None`` and the legacy dedup behavior is preserved.
+        """
         if self._mode != "relay":
             # passive mode silently drops
             return False
@@ -700,11 +821,34 @@ class MeshRouter:
 
         # Dedup — atomic check-and-add so two concurrent deliveries of
         # the same frame can't both pass the dup check (v0.8.3 audit).
-        if self.dedup.check_and_add(frame.source, frame.msg_id):
-            self._audit_log(EVENT_DUPLICATE_DROPPED, {
-                "source": frame.source, "msg_id": frame.msg_id,
-            })
-            return False
+        # v0.8.5.6: when transport is known, also track origin transport
+        # so cross-transport replay attempts surface in the audit log.
+        if transport is not None:
+            dedup_result = self.dedup.check_and_add_with_transport(
+                frame.source, frame.msg_id, transport,
+            )
+            if dedup_result.get("duplicate"):
+                self._audit_log(EVENT_DUPLICATE_DROPPED, {
+                    "source": frame.source, "msg_id": frame.msg_id,
+                })
+                if dedup_result.get("cross_transport"):
+                    self._audit_log(EVENT_MSG_REPLAY_CROSS_TRANSPORT, {
+                        "peer": frame.source,
+                        "msg_id": frame.msg_id,
+                        "original_transport": dedup_result.get(
+                            "original_transport"),
+                        "replay_transport": dedup_result.get(
+                            "this_transport"),
+                        "time_delta_ms": int(round(
+                            dedup_result.get("time_delta_s", 0.0) * 1000)),
+                    })
+                return False
+        else:
+            if self.dedup.check_and_add(frame.source, frame.msg_id):
+                self._audit_log(EVENT_DUPLICATE_DROPPED, {
+                    "source": frame.source, "msg_id": frame.msg_id,
+                })
+                return False
 
         # TTL check
         if frame.ttl <= 0:

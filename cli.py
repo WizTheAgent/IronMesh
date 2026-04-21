@@ -6,6 +6,7 @@ Supports bridge daemon, key management, trust management, and metrics.
 
 import argparse
 import getpass
+import hashlib
 import logging
 import os
 import sys
@@ -150,12 +151,51 @@ def parse_args():
     # v0.8.5.2: trust state mutation (matches the v0.8.5 trust gate states).
     set_state_parser = trust_sub.add_parser(
         "set-state",
-        help="Flip a peer's trust state (pending|trusted|blocked)",
+        help="Flip a peer's trust state (pending|trusted|blocked|pending-cap-change)",
     )
     set_state_parser.add_argument("node_id", help="Node ID to update")
     set_state_parser.add_argument("state",
-                                   choices=["pending", "trusted", "blocked"],
+                                   choices=["pending", "trusted", "blocked",
+                                            "pending-cap-change"],
                                    help="New trust state")
+
+    # v0.8.5.6: capability-set binding operator surface.
+    cap_promote = trust_sub.add_parser(
+        "cap-promote",
+        help="Accept a peer's pending capability-set change and re-promote "
+             "to trusted. See docs/TRUST_BINDING.md.",
+    )
+    cap_promote.add_argument("node_id", nargs="?", default=None,
+                             help="Node ID to re-promote (omit with --all)")
+    cap_promote.add_argument("--all", action="store_true",
+                             help="Re-promote every peer currently in "
+                                  "pending-cap-change state")
+    cap_promote.add_argument("--trust-path", default=None,
+                             help="Override the trust store path "
+                                  "(default: ~/.ironmesh/known_peers.json)")
+    cap_promote.add_argument("--keys-path", default="~/.ironmesh/keys.json",
+                             help="Path to identity keypair (needed to MAC the "
+                                  "trust store)")
+
+    list_cap = trust_sub.add_parser(
+        "list-cap-pending",
+        help="List peers currently in pending-cap-change with the diff "
+             "from their accepted baseline",
+    )
+    list_cap.add_argument("--trust-path", default=None,
+                          help="Override the trust store path")
+    list_cap.add_argument("--keys-path", default="~/.ironmesh/keys.json")
+    list_cap.add_argument("--json", action="store_true",
+                          help="Emit JSON instead of human-readable text")
+
+    cap_diff = trust_sub.add_parser(
+        "cap-diff",
+        help="Show the capability-set diff for a peer "
+             "(baseline vs pending or current)",
+    )
+    cap_diff.add_argument("node_id", help="Node ID to inspect")
+    cap_diff.add_argument("--trust-path", default=None)
+    cap_diff.add_argument("--keys-path", default="~/.ironmesh/keys.json")
 
     # --- keys ---
     keys_parser = sub.add_parser("keys", help="Key management")
@@ -715,6 +755,22 @@ def cmd_trust(args):
     else:
         store = TrustStore(agent_key=keypair.ed25519_secret[:32])
 
+    # v0.8.5.6 T#74: shared audit-log helper for every CLI mutation.
+    # Opens lazily so read-only commands don't touch the audit log.
+    _audit_cache = {"log": None}
+
+    def _audit_log_event(event: str, details: dict) -> None:
+        from ironmesh.audit import AuditLog
+        if _audit_cache["log"] is None:
+            audit_key = hashlib.sha256(
+                keypair.ed25519_secret + b"ironmesh-audit-v1"
+            ).digest()
+            _audit_cache["log"] = AuditLog(hmac_key=audit_key)
+        try:
+            _audit_cache["log"].log(event, details)
+        except Exception:
+            pass
+
     trust_cmd = getattr(args, "trust_command", None)
     if trust_cmd == "list":
         peers = store.list_peers()
@@ -764,6 +820,12 @@ def cmd_trust(args):
             return asyncio.run(do_broadcast())
         else:
             if store.revoke_peer(node_id):
+                from ironmesh.audit import EVENT_PEER_REVOKED_LOCAL
+                _audit_log_event(EVENT_PEER_REVOKED_LOCAL, {
+                    "peer_id": node_id,
+                    "actor": "cli",
+                    "reason": getattr(args, "reason", ""),
+                })
                 print(f"Trust revoked for {node_id} (local only)")
             else:
                 print(f"Peer {node_id} not found in trust store")
@@ -783,7 +845,33 @@ def cmd_trust(args):
     elif trust_cmd == "set-state":
         node_id = args.node_id
         new_state = args.state
+        # v0.8.5.6 T#74: capture the prior state so the audit event
+        # records the actual transition. Must peek BEFORE mutating.
+        rec = store.get_peer(node_id)
+        old_state = rec.get("trust_state") if rec else None
         if store.set_trust_state(node_id, new_state):
+            from ironmesh.audit import (
+                EVENT_PEER_BLOCKED,
+                EVENT_PEER_PROMOTED,
+                EVENT_PEER_STATE_CHANGED,
+            )
+            # Prefer the pre-existing specific events where they fit
+            # (operators searching the audit log tend to grep by name).
+            if new_state == "trusted":
+                _audit_log_event(EVENT_PEER_PROMOTED, {
+                    "peer_id": node_id, "actor": "cli",
+                    "old_state": old_state, "new_state": new_state,
+                })
+            elif new_state == "blocked":
+                _audit_log_event(EVENT_PEER_BLOCKED, {
+                    "peer_id": node_id, "actor": "cli",
+                    "old_state": old_state, "new_state": new_state,
+                })
+            else:
+                _audit_log_event(EVENT_PEER_STATE_CHANGED, {
+                    "peer_id": node_id, "actor": "cli",
+                    "old_state": old_state, "new_state": new_state,
+                })
             print(f"Trust state for {node_id} -> {new_state}")
             print("Note: a running daemon won't pick this up until it next "
                   "constructs a TrustStore (every gate evaluation does this, "
@@ -792,9 +880,122 @@ def cmd_trust(args):
         else:
             print(f"Peer {node_id} not in trust store. Run 'ironmesh trust list' to see known peers.")
             return 1
+    elif trust_cmd == "cap-promote":
+        # v0.8.5.6: operator action — accept pending cap-set changes.
+        # Audit events (EVENT_PEER_CAP_ACCEPTED) are fired alongside the
+        # state transitions so operator actions surface on the same
+        # audit timeline as daemon-observed events.
+        from ironmesh.audit import EVENT_PEER_CAP_ACCEPTED
+        targets = []
+        if getattr(args, "all", False):
+            targets = [p["node_id"] for p in
+                       store.list_by_capability_status("pending-cap-change")]
+            if not targets:
+                print("No peers in pending-cap-change.")
+                return 0
+        else:
+            if not args.node_id:
+                print("ERROR: pass <node_id> or --all.")
+                return 2
+            targets = [args.node_id]
+        promoted = 0
+        failed = 0
+        for nid in targets:
+            rec = store.get_peer(nid)
+            if rec is None:
+                print(f"  [SKIP] {nid}: unknown peer")
+                failed += 1
+                continue
+            if rec.get("capability_hash_pending") is None:
+                print(f"  [SKIP] {nid}: no pending capability change")
+                failed += 1
+                continue
+            old_hash = rec.get("capability_hash") or "(none)"
+            new_hash = rec.get("capability_hash_pending")
+            ok = store.accept_capability_change(nid)
+            if ok:
+                store.set_trust_state(nid, "trusted")
+                _audit_log_event(EVENT_PEER_CAP_ACCEPTED, {
+                    "peer": nid,
+                    "old_hash": old_hash,
+                    "new_hash": new_hash,
+                    "trust_state_effective": "trusted",
+                    "actor": "cli",
+                })
+                print(f"  [OK]   {nid}: {old_hash[:12]}... -> {new_hash[:12]}... -> trusted")
+                promoted += 1
+            else:
+                print(f"  [FAIL] {nid}: accept_capability_change returned False")
+                failed += 1
+        print()
+        print(f"Promoted {promoted} peer(s); {failed} skipped/failed.")
+        return 0 if failed == 0 else 1
+    elif trust_cmd == "list-cap-pending":
+        pending = store.list_by_capability_status("pending-cap-change")
+        if getattr(args, "json", False):
+            import json as _json
+            print(_json.dumps(pending, default=str, indent=2))
+            return 0
+        if not pending:
+            print("No peers in pending-cap-change.")
+            return 0
+        print(f"{len(pending)} peer(s) in pending-cap-change:")
+        print()
+        for entry in pending:
+            nid = entry["node_id"]
+            old_hash = entry.get("capability_hash") or "(none)"
+            new_hash = entry.get("pending_hash") or "(none)"
+            old_set = set(entry.get("capability_set") or [])
+            new_set = set(entry.get("pending_set") or [])
+            added = sorted(new_set - old_set)
+            removed = sorted(old_set - new_set)
+            print(f"  {nid}")
+            print(f"    fingerprint   : {entry.get('fingerprint', '?')}")
+            print(f"    baseline hash : {old_hash[:24]}...")
+            print(f"    pending hash  : {new_hash[:24]}...")
+            if added:
+                print(f"    + added       : {', '.join(added)}")
+            if removed:
+                print(f"    - removed     : {', '.join(removed)}")
+            print()
+        print("Re-promote with: ironmesh trust cap-promote <node_id>")
+        print("Or all at once: ironmesh trust cap-promote --all")
+        return 0
+    elif trust_cmd == "cap-diff":
+        nid = args.node_id
+        rec = store.get_peer(nid)
+        if rec is None:
+            print(f"Peer {nid} not in trust store.")
+            return 1
+        baseline_set = sorted(rec.get("capability_set") or [])
+        pending_set = sorted(rec.get("capability_set_pending") or [])
+        print(f"Peer: {nid}")
+        print(f"  fingerprint  : {rec.get('fingerprint', '?')}")
+        print(f"  trust state  : {rec.get('trust_state', 'trusted')}")
+        print(f"  baseline hash: "
+              f"{(rec.get('capability_hash') or '(none)')[:24]}...")
+        if rec.get("capability_hash_pending"):
+            print(f"  pending hash : "
+                  f"{rec.get('capability_hash_pending')[:24]}...")
+        print(f"  baseline set ({len(baseline_set)}): "
+              f"{', '.join(baseline_set) or '(empty)'}")
+        if pending_set:
+            added = sorted(set(pending_set) - set(baseline_set))
+            removed = sorted(set(baseline_set) - set(pending_set))
+            print(f"  pending set  ({len(pending_set)}): "
+                  f"{', '.join(pending_set)}")
+            if added:
+                print(f"    + added    : {', '.join(added)}")
+            if removed:
+                print(f"    - removed  : {', '.join(removed)}")
+        else:
+            print("  pending set  : (none — peer not in pending-cap-change)")
+        return 0
     else:
         print("Usage: ironmesh trust [list|revoke <node_id>|list-revoked|"
-              "set-state <node_id> <pending|trusted|blocked>]")
+              "set-state <node_id> <pending|trusted|blocked|pending-cap-change>"
+              "|cap-promote [<node_id>|--all]|list-cap-pending|"
+              "cap-diff <node_id>]")
 
     return 0
 

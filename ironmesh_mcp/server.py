@@ -561,6 +561,71 @@ class IronMeshMCP:
             "discarded": int(result.get("discarded", 0)),
         }
 
+    # --- v0.8.5.6: capability-set binding tools ------------------------------
+
+    def tool_pending_cap_changes(self, args: dict) -> dict:
+        """List peers currently in ``pending-cap-change`` with the diff
+        from their accepted baseline. An LLM operator agent can use this
+        to review cap changes before re-promoting.
+
+        Returns:
+            ``{count: int, peers: [{node_id, fingerprint, baseline_hash,
+            pending_hash, baseline_set, pending_set, added, removed}]}``
+        """
+        from ironmesh.trust import TrustStore
+        try:
+            mac_key = self.daemon._keypair.ed25519_secret[:32]  # noqa: SLF001
+            ts = TrustStore(agent_key=mac_key, path=self.daemon.trust_path)
+        except Exception as e:
+            return {"error": f"trust store load failed: {e}"}
+        rows = ts.list_by_capability_status("pending-cap-change")
+        out = []
+        for r in rows:
+            baseline = set(r.get("capability_set") or [])
+            pending = set(r.get("pending_set") or [])
+            out.append({
+                "node_id": r["node_id"],
+                "fingerprint": r.get("fingerprint", ""),
+                "baseline_hash": r.get("capability_hash"),
+                "pending_hash": r.get("pending_hash"),
+                "baseline_set": sorted(baseline),
+                "pending_set": sorted(pending),
+                "added": sorted(pending - baseline),
+                "removed": sorted(baseline - pending),
+            })
+        return {"count": len(out), "peers": out}
+
+    def tool_cap_promote_peer(self, args: dict) -> dict:
+        """Accept a peer's pending capability-set change and re-promote
+        them to ``trusted``. Mirrors ``ironmesh trust cap-promote`` on
+        the CLI but works through the running daemon (so queued messages
+        drain immediately).
+
+        Args:
+            peer: peer name or node_id
+        """
+        target = args.get("peer") or args.get("target")
+        if not target:
+            return {"error": "peer name or node_id required (field: 'peer')"}
+        node_id = self._resolve_node_id(target)
+        if not node_id:
+            return {"error": f"could not resolve {target!r} to a known peer"}
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                self.daemon.accept_pending_cap_change(node_id), self.loop,
+            )
+            result = fut.result(timeout=10)
+        except Exception as e:
+            return {"error": f"accept_pending_cap_change failed: {e}"}
+        if not result.get("ok"):
+            return {"error": result.get("error", "unknown failure")}
+        return {
+            "ok": True,
+            "node_id": node_id,
+            "old_hash": result.get("old_hash"),
+            "new_hash": result.get("new_hash"),
+        }
+
     # --- Cross-agent collaboration tools ------------------------------------
 
     # tool: discover_capabilities
@@ -1140,6 +1205,23 @@ TOOL_SPECS = [
             "properties": {
                 "peer": {"type": "string", "description": "agent name or 32-hex node_id"},
                 "confirm": {"type": "boolean", "default": False},
+            },
+            "required": ["peer"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "ironmesh_pending_cap_changes",
+        "description": "List peers currently in pending-cap-change with the diff (added/removed capabilities) from their accepted baseline. v0.8.5.6 trust-binding feature: when a peer's advertised capability set changes, the daemon demotes them from trusted to pending-cap-change and queues their messages until an operator reviews. This tool surfaces those peers for review. See docs/TRUST_BINDING.md.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "ironmesh_cap_promote_peer",
+        "description": "Accept a peer's pending capability-set change and re-promote them to trusted. Use after ironmesh_pending_cap_changes shows a peer whose new capability set you recognize. v0.8.5.6 trust-binding feature.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "peer": {"type": "string", "description": "agent name or 32-hex node_id"},
             },
             "required": ["peer"],
             "additionalProperties": False,

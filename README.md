@@ -9,7 +9,7 @@
 
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **v0.8.5.5 — pre-1.0 release.** 700+ tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus a 3-node live-mesh validation pass.
+> **v0.8.5.6 — pre-1.0 release.** 718 tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus a 3-node live-mesh validation pass.
 > Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -142,7 +142,7 @@ Requires Python 3.10 or newer. On Linux the firewall must allow UDP 5353
 
 ```bash
 pip install ironmesh            # PyPI
-# or: docker pull wiztheagent/ironmesh:0.8.5.5
+# or: docker pull wiztheagent/ironmesh:0.8.5.6
 # or: ./scripts/install.sh       (Linux / macOS systemd)
 # or: see docs/TERMUX.md         (Android)
 ```
@@ -528,7 +528,29 @@ pytest tests/ -v --cov=ironmesh
 
 ## Recent changes
 
-**v0.8.5.5 (current):** Big-batch quality-of-life patch on top of
+**v0.8.5.6 (current):** Trust-binding patch on top of v0.8.5.5. Closes
+two security gaps surfaced during external review. (1) **Capability-set
+binding in pending-trust:** the trust store now records a SHA-256 hash
+of each peer's advertised capability set. When a previously-trusted
+peer reconnects with a different cap set, it's auto-demoted to a new
+`pending-cap-change` state — operators re-promote via
+`ironmesh trust cap-promote <node>` (CLI) or `ironmesh_cap_promote_peer`
+(MCP). New audit events `PEER_CAP_BASELINE` / `PEER_CAP_SET_CHANGED` /
+`PEER_CAP_ACCEPTED`. (2) **Cross-transport replay detection:** when
+DedupCache catches a duplicate that arrived via a *different* transport
+than the original (e.g. WebSocket then Reticulum), it now emits
+`MSG_REPLAY_CROSS_TRANSPORT` before dropping — operators get a signal
+where there used to be silence. Two design docs land alongside:
+[`docs/TRUST_BINDING.md`](docs/TRUST_BINDING.md) covers what shipped;
+[`docs/TRUST_BINDING_WIRE_v0.9.md`](docs/TRUST_BINDING_WIRE_v0.9.md)
+specifies the three wire-protocol extensions queued for v0.9
+(deterministic session ID, rolling transcript hash, reconnect
+continuity challenge). No protocol or schema changes in this patch;
+existing `known_peers.json` files auto-migrate on first load. See
+[`CHANGELOG.md`](CHANGELOG.md) and
+[`docs/RELEASE_NOTES_v0.8.5.6.md`](docs/RELEASE_NOTES_v0.8.5.6.md).
+
+**v0.8.5.5:** Big-batch quality-of-life patch on top of
 v0.8.5.4. Adds the OS keychain backend
 ([`ironmesh keys keychain-store`](docs/CONFIGURATION.md)),
 [CLI named profiles](docs/CONFIGURATION.md#profiles)
@@ -638,8 +660,8 @@ Full list: [CHANGELOG.md](CHANGELOG.md). Planned work: [docs/ROADMAP.md](docs/RO
 
 Where to get it and what's still rough:
 
-- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport, `[keychain]` for OS-keychain passphrase storage, `[otel]` for OpenTelemetry tracing). Latest: **v0.8.5.5**.
-- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.8.5.5`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
+- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport, `[keychain]` for OS-keychain passphrase storage, `[otel]` for OpenTelemetry tracing). Latest: **v0.8.5.6**.
+- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.8.5.6`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
 - **GitHub releases** — signed tags, wheel + sdist attached: [releases page](https://github.com/WizTheAgent/IronMesh/releases).
 - **Go client** — `clients/go/` (reference implementation, crypto primitives verified against Python).
 - **LoRa end-to-end latency** — Measured live at 915 MHz SF8/BW125 between two RNode-equipped nodes (1 hop, strong signal): 16-byte probe 1.07 — 1.23 s, 64-byte probe 1.17 — 1.25 s, 256-byte probe 1.77 — 1.98 s, 100% delivery across 9 probes. Multi-hop + long-range interference sweeps are still pending — see [`docs/LORA_VALIDATION.md`](docs/LORA_VALIDATION.md).

@@ -161,12 +161,26 @@ def save_keys(keys: AgentKeys, path: str, passphrase: Optional[str] = None,
         data["ed25519_secret"] = base64.b64encode(keys.ed25519_secret).decode()
         data["encrypted"] = False
 
-    with open(path, "w") as f:
+    # v0.8.5.6 B13 fix: atomic write via temp + rename + fsync.
+    # save_keys is called rarely (initial generation + key rotation),
+    # but an interrupted write here permanently destroys the
+    # daemon's identity — unrecoverable without external backups.
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as f:
         json.dump(data, f, indent=2)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except (OSError, AttributeError):
+            pass
     try:
-        os.chmod(path, 0o600)
+        # chmod the tmp before rename so the production file is
+        # never briefly world-readable on a file system that
+        # respects mode bits.
+        os.chmod(tmp_path, 0o600)
     except OSError:
         pass  # Windows doesn't support chmod the same way
+    os.replace(tmp_path, path)
 
 
 def load_keys(path: str, passphrase: Optional[str] = None) -> AgentKeys:

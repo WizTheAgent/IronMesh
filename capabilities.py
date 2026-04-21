@@ -70,6 +70,24 @@ class CapabilityRegistry:
         self._local.discard(capability)
         self._updated[self._my_node_id] = time.time()
 
+    def set_local(self, capabilities) -> None:
+        """v0.8.5.6 — replace the entire local capability set in one shot.
+
+        ``advertise_local`` is purely additive, which means a daemon
+        that calls ``load()`` (picking up caps from a previous run)
+        and then ``advertise_local()`` for each cap from its current
+        config ends up announcing the *union* of old + new. If the
+        operator restarted the daemon with a different ``--role`` or
+        a different capability set, the previously-persisted caps
+        keep getting announced as ghost capabilities. Call this
+        instead when the caller has an authoritative cap list and
+        wants the local set to mirror it exactly.
+        """
+        new = {str(c).strip() for c in (capabilities or [])
+               if c and str(c).strip()}
+        self._local = new
+        self._updated[self._my_node_id] = time.time()
+
     def local_capabilities(self) -> List[str]:
         return sorted(self._local)
 
@@ -140,8 +158,19 @@ class CapabilityRegistry:
                        hashlib.sha256).hexdigest()
         try:
             os.makedirs(os.path.dirname(self._persist_path) or ".", exist_ok=True)
-            with open(self._persist_path, "w") as f:
+            # v0.8.5.6 B11 fix: atomic write via temp + rename.
+            # Non-atomic truncate+write could leave an empty
+            # capabilities.json under SIGKILL, losing every known
+            # cap on next start.
+            tmp_path = self._persist_path + ".tmp"
+            with open(tmp_path, "w") as f:
                 json.dump({"hmac": mac, "body": body}, f)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except (OSError, AttributeError):
+                    pass
+            os.replace(tmp_path, self._persist_path)
             return True
         except Exception as e:
             logger.debug("Capability save failed: %s", e)

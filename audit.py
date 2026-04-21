@@ -8,16 +8,99 @@ If an attacker deletes or modifies any entry, the chain breaks and
 verification fails from that point forward.
 """
 
+import contextlib
 import hashlib
 import hmac
 import json
 import logging
 import os
+import sys
 import threading
 import time
 from typing import Optional
 
 logger = logging.getLogger("ironmesh.audit")
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform inter-process file lock (v0.8.5.6)
+# ---------------------------------------------------------------------------
+# IronMesh hosts often run multiple processes that share the same identity
+# key + audit log path: the main bridge daemon, the MCP server, an
+# operator CLI invocation. Each process has its own threading.Lock for
+# in-process serialization, but the in-process locks don't synchronize
+# across processes. Without a real file lock, two processes can both
+# read the same chain tail, both compute their next HMAC against that
+# stale tail, and both write entries — breaking the chain at the
+# intersection. Verification then reports TAMPER even though no actual
+# tampering occurred. We hit this in the v0.8.5.6 hardening pass.
+#
+# The fix is a sentinel-file exclusive lock acquired before each write
+# and released after. We use a sentinel (not the audit log itself) so
+# rotation can rename the audit log without invalidating the lock. The
+# write path also re-reads the chain tail under the lock, so even if
+# our in-memory _last_hmac is stale, the persisted chain stays valid.
+
+@contextlib.contextmanager
+def _audit_file_lock(path: str):
+    """Acquire a process-exclusive lock on a sentinel file next to the
+    audit log path. Blocks if another process holds the lock.
+
+    Cross-platform: fcntl.flock on POSIX, msvcrt.locking on Windows.
+    Falls back to a no-op (with a one-time warning) if neither is
+    available — the in-process threading.Lock still applies.
+    """
+    lock_path = path + ".lock"
+    try:
+        fd = os.open(
+            lock_path, os.O_RDWR | os.O_CREAT, 0o600,
+        )
+    except OSError as exc:
+        logger.warning(
+            "audit lock: could not open %s (%s); falling back to "
+            "in-process lock only", lock_path, exc,
+        )
+        yield
+        return
+
+    locked = False
+    try:
+        if sys.platform == "win32":
+            try:
+                import msvcrt
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                locked = True
+            except OSError as exc:
+                logger.warning(
+                    "audit lock: msvcrt.locking failed (%s); "
+                    "falling back to in-process lock only", exc,
+                )
+        else:
+            try:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                locked = True
+            except OSError as exc:
+                logger.warning(
+                    "audit lock: fcntl.flock failed (%s); "
+                    "falling back to in-process lock only", exc,
+                )
+        yield
+    finally:
+        if locked:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            except Exception:  # noqa: BLE001 — best-effort release
+                pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 # Event types
 EVENT_KEY_ROTATION = "KEY_ROTATION"
@@ -58,6 +141,30 @@ EVENT_MSG_GATED_QUEUE = "MSG_GATED_QUEUE"
 EVENT_MSG_GATED_DROP = "MSG_GATED_DROP"
 EVENT_PEER_PROMOTED = "PEER_PROMOTED"
 EVENT_PEER_BLOCKED = "PEER_BLOCKED"
+
+# v0.8.5.6: trust-binding — capability-set change detection + cross-
+# transport replay detection. Closes two gaps flagged during external
+# security review: over-privileged reconnect and silent cross-path
+# replay. See docs/TRUST_BINDING.md.
+EVENT_PEER_CAP_SET_CHANGED = "PEER_CAP_SET_CHANGED"
+EVENT_PEER_CAP_BASELINE = "PEER_CAP_BASELINE"
+EVENT_PEER_CAP_ACCEPTED = "PEER_CAP_ACCEPTED"
+EVENT_MSG_REPLAY_CROSS_TRANSPORT = "MSG_REPLAY_CROSS_TRANSPORT"
+# v0.8.5.6 T#74 fix: close CLI audit gaps. `ironmesh trust revoke`
+# (local-only) and `ironmesh trust set-state` were operator actions
+# that mutated the trust store without leaving an audit trail — a
+# forensic reviewer walking the log after an incident would miss
+# them entirely. Now every CLI-driven trust mutation fires either
+# one of the pre-existing event types (PEER_PROMOTED, PEER_BLOCKED)
+# or one of these new ones.
+EVENT_PEER_REVOKED_LOCAL = "PEER_REVOKED_LOCAL"
+EVENT_PEER_STATE_CHANGED = "PEER_STATE_CHANGED"
+# v0.8.5.6 B8 fix: fired when the bridge observed a capability-set
+# change but the trust-store mutation (stash + demote) did NOT fully
+# reach disk (disk error, MAC-mismatch read-only latch, lock contention
+# beyond retry). Distinguishes "we saw + applied the change" from
+# "we saw the change but couldn't persist it" for forensic review.
+EVENT_PEER_CAP_BINDING_PARTIAL = "PEER_CAP_BINDING_PARTIAL"
 
 
 class AuditLog:
@@ -114,19 +221,33 @@ class AuditLog:
             self._last_hmac = self._read_last_hmac()
 
     def _read_last_hmac(self) -> str:
-        """Read the HMAC of the last entry to resume the chain."""
+        """Read the HMAC of the last entry to resume the chain.
+
+        v0.8.5.6: tolerate a partial trailing line. SIGKILL between
+        ``f.write(entry)`` and the OS flush can leave a torn line at
+        EOF (no newline, truncated JSON). Pre-fix, the bare
+        ``json.loads(last_line)`` raised, the outer except returned
+        GENESIS, and the next entry chained off GENESIS — which
+        permanently broke the audit chain at that point. Now we walk
+        backwards over candidate lines until we find one that parses
+        AND carries a hex hmac field, and ignore everything after.
+        The torn line stays on disk for forensic inspection but is
+        not honored as the chain tail.
+        """
         try:
             if not os.path.exists(self._path):
                 return self._GENESIS
             with open(self._path, "r") as f:
-                last_line = None
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        last_line = line
-                if last_line:
-                    entry = json.loads(last_line)
-                    return entry.get("hmac", self._GENESIS)
+                lines = [line.strip() for line in f if line.strip()]
+            for line in reversed(lines):
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # torn line — skip
+                hm = entry.get("hmac")
+                if isinstance(hm, str) and len(hm) == 64:
+                    return hm
+            return self._GENESIS
         except Exception:
             logger.warning("Could not read last audit HMAC — starting new chain")
         return self._GENESIS
@@ -142,12 +263,24 @@ class AuditLog:
         Args:
             event: Event type (use EVENT_* constants).
             details: Optional dict of event-specific data.
+
+        v0.8.5.6: when multiple processes share the same audit log
+        path (e.g. main daemon + MCP server + operator CLI), the
+        sentinel-file lock serializes writes across processes and we
+        re-read the chain tail under the lock to chain off the
+        actually-persisted last entry, not our possibly-stale
+        in-memory copy.
         """
         if not self._enabled:
             return
-        with self._write_lock:
-            self._write_entry(event, details)
-            self._maybe_rotate()
+        with self._write_lock:                       # in-process serialize
+            with _audit_file_lock(self._path):       # cross-process serialize
+                # Re-read tail under the lock. If another process appended
+                # since we last refreshed, our cached _last_hmac is stale —
+                # use the freshly-read one to keep the chain valid.
+                self._last_hmac = self._read_last_hmac()
+                self._write_entry(event, details)
+                self._maybe_rotate()
 
     def _write_entry(self, event: str, details: Optional[dict]) -> None:
         """Append a single entry without performing rotation checks.
@@ -171,9 +304,45 @@ class AuditLog:
             "hmac": entry_hmac,
         }, separators=(",", ":"), sort_keys=True)
 
+        # v0.8.5.6: write the full line in a single os.write() and
+        # fsync. The single write maximizes the chance the OS commits
+        # the line whole (POSIX guarantees ≤PIPE_BUF append atomicity;
+        # NTFS append is similarly atomic for small writes). The fsync
+        # makes the write durable across power loss / SIGKILL of the
+        # whole machine. Without fsync, S5-style chaos can occasionally
+        # lose a tail entry — but B2's lock + this ordering makes the
+        # loss benign (next reader walks back to the previous valid
+        # line; chain continues).
+        #
+        # v0.8.5.6 B10 fix: if the file's last byte isn't a newline,
+        # the previous writer crashed mid-line. Prepend a newline so
+        # our entry doesn't concatenate onto the torn line. The torn
+        # line stays on disk for forensic inspection (verify() will
+        # mark it invalid) but doesn't poison subsequent entries.
         try:
-            with open(self._path, "a") as f:
-                f.write(full_entry + "\n")
+            needs_leading_nl = False
+            try:
+                if os.path.getsize(self._path) > 0:
+                    with open(self._path, "rb") as _r:
+                        _r.seek(-1, os.SEEK_END)
+                        if _r.read(1) != b"\n":
+                            needs_leading_nl = True
+            except OSError:
+                pass  # file doesn't exist yet — first write is fine
+            payload = (("\n" if needs_leading_nl else "")
+                       + full_entry + "\n").encode("utf-8")
+            fd = os.open(self._path,
+                         os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(fd, payload)
+                try:
+                    os.fsync(fd)
+                except (OSError, AttributeError):
+                    # fsync may be unavailable on some Windows network
+                    # drives. Fallback: best-effort.
+                    pass
+            finally:
+                os.close(fd)
             self._last_hmac = entry_hmac
         except Exception as e:
             logger.error("Failed to write audit log: %s", e)

@@ -102,6 +102,50 @@ class TestDedupCache:
         cache = DedupCache()
         assert cache.is_duplicate("src", "msg1") is False
 
+    def test_cleanup_expired_thread_safe_with_concurrent_add(self):
+        """B9 regression: cleanup_expired must hold self._lock so it
+        can't race with concurrent add()/check_and_add(). Pre-fix it
+        iterated self._sources WITHOUT the lock, and a concurrent
+        adder calling self._sources.move_to_end / self._sources.popitem
+        could raise ``dict changed size during iteration`` or skip
+        entries.
+        """
+        import threading
+        cache = DedupCache(per_source_max=10000, sources_max=10000,
+                           ttl=0.001)  # tiny TTL forces lots of expiry work
+        stop = threading.Event()
+        errors: list = []
+
+        def adder():
+            i = 0
+            while not stop.is_set():
+                try:
+                    cache.add(f"s{i % 50}", f"m{i}")
+                    i += 1
+                except Exception as e:
+                    errors.append(("adder", repr(e)))
+                    return
+
+        def cleaner():
+            while not stop.is_set():
+                try:
+                    cache.cleanup_expired()
+                except Exception as e:
+                    errors.append(("cleaner", repr(e)))
+                    return
+
+        threads = [threading.Thread(target=adder) for _ in range(3)]
+        threads.append(threading.Thread(target=cleaner))
+        threads.append(threading.Thread(target=cleaner))
+        for t in threads:
+            t.start()
+        # Burn the bug for a moment
+        import time as _t; _t.sleep(0.6)
+        stop.set()
+        for t in threads:
+            t.join(timeout=2)
+        assert errors == [], f"Race detected: {errors}"
+
     def test_dedup_same_is_duplicate(self):
         cache = DedupCache()
         cache.add("src", "msg1")
@@ -397,6 +441,83 @@ class TestMeshRouterRelay:
         assert ok2 is False  # Second one is dedup'd
         assert len(daemon.sent) == 1
 
+    @pytest.mark.asyncio
+    async def test_cross_transport_replay_emits_audit_event(self):
+        """v0.8.5.6 S4 regression: same (source, msg_id) arriving once
+        on transport=ws and again on transport=rns must fire
+        EVENT_MSG_REPLAY_CROSS_TRANSPORT (in addition to the normal
+        EVENT_DUPLICATE_DROPPED).
+        """
+        from ironmesh.audit import (
+            EVENT_DUPLICATE_DROPPED,
+            EVENT_MSG_REPLAY_CROSS_TRANSPORT,
+        )
+
+        captured: list = []
+
+        class _CapturingAudit:
+            def log(self, event, details):
+                captured.append((event, details))
+
+        daemon = _FakeDaemon(node_id="B")
+        daemon.add_peer("A")
+        daemon.add_peer("C")
+        daemon._audit = _CapturingAudit()
+        router = MeshRouter(daemon, _FakeConfig())
+        router.table.add_route("C", "C", cost=1, learned_from="C")
+
+        f1 = _make_frame(msg_id="x-replay-1")
+        f2 = _make_frame(msg_id="x-replay-1")  # same id, will be a replay
+        ok1 = await router.relay_message(f1, from_peer="A", transport="ws")
+        ok2 = await router.relay_message(f2, from_peer="A", transport="rns")
+        assert ok1 is True
+        assert ok2 is False
+
+        events = [e for e, _ in captured]
+        assert EVENT_DUPLICATE_DROPPED in events
+        assert EVENT_MSG_REPLAY_CROSS_TRANSPORT in events, (
+            "S4 regression: cross-transport replay must surface as a "
+            "dedicated audit event, not just a generic duplicate-drop."
+        )
+        # Inspect the cross-transport detail payload
+        cx = next(d for e, d in captured
+                  if e == EVENT_MSG_REPLAY_CROSS_TRANSPORT)
+        assert cx["original_transport"] == "ws"
+        assert cx["replay_transport"] == "rns"
+        assert cx["msg_id"] == "x-replay-1"
+        assert isinstance(cx.get("time_delta_ms"), int)
+
+    @pytest.mark.asyncio
+    async def test_same_transport_replay_does_not_fire_cross_transport(self):
+        """Negative control for S4: a same-transport replay must
+        emit EVENT_DUPLICATE_DROPPED but NOT
+        EVENT_MSG_REPLAY_CROSS_TRANSPORT.
+        """
+        from ironmesh.audit import (
+            EVENT_DUPLICATE_DROPPED,
+            EVENT_MSG_REPLAY_CROSS_TRANSPORT,
+        )
+        captured: list = []
+
+        class _CapturingAudit:
+            def log(self, event, details):
+                captured.append((event, details))
+
+        daemon = _FakeDaemon(node_id="B")
+        daemon.add_peer("A")
+        daemon.add_peer("C")
+        daemon._audit = _CapturingAudit()
+        router = MeshRouter(daemon, _FakeConfig())
+        router.table.add_route("C", "C", cost=1, learned_from="C")
+
+        f1 = _make_frame(msg_id="same-tx-1")
+        f2 = _make_frame(msg_id="same-tx-1")
+        await router.relay_message(f1, from_peer="A", transport="ws")
+        await router.relay_message(f2, from_peer="A", transport="ws")
+        events = [e for e, _ in captured]
+        assert EVENT_DUPLICATE_DROPPED in events
+        assert EVENT_MSG_REPLAY_CROSS_TRANSPORT not in events
+
 
 class TestMeshRouterAnnouncements:
     @pytest.mark.asyncio
@@ -422,6 +543,38 @@ class TestMeshRouterAnnouncements:
         assert router.table.get_cost("C") == 2
         # Peer was marked relay-capable
         assert daemon.peers["A"].is_relay_capable is True
+
+    @pytest.mark.asyncio
+    async def test_handle_route_announce_rejects_malicious_destination(self):
+        """B16 regression: a malicious peer can send a ROUTE_ANNOUNCE
+        with a non-string destination (e.g., a list). Pre-fix, the
+        loop's add_route call would propagate TypeError because dict
+        keys must be hashable. Handler must skip bad entries and
+        continue processing the good ones.
+        """
+        daemon = _FakeDaemon(node_id="self")
+        daemon.add_peer("A")
+        router = MeshRouter(daemon, _FakeConfig())
+
+        payload = json.dumps({
+            "origin": "A",
+            "sequence_number": 1,
+            "routes": [
+                {"destination": ["not", "a", "string"], "cost": 1},  # bad
+                {"destination": {"x": 1}, "cost": 1},                 # bad
+                {"destination": 42, "cost": 1},                       # bad
+                {"destination": None, "cost": 1},                     # bad
+                {"destination": "", "cost": 1},                       # bad (empty)
+                "not a dict at all",                                  # bad
+                {"destination": "GOOD", "cost": 1},                   # good
+            ],
+        }).encode()
+        # Must NOT raise
+        await router.handle_route_announce("A", payload)
+        # Good route was learned
+        assert router.table.get_next_hop("GOOD") == "A"
+        # Bad routes did not pollute the table
+        assert router.table.get_next_hop("") is None
 
     @pytest.mark.asyncio
     async def test_route_convergence_via_two_announces(self):

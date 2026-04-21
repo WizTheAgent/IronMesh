@@ -352,19 +352,64 @@ class Frame:
         The JSON path decrypts the payload separately, so the resulting Frame
         has metadata extracted from the JSON envelope plus the supplied
         already-decrypted payload bytes.
+
+        v0.8.5.6 B15 fix: mirror the strict type validation that
+        ``from_dict`` got in v0.8.5.2. The legacy JSON path was the
+        last decode entry point that still trusted whatever the wire
+        sent — a peer could ship ``{"msg_id": [1,2,3]}`` and crash
+        downstream code that assumed string. Reject at the boundary.
         """
+        if not isinstance(msg_dict, dict):
+            raise ValueError(
+                f"from_json_message requires a dict, "
+                f"got {type(msg_dict).__name__}"
+            )
+        msg_type = msg_dict.get("type", "")
+        if not isinstance(msg_type, str):
+            raise ValueError(
+                f"'type' must be a string, got {type(msg_type).__name__}"
+            )
+        msg_id = msg_dict.get("msg_id")
+        if msg_id is not None and not isinstance(msg_id, str):
+            raise ValueError(
+                f"msg_id must be a string, got {type(msg_id).__name__}"
+            )
+        source = msg_dict.get("from", msg_dict.get("source", "unknown"))
+        if not isinstance(source, str):
+            raise ValueError(
+                f"source/from must be a string, got {type(source).__name__}"
+            )
+        destination = msg_dict.get("to", msg_dict.get("destination", "*"))
+        if not isinstance(destination, str):
+            raise ValueError(
+                f"destination/to must be a string, "
+                f"got {type(destination).__name__}"
+            )
+        sequence = msg_dict.get("sequence", 0)
+        if not isinstance(sequence, int) or sequence < 0:
+            raise ValueError(
+                f"sequence must be non-negative integer, got {sequence!r}"
+            )
+        ttl = msg_dict.get("ttl", 3)
+        if not isinstance(ttl, int) or ttl < 0 or ttl > 255:
+            raise ValueError(f"Invalid TTL: {ttl!r}")
+        hops = msg_dict.get("hops", [])
+        if not isinstance(hops, list) or not all(
+            isinstance(h, str) for h in hops
+        ):
+            raise ValueError(f"Invalid hops: {hops!r}")
         obj = cls(
-            msg_type=msg_dict.get("type", ""),
+            msg_type=msg_type,
             payload=payload_bytes,
-            msg_id=msg_dict.get("msg_id"),
-            source=msg_dict.get("from", msg_dict.get("source", "unknown")),
-            destination=msg_dict.get("to", msg_dict.get("destination", "*")),
+            msg_id=msg_id,
+            source=source,
+            destination=destination,
             priority=msg_dict.get("priority", MessagePriority.NORMAL),
-            sequence=msg_dict.get("sequence", 0),
+            sequence=sequence,
         )
         obj.timestamp = float(msg_dict.get("timestamp", time.time()))
-        obj.ttl = msg_dict.get("ttl", 3)
-        obj.hops = msg_dict.get("hops", [])
+        obj.ttl = ttl
+        obj.hops = hops
         if msg_dict.get("source_signature"):
             obj.source_signature = base64.b64decode(msg_dict["source_signature"])
         if msg_dict.get("e2e_payload"):

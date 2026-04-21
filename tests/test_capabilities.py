@@ -32,6 +32,42 @@ class TestCapabilityRegistryLocal:
         reg.advertise_local(None)  # type: ignore[arg-type]
         assert reg.local_capabilities() == []
 
+    def test_set_local_replaces_not_merges(self, tmp_path):
+        """B12 regression (ghost capabilities): a daemon that loads a
+        persisted capability set and then sets its new config-provided
+        caps must NOT announce the union of old + new. Before the fix,
+        the load+advertise_local pattern produced ghost caps that
+        outlived their original --role config. set_local must produce
+        exactly the caller-supplied set, not union it with anything.
+        """
+        import hashlib
+        # Persist an "old" local set (simulating a prior daemon run
+        # with --role assistant)
+        path = str(tmp_path / "capabilities.json")
+        key = hashlib.sha256(b"test-key").digest()
+        reg_old = CapabilityRegistry(
+            "self", persist_path=path, hmac_key=key,
+        )
+        reg_old.advertise_local("role:assistant")
+        reg_old.advertise_local("llm:llama3")
+        reg_old.save()
+
+        # New daemon run with a different --role. Load the prior
+        # state (old behavior), then apply authoritative new config.
+        reg_new = CapabilityRegistry(
+            "self", persist_path=path, hmac_key=key,
+        )
+        reg_new.load()
+        # Pre-fix behavior with advertise_local would produce a
+        # union {role:assistant, role:coder, llm:llama3}.
+        # set_local REPLACES:
+        reg_new.set_local(["role:coder", "llm:llama3"])
+        got = set(reg_new.local_capabilities())
+        assert got == {"role:coder", "llm:llama3"}, (
+            "B12 regression: set_local leaked ghost caps. got=" + repr(got)
+        )
+        assert "role:assistant" not in got
+
 
 class TestCapabilityRegistryRemote:
     def test_learn_remote_capability(self):

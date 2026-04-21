@@ -5,17 +5,136 @@ On subsequent connections, compares — if key changed, warns of possible MITM.
 Trust store file is integrity-protected with HMAC to detect tampering.
 """
 
+import contextlib
 import hashlib
 import hmac as hmac_mod
 import json
 import logging
 import os
+import sys
+import threading
 import time
+import weakref
 from typing import Dict, List, Optional
 
 logger = logging.getLogger("ironmesh.trust")
 
 DEFAULT_TRUST_PATH = "~/.ironmesh/known_peers.json"
+
+
+# ---------------------------------------------------------------------------
+# v0.8.5.6 B14 fix: cross-process exclusive lock on the trust file.
+#
+# Without inter-process locking, concurrent operator actions on the same
+# host (e.g. two `ironmesh trust cap-promote` invocations, or one CLI
+# call racing the daemon's own cap-binding observe path) each load the
+# file independently, mutate their in-memory copies, and call _save().
+# Each _save() writes through a shared `<path>.tmp` filename — on
+# Windows the second writer's open(..., "w") fights with the first
+# writer's os.replace, throws WinError 32, and silently drops the
+# write. The mutating method (e.g. accept_capability_change) returns
+# True regardless because it only checks in-memory state, not whether
+# _save persisted. The result is N processes claiming success, zero
+# durable changes on disk.
+#
+# Mirroring the audit-log fix (B2): hold a sentinel-file flock around
+# every _save(). Reads happen under the same lock so a concurrent
+# writer can't shred a half-modified file out from under us.
+# ---------------------------------------------------------------------------
+
+# v0.8.5.6 B19 fix: Windows msvcrt.locking is a PROCESS-level lock.
+# When two THREADS in one process try to acquire it on the same fd, the
+# OS returns "Resource deadlock avoided" (EDEADLK) because it sees the
+# lock is already held by THIS process — there's no thread granularity.
+# POSIX fcntl.flock has the same cross-thread semantics. So the file
+# lock alone serializes cross-process, but multiple threads inside a
+# single daemon could still stampede. Layer an in-process threading.Lock
+# per (canonical) trust path so one Python process can only enter the
+# critical section serially.
+_trust_inproc_locks_mutex = threading.Lock()
+_trust_inproc_locks: "weakref.WeakValueDictionary[str, threading.Lock]" = (
+    weakref.WeakValueDictionary()
+)
+
+
+def _get_inproc_lock(path: str) -> threading.Lock:
+    key = os.path.abspath(os.path.expanduser(path))
+    with _trust_inproc_locks_mutex:
+        lk = _trust_inproc_locks.get(key)
+        if lk is None:
+            lk = threading.Lock()
+            _trust_inproc_locks[key] = lk
+        return lk
+
+
+@contextlib.contextmanager
+def _trust_file_lock(path: str):
+    # v0.8.5.6 B19: acquire the in-process lock first so concurrent
+    # threads inside this Python process serialize before contending
+    # for the OS file lock. (msvcrt.locking and fcntl.flock are both
+    # process-level, not thread-level.)
+    inproc = _get_inproc_lock(path)
+    inproc.acquire()
+    lock_path = path + ".lock"
+    try:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        logger.warning(
+            "trust lock: could not open %s (%s); falling back to "
+            "in-process lock only", lock_path, exc,
+        )
+        try:
+            yield
+        finally:
+            inproc.release()
+        return
+
+    locked = False
+    try:
+        if sys.platform == "win32":
+            try:
+                import msvcrt
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                locked = True
+            except OSError as exc:
+                # Now expected ONLY across processes; intra-process
+                # collisions never reach this branch because of the
+                # in-process lock above. Silenced to debug to keep
+                # the operator log clean during normal multi-daemon
+                # operation.
+                logger.debug(
+                    "trust lock: msvcrt.locking failed (%s); "
+                    "falling back to in-process lock only", exc,
+                )
+        else:
+            try:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                locked = True
+            except OSError as exc:
+                logger.debug(
+                    "trust lock: fcntl.flock failed (%s); "
+                    "falling back to in-process lock only", exc,
+                )
+        yield
+    finally:
+        if locked:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        # v0.8.5.6 B19: release the in-process lock LAST so the next
+        # waiting thread doesn't see a stale OS-lock state.
+        inproc.release()
 
 # Legacy MAC key (home-directory-derived) — kept only for one-shot
 # migration away from the v0.5 format. No new trust stores should rely
@@ -36,6 +155,45 @@ def _derive_mac_key(agent_key: bytes) -> bytes:
     return hashlib.sha256(bytes(agent_key) + b"ironmesh-trust-store-v1").digest()
 
 
+# ---------------------------------------------------------------------------
+# v0.8.5.6: capability-set binding — hash a peer's advertised capability
+# set into a stable 32-byte value so we can detect changes across
+# reconnects and re-gate over-privileged peers.
+# ---------------------------------------------------------------------------
+
+_CAP_HASH_PREFIX = b"ironmesh-cap-hash-v1:"
+
+
+def canonical_capability_hash(capabilities) -> str:
+    """Compute a stable SHA-256 hex digest over a capability set.
+
+    Canonical form: capability tokens are stripped, deduplicated,
+    sorted lexicographically, joined with '\\n', UTF-8 encoded, and
+    prefixed with a domain separator before hashing. Stable against
+    list reordering and insignificant whitespace; case-sensitive by
+    design (capability matching is case-sensitive).
+
+    Returns the hex digest as a 64-character string. Empty capability
+    sets hash to a well-defined non-zero value (the hash of the empty
+    canonical form, not a sentinel).
+    """
+    if capabilities is None:
+        capabilities = ()
+    cleaned = []
+    seen = set()
+    for cap in capabilities:
+        if cap is None:
+            continue
+        s = str(cap).strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        cleaned.append(s)
+    cleaned.sort()
+    payload = _CAP_HASH_PREFIX + "\n".join(cleaned).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 class TrustStore:
     """TOFU key pinning database backed by JSON file with integrity MAC."""
 
@@ -52,6 +210,19 @@ class TrustStore:
         self._mac_key: bytes = _derive_mac_key(agent_key)
         self._peers: Dict[str, dict] = {}
         self._revoked: Dict[str, dict] = {}  # v0.6: node_id -> {revoker, timestamp, reason}
+        # v0.8.5.6: when _load() detects a MAC mismatch, the in-memory
+        # peers dict is empty BUT the on-disk file is intact. If we then
+        # accept any write (e.g. an opportunistic TOFU pin from a routine
+        # peer reconnect), we'd serialize {peers: {}, peers...} on top
+        # of the actual file — silently wiping every other pinned peer.
+        # B7 (the catastrophic v0.8.5.6 wipe) was exactly this: a colliding
+        # process on the same host wrote the file with a different MAC key,
+        # and our daemon's next save flattened the file to a single peer.
+        # This flag latches True on a MAC mismatch and causes every _save()
+        # to refuse rather than overwrite. Operators must explicitly
+        # rebuild the trust store (delete the file, or run with --trust-path)
+        # to clear it.
+        self._readonly_due_to_mac_failure: bool = False
         self._load()
 
     def _compute_mac(self, data: str) -> str:
@@ -92,13 +263,21 @@ class TrustStore:
                                 "stored_mac=%s expected_mac=%s peers_in_file=%d. "
                                 "If you run multiple daemons on this host, give "
                                 "each its own --trust-path to avoid silent "
-                                "collisions; otherwise the file may be tampered.",
+                                "collisions; otherwise the file may be tampered. "
+                                "TRUST STORE LOCKED READ-ONLY — _save() will "
+                                "refuse until you remove the colliding writer "
+                                "and reset the file.",
                                 self.path,
                                 stored_mac[:16] + "…",
                                 expected_mac[:16] + "…",
                                 len(raw.get("peers", {})) if isinstance(raw, dict) else 0,
                             )
                             self._peers = {}
+                            # v0.8.5.6 B7 fix: lock writes. The on-disk
+                            # file was written by a process with a
+                            # different MAC key — never overwrite it
+                            # blindly, or we'll wipe every pinned peer.
+                            self._readonly_due_to_mac_failure = True
                             return
                 elif isinstance(raw, dict):
                     # Legacy format without MAC — migrate on next save
@@ -109,26 +288,59 @@ class TrustStore:
                 logger.warning("Failed to load trust store: %s", e)
                 self._peers = {}
 
-    def _save(self):
+    def _save(self) -> bool:
+        """Persist current state to disk under a cross-process lock.
+
+        Returns True on successful durable write, False if the write
+        was refused (B7 read-only latch) or failed (I/O error,
+        Windows tmp-file collision under contention). Callers that
+        mutate then call ``_save()`` should treat ``False`` as "the
+        in-memory mutation did not reach disk" and react accordingly
+        (e.g. roll back the in-memory state, or surface an error to
+        the operator).
+        """
+        # v0.8.5.6 B7 fix: refuse to write when the on-disk file has a
+        # MAC we don't recognize. Otherwise every pinned peer in that
+        # file gets clobbered the next time anyone calls _save().
+        if self._readonly_due_to_mac_failure:
+            logger.error(
+                "Trust store at %s is LOCKED read-only (MAC mismatch on "
+                "load). Refusing to save — would silently overwrite a "
+                "file written by a different identity. Resolve the "
+                "underlying collision (separate --trust-path per "
+                "daemon, or remove the foreign file) and restart.",
+                self.path,
+            )
+            return False
+        # v0.8.5.6 B14 fix: hold a cross-process flock around the
+        # tmp-write + rename. Use a per-process tmp filename so two
+        # processes can't trash each other's in-flight tmp file.
+        tmp_path = "{}.{}.{}.tmp".format(self.path, os.getpid(), threading.get_ident())
         try:
-            # Wrap peers + revoked in envelope with MAC
-            envelope = {"peers": self._peers, "revoked": self._revoked}
-            data_str = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
-            envelope["_mac"] = self._compute_mac(data_str)
-            # v0.8.5.2: atomic write via temp + rename so SIGKILL / power loss
-            # mid-write can't leave a truncated trust file. Operators would
-            # otherwise lose every pinned peer on an unclean shutdown.
-            tmp_path = self.path + ".tmp"
-            with open(tmp_path, "w") as f:
-                json.dump(envelope, f, indent=2)
-                f.flush()
-                try:
-                    os.fsync(f.fileno())
-                except (OSError, AttributeError):
-                    pass  # fsync unavailable on some platforms (e.g. Windows on network drives)
-            os.replace(tmp_path, self.path)  # atomic on POSIX; atomic on same-drive NTFS
-        except IOError as e:
+            with _trust_file_lock(self.path):
+                envelope = {"peers": self._peers,
+                            "revoked": self._revoked}
+                data_str = json.dumps(envelope, sort_keys=True,
+                                      separators=(",", ":"))
+                envelope["_mac"] = self._compute_mac(data_str)
+                with open(tmp_path, "w") as f:
+                    json.dump(envelope, f, indent=2)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except (OSError, AttributeError):
+                        pass
+                os.replace(tmp_path, self.path)
+            return True
+        except (IOError, OSError) as e:
             logger.error("Failed to save trust store: %s", e)
+            # Best-effort cleanup of our per-pid tmp file
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            return False
 
     @staticmethod
     def fingerprint(pubkey_b64: str) -> str:
@@ -167,7 +379,7 @@ class TrustStore:
                 "pending" when ``require_message_promotion`` is enabled
                 so the peer's MSGs queue until an operator promotes.
         """
-        if trust_state not in ("pending", "trusted", "blocked"):
+        if trust_state not in ("pending", "trusted", "blocked", "pending-cap-change"):
             raise ValueError(f"invalid trust_state: {trust_state!r}")
         fp = self.fingerprint(identity_public_b64)
         now = time.time()
@@ -278,13 +490,24 @@ class TrustStore:
         want network-wide propagation; ``set_trust_state(.., "blocked")``
         is a local-only quiet block.
         """
-        if state not in ("pending", "trusted", "blocked"):
+        if state not in ("pending", "trusted", "blocked", "pending-cap-change"):
             raise ValueError(f"invalid trust_state: {state!r}")
         rec = self._peers.get(node_id)
         if rec is None:
             return False
+        # v0.8.5.6 B8 fix: honor _save()'s return value. If the save
+        # was refused (B7 read-only latch) or failed (disk error),
+        # roll back the in-memory mutation and return False so the
+        # caller can surface the failure rather than claiming success.
+        old_state = rec.get("trust_state")
         rec["trust_state"] = state
-        self._save()
+        if not self._save():
+            rec["trust_state"] = old_state
+            logger.warning(
+                "set_trust_state rolled back for %s: _save() did not persist",
+                node_id,
+            )
+            return False
         logger.info("Trust state for %s -> %s", node_id, state)
         return True
 
@@ -299,5 +522,291 @@ class TrustStore:
                     "first_seen": data.get("first_seen"),
                     "last_seen": data.get("last_seen"),
                     "trust_state": data.get("trust_state", "trusted"),
+                    "capability_hash": data.get("capability_hash"),
+                    "capability_set": list(data.get("capability_set") or []),
                 })
         return out
+
+    # ------------------------------------------------------------------
+    # v0.8.5.6: capability-set binding
+    # ------------------------------------------------------------------
+
+    def observe_capabilities(self, node_id: str, capabilities) -> dict:
+        """Compare a peer's observed capability set to the stored one.
+
+        Returns a dict describing the action taken:
+
+            {"status": "first-observation",
+             "hash": <hex>,
+             "set": [...]}
+                → Peer is either new or was migrated from a pre-v0.8.5.6
+                trust file (no capability_hash stored yet). The observed
+                hash is recorded as the baseline. Caller should NOT
+                re-gate; this is the TOFU-for-capabilities path.
+
+            {"status": "match",
+             "hash": <hex>,
+             "set": [...]}
+                → Observed hash equals stored hash. No action needed.
+
+            {"status": "changed",
+             "old_hash": <hex>, "new_hash": <hex>,
+             "old_set": [...], "new_set": [...],
+             "added": [...], "removed": [...]}
+                → Capability set differs. Caller should demote the peer
+                to ``pending-cap-change`` and emit the
+                ``PEER_CAP_SET_CHANGED`` audit event. The stored hash
+                is NOT updated here; a successful operator re-promotion
+                calls ``accept_capability_change`` to record the new
+                baseline.
+
+            {"status": "pending-match",
+             "hash": <hex>, "set": [...]}
+                → Peer is already in pending-cap-change and re-announced
+                the same pending set. Caller should NOT re-fire
+                ``PEER_CAP_SET_CHANGED``; the event already surfaced on
+                the first observation of the change.
+
+            {"status": "reverted",
+             "hash": <hex>, "set": [...],
+             "cleared_pending_hash": <hex>}
+                → Peer was pending-cap-change but the observed set now
+                matches the stored baseline again. The pending stash
+                has been cleared. Caller should decide whether to
+                re-promote the peer automatically or surface the
+                revert to an operator (bridge policy logs an audit
+                event and leaves trust_state alone).
+
+            {"status": "unknown-peer"}
+                → node_id is not in the trust store at all. Caller
+                should not have called this method; it's an error
+                sentinel.
+
+        This method updates ``last_seen`` as a side effect (the peer
+        was just observed, regardless of the match verdict).
+        """
+        rec = self._peers.get(node_id)
+        if rec is None:
+            return {"status": "unknown-peer"}
+
+        observed_set = sorted({str(c).strip() for c in (capabilities or [])
+                               if c and str(c).strip()})
+        observed_hash = canonical_capability_hash(observed_set)
+        stored_hash = rec.get("capability_hash")
+        stored_set = list(rec.get("capability_set") or [])
+        pending_hash = rec.get("capability_hash_pending")
+
+        rec["last_seen"] = time.time()
+
+        if stored_hash is None:
+            # First observation or post-upgrade migration path.
+            rec["capability_hash"] = observed_hash
+            rec["capability_set"] = observed_set
+            rec["cap_first_observed"] = time.time()
+            self._save()
+            logger.info(
+                "Peer %s capability baseline recorded: %d caps, hash %s...",
+                node_id, len(observed_set), observed_hash[:12],
+            )
+            return {
+                "status": "first-observation",
+                "hash": observed_hash,
+                "set": observed_set,
+            }
+
+        if stored_hash == observed_hash:
+            # Observed set matches the accepted baseline. If a pending
+            # change was previously stashed, the peer just reverted —
+            # clear the stash so we don't later accept a no-op "change"
+            # via accept_capability_change.
+            if pending_hash is not None:
+                rec.pop("capability_hash_pending", None)
+                rec.pop("capability_set_pending", None)
+                self._save()
+                logger.info(
+                    "Peer %s capability set REVERTED to baseline "
+                    "(cleared pending hash %s...)",
+                    node_id, pending_hash[:12],
+                )
+                return {
+                    "status": "reverted",
+                    "hash": observed_hash,
+                    "set": observed_set,
+                    "cleared_pending_hash": pending_hash,
+                }
+            # Pure match — no state change. Skip the full _save() write
+            # to avoid a disk rewrite on every 30s announce per peer;
+            # last_seen is an in-memory bookkeeping value the operator
+            # surface can recompute from the audit log if needed.
+            return {"status": "match", "hash": observed_hash, "set": observed_set}
+
+        # Stored hash != observed hash. Either a first-time change, or
+        # the peer has already been demoted and is re-announcing the
+        # same pending set. Distinguish so we don't spam audit events.
+        if pending_hash is not None and pending_hash == observed_hash:
+            # Re-announce of the already-pending set. No state change,
+            # no new audit event.
+            return {
+                "status": "pending-match",
+                "hash": observed_hash,
+                "set": observed_set,
+            }
+
+        added = sorted(set(observed_set) - set(stored_set))
+        removed = sorted(set(stored_set) - set(observed_set))
+        self._save()
+        logger.warning(
+            "Peer %s capability set CHANGED: +%d -%d caps "
+            "(old hash %s..., new hash %s...)",
+            node_id, len(added), len(removed),
+            stored_hash[:12], observed_hash[:12],
+        )
+        return {
+            "status": "changed",
+            "old_hash": stored_hash,
+            "new_hash": observed_hash,
+            "old_set": stored_set,
+            "new_set": observed_set,
+            "added": added,
+            "removed": removed,
+        }
+
+    def accept_capability_change(self, node_id: str) -> bool:
+        """Record a peer's current observed capability set as the new
+        baseline. Called after an operator re-promotes a peer that
+        was demoted to ``pending-cap-change``. Returns True if the
+        peer exists and the baseline was updated.
+
+        This does NOT flip the peer's trust_state — the caller (CLI /
+        MCP / dashboard handler) is responsible for that separate
+        action (typically ``set_trust_state(..., "trusted")``).
+        """
+        # v0.8.5.6 B14 fix: take the trust file lock and re-read from
+        # disk inside the lock. Without this, two concurrent operator
+        # cap-promote calls each load the file, both see pending,
+        # both call accept, and both fire PEER_CAP_ACCEPTED audit
+        # events for the same change. Holding the lock + re-reading
+        # makes the second caller see pending already cleared and
+        # return False honestly.
+        with _trust_file_lock(self.path):
+            self._load()  # refresh in-memory from disk under the lock
+            rec = self._peers.get(node_id)
+            if rec is None:
+                return False
+            pending = rec.get("capability_hash_pending")
+            pending_set = rec.get("capability_set_pending")
+            if pending is None:
+                # Either we never had a pending change, or another
+                # process already accepted ours since the caller
+                # opened this TrustStore. Either way: nothing to do.
+                return False
+            rec["capability_hash"] = pending
+            rec["capability_set"] = list(pending_set or [])
+            rec.pop("capability_hash_pending", None)
+            rec.pop("capability_set_pending", None)
+            rec["cap_accepted_at"] = time.time()
+            # Bypass the lock acquisition in _save (we already hold
+            # it) by serializing inline. Same envelope shape as _save.
+            if self._readonly_due_to_mac_failure:
+                logger.error(
+                    "accept_capability_change: trust store at %s is "
+                    "LOCKED read-only — refusing to save", self.path,
+                )
+                return False
+            tmp_path = "{}.{}.{}.tmp".format(self.path, os.getpid(), threading.get_ident())
+            try:
+                envelope = {"peers": self._peers,
+                            "revoked": self._revoked}
+                data_str = json.dumps(envelope, sort_keys=True,
+                                      separators=(",", ":"))
+                envelope["_mac"] = self._compute_mac(data_str)
+                with open(tmp_path, "w") as f:
+                    json.dump(envelope, f, indent=2)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except (OSError, AttributeError):
+                        pass
+                os.replace(tmp_path, self.path)
+            except (IOError, OSError) as e:
+                logger.error(
+                    "accept_capability_change: save failed: %s", e,
+                )
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except OSError:
+                    pass
+                return False
+            logger.info(
+                "Peer %s capability baseline updated to hash %s...",
+                node_id, pending[:12],
+            )
+            return True
+
+    def list_by_capability_status(self, status: str) -> List[dict]:
+        """List peers whose capability-binding status matches ``status``.
+
+        Valid values: "pending-cap-change", "cap-baseline", "cap-unknown".
+        """
+        out = []
+        for node_id, data in self._peers.items():
+            has_hash = data.get("capability_hash") is not None
+            pending = data.get("capability_hash_pending") is not None
+            match = False
+            if status == "pending-cap-change":
+                match = pending
+            elif status == "cap-baseline":
+                match = has_hash and not pending
+            elif status == "cap-unknown":
+                match = not has_hash
+            if match:
+                out.append({
+                    "node_id": node_id,
+                    "fingerprint": data.get("fingerprint", ""),
+                    "trust_state": data.get("trust_state", "trusted"),
+                    "capability_hash": data.get("capability_hash"),
+                    "capability_set": list(data.get("capability_set") or []),
+                    "pending_hash": data.get("capability_hash_pending"),
+                    "pending_set": list(data.get("capability_set_pending") or []),
+                })
+        return out
+
+    def stash_pending_capability_change(self, node_id: str,
+                                        observed_caps) -> bool:
+        """Record the pending (not-yet-accepted) capability set for a
+        peer whose hash changed. Returns True on success.
+
+        Called by the bridge when ``observe_capabilities`` returns
+        ``status=changed``. The operator later runs
+        ``accept_capability_change`` (via CLI / MCP / dashboard) to
+        promote the pending set to the baseline.
+        """
+        rec = self._peers.get(node_id)
+        if rec is None:
+            return False
+        observed_set = sorted({str(c).strip() for c in (observed_caps or [])
+                               if c and str(c).strip()})
+        # v0.8.5.6 B8 fix: honor _save()'s return value. Roll back on
+        # failure so callers can detect it and skip downstream side
+        # effects (e.g. the PEER_CAP_SET_CHANGED audit event should
+        # NOT fire if the stash didn't reach disk).
+        old_hash = rec.get("capability_hash_pending")
+        old_set = rec.get("capability_set_pending")
+        rec["capability_hash_pending"] = canonical_capability_hash(observed_set)
+        rec["capability_set_pending"] = observed_set
+        if not self._save():
+            if old_hash is None:
+                rec.pop("capability_hash_pending", None)
+            else:
+                rec["capability_hash_pending"] = old_hash
+            if old_set is None:
+                rec.pop("capability_set_pending", None)
+            else:
+                rec["capability_set_pending"] = old_set
+            logger.warning(
+                "stash_pending_capability_change rolled back for %s: "
+                "_save() did not persist", node_id,
+            )
+            return False
+        return True
