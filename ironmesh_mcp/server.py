@@ -472,11 +472,17 @@ class IronMeshMCP:
 
     # --- v0.8.5: pending-trust message gate tools ---------------------------
 
-    def _resolve_node_id(self, target: str) -> Optional[str]:
+    def _resolve_node_id(self, target) -> Optional[str]:
         """Resolve an agent name OR 32-hex node_id to a node_id, by
         consulting connected peers. Returns the input verbatim if it
-        already looks like a node_id (32+ hex chars)."""
-        if not target:
+        already looks like a node_id (32+ hex chars).
+
+        v0.8.5.7 B26 fix: accept any input type; non-string targets
+        (int, list, dict from malformed MCP args) used to crash
+        ``len(target)``. Now they return None cleanly and the caller
+        surfaces a "could not resolve" error.
+        """
+        if not isinstance(target, str) or not target:
             return None
         # Heuristic: 32+ lowercase hex chars → already a node_id.
         if len(target) >= 32 and all(c in "0123456789abcdef" for c in target.lower()):
@@ -666,6 +672,28 @@ class IronMeshMCP:
         new_state = "blocked" if want_block else "trusted"
         if not ts.set_trust_state(node_id, new_state):
             return {"error": "set_trust_state returned False"}
+        # v0.8.5.7 B23 fix: fire the audit event so the scanner bumps
+        # the matching Prometheus counter and forensic review sees the
+        # operator action. Without this, an MCP-driven reject left no
+        # audit trail at all.
+        if getattr(self.daemon, "_audit", None) is not None:
+            try:
+                from ironmesh.audit import (
+                    EVENT_PEER_BLOCKED,
+                    EVENT_PEER_STATE_CHANGED,
+                )
+                event = (EVENT_PEER_BLOCKED if want_block
+                         else EVENT_PEER_STATE_CHANGED)
+                self.daemon._audit.log(event, {
+                    "peer_id": node_id,
+                    "actor": "mcp",
+                    "reason": "cap-reject",
+                    "rejected_pending_hash": pending_hash,
+                    "old_state": "pending-cap-change",
+                    "new_state": new_state,
+                })
+            except Exception:
+                pass  # audit is best-effort; return value already captures success
         return {
             "ok": True,
             "node_id": node_id,

@@ -11,6 +11,8 @@ Covers:
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 from hypothesis import given, settings, strategies as st
 
@@ -254,10 +256,10 @@ class TestMetricsCounters:
         assert daemon.metrics.peer_cap_binding_partial == before_partial + 1
         assert daemon.metrics.peer_cap_set_changed == before_changed
 
-    def test_to_dict_exports_all_seven_new_counters(self):
+    def test_to_dict_exports_all_nine_new_counters(self):
         """Guard: if someone adds a counter but forgets to_dict, it
-        silently won't surface through Prometheus. Assert all 7 flow
-        end-to-end through the dict.
+        silently won't surface through Prometheus. Assert all nine
+        event-driven counters flow end-to-end through the dict.
         """
         from ironmesh.bridge import BridgeDaemon
         d = BridgeDaemon(
@@ -272,8 +274,188 @@ class TestMetricsCounters:
             "msg_replay_cross_transport",
             "peer_revoked_local",
             "peer_state_changed",
+            # v0.8.5.7 B22 additions
+            "peer_promoted",
+            "peer_blocked",
         ):
             assert key in md, f"metric {key!r} missing from to_dict()"
+
+    def test_scanner_rescues_events_across_rotation(self, tmp_path):
+        """B24 regression: when the audit log rotates BETWEEN scans,
+        events that landed in the rotated `.1` file after our last
+        offset must still be counted. Rotation is detected via inode
+        comparison (catches the case where the post-rotation live
+        file re-grows past our stored offset before the next scan).
+        """
+        from ironmesh.audit import AuditLog
+        from ironmesh.bridge import BridgeDaemon
+
+        audit_path = tmp_path / "audit.log"
+        hmac_key = b"\xd4" * 32
+        daemon = BridgeDaemon(
+            name="rot-reg",
+            port=29823,
+            passphrase="test-passphrase-12-plus",
+            keys_path=str(tmp_path / "keys.json"),
+            db_path=str(tmp_path / "data.db"),
+            trust_path=str(tmp_path / "known_peers.json"),
+        )
+        daemon._audit = AuditLog(path=str(audit_path), hmac_key=hmac_key,
+                                 max_bytes=10_000)
+        # First scan adopts the current file identity (no events yet).
+        daemon._audit.log("STARTUP", {})
+        daemon._audit_counter_offset = 0
+        daemon._scan_audit_for_counters(str(audit_path))
+
+        # 40 events, scan → counter = 40
+        for i in range(40):
+            daemon._audit.log("PEER_PROMOTED", {"peer_id": f"p{i}"})
+        daemon._scan_audit_for_counters(str(audit_path))
+        assert daemon.metrics.peer_promoted == 40
+
+        # 60 more events. Rotation fires at ~10 KB threshold. Live
+        # file re-grows past the old offset before we next scan.
+        for i in range(40, 100):
+            daemon._audit.log("PEER_PROMOTED", {"peer_id": f"p{i}"})
+
+        assert os.path.exists(str(audit_path) + ".1"), (
+            "rotation didn't trigger — test setup issue"
+        )
+
+        daemon._scan_audit_for_counters(str(audit_path))
+        assert daemon.metrics.peer_promoted == 100, (
+            f"expected 100 after rotation rescue, got "
+            f"{daemon.metrics.peer_promoted}"
+        )
+
+    def test_scanner_counts_peer_promoted_and_blocked(self, tmp_path):
+        """B22 regression: PEER_PROMOTED and PEER_BLOCKED fire from
+        CLI `set-state trusted` and `set-state blocked` respectively.
+        Scanner must map both to their counters so dashboards can
+        distinguish them from PEER_STATE_CHANGED.
+        """
+        from ironmesh.audit import AuditLog
+        from ironmesh.bridge import BridgeDaemon
+
+        audit_path = tmp_path / "audit.log"
+        hmac_key = b"\xc1" * 32
+        daemon = BridgeDaemon(
+            name="scanner-test-3",
+            port=29822,
+            passphrase="test-passphrase-12-plus",
+            keys_path=str(tmp_path / "keys.json"),
+            db_path=str(tmp_path / "data.db"),
+            trust_path=str(tmp_path / "known_peers.json"),
+        )
+        daemon._audit = AuditLog(path=str(audit_path), hmac_key=hmac_key)
+        daemon._audit_counter_offset = 0
+
+        cli_log = AuditLog(path=str(audit_path), hmac_key=hmac_key)
+        cli_log.log("PEER_PROMOTED", {"peer_id": "p1", "actor": "cli"})
+        cli_log.log("PEER_PROMOTED", {"peer_id": "p2", "actor": "cli"})
+        cli_log.log("PEER_BLOCKED", {"peer_id": "p3", "actor": "cli"})
+
+        daemon._scan_audit_for_counters(str(audit_path))
+        assert daemon.metrics.peer_promoted == 2
+        assert daemon.metrics.peer_blocked == 1
+
+    def test_audit_scanner_bumps_counter_for_external_event(self, tmp_path):
+        """B21 regression: an audit event written by a SEPARATE process
+        (CLI, MCP, anything that isn't the daemon itself) must still
+        produce a counter bump. The audit-log scanner is the single
+        source of truth that reconciles in-process and out-of-process
+        writers.
+        """
+        from ironmesh.audit import AuditLog
+        from ironmesh.bridge import BridgeDaemon
+
+        audit_path = tmp_path / "audit.log"
+        hmac_key = b"\xa5" * 32
+
+        # Step 1: seed the file with one "legacy" entry so the daemon's
+        # startup offset lands past it. The scanner should NOT count
+        # pre-startup entries.
+        seed_log = AuditLog(path=str(audit_path), hmac_key=hmac_key)
+        seed_log.log("PEER_CAP_ACCEPTED", {"peer": "pre-start", "actor": "cli"})
+
+        # Step 2: construct a daemon that would point at this log. We
+        # don't call _start() (which binds sockets); instead we wire the
+        # fields the scanner needs by hand and drive _scan_audit_for_counters.
+        daemon = BridgeDaemon(
+            name="scanner-test",
+            port=29820,
+            passphrase="test-passphrase-12-plus",
+            keys_path=str(tmp_path / "keys.json"),
+            db_path=str(tmp_path / "data.db"),
+            trust_path=str(tmp_path / "known_peers.json"),
+        )
+        daemon._audit = seed_log  # so _scan sees the same path
+        daemon._audit_counter_offset = os.path.getsize(str(audit_path))
+
+        # Step 3: simulate a CLI process writing an event AFTER daemon startup.
+        # The CLI opens its own AuditLog on the same path — this is the
+        # pattern `ironmesh trust cap-promote` uses today.
+        cli_log = AuditLog(path=str(audit_path), hmac_key=hmac_key)
+        cli_log.log("PEER_CAP_ACCEPTED", {
+            "peer": "post-start", "actor": "cli",
+            "old_hash": "a" * 64, "new_hash": "b" * 64,
+        })
+        cli_log.log("PEER_REVOKED_LOCAL", {"peer_id": "p", "actor": "cli"})
+        cli_log.log("PEER_STATE_CHANGED", {
+            "peer_id": "p", "actor": "cli",
+            "old_state": "pending-cap-change", "new_state": "trusted",
+        })
+
+        # Step 4: run the scanner synchronously (the async loop is just
+        # a ticker around this method).
+        before_accepted = daemon.metrics.peer_cap_accepted
+        before_revoked = daemon.metrics.peer_revoked_local
+        before_changed = daemon.metrics.peer_state_changed
+        daemon._scan_audit_for_counters(str(audit_path))
+
+        assert daemon.metrics.peer_cap_accepted == before_accepted + 1, (
+            "CLI-written PEER_CAP_ACCEPTED should bump the accepted counter"
+        )
+        assert daemon.metrics.peer_revoked_local == before_revoked + 1
+        assert daemon.metrics.peer_state_changed == before_changed + 1
+
+    def test_audit_scanner_does_not_double_count_in_proc_bumps(self, tmp_path):
+        """Regression for the deduplication half of the scanner: events
+        the daemon ORIGINATED are bumped in-process + reserved; when the
+        scanner reads them back it must deduct from the reservation,
+        NOT bump again.
+        """
+        from ironmesh.audit import AuditLog
+        from ironmesh.bridge import BridgeDaemon
+
+        audit_path = tmp_path / "audit.log"
+        hmac_key = b"\xb7" * 32
+        daemon = BridgeDaemon(
+            name="scanner-test-2",
+            port=29821,
+            passphrase="test-passphrase-12-plus",
+            keys_path=str(tmp_path / "keys.json"),
+            db_path=str(tmp_path / "data.db"),
+            trust_path=str(tmp_path / "known_peers.json"),
+        )
+        daemon._audit = AuditLog(path=str(audit_path), hmac_key=hmac_key)
+        daemon._audit_counter_offset = 0  # scan from the top
+
+        # Simulate daemon emission: bump in-process + reserve.
+        daemon._reserve_counter_bump("peer_cap_set_changed")
+        daemon._audit.log("PEER_CAP_SET_CHANGED", {"peer": "x"})
+
+        before = daemon.metrics.peer_cap_set_changed
+        # Scanner should see the entry but NOT double-count — the
+        # reservation consumes one event.
+        daemon._scan_audit_for_counters(str(audit_path))
+        assert daemon.metrics.peer_cap_set_changed == before, (
+            "in-process reserved event should not be bumped again by scanner"
+        )
+        assert daemon._in_proc_counter_bumps.get(
+            "peer_cap_set_changed", 0) == 0, (
+            "reservation should be consumed after scanner reads the event"
+        )
 
 
 class TestConcurrentCapPromoteRace:

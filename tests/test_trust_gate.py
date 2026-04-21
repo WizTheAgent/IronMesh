@@ -338,6 +338,7 @@ class TestGateEndToEnd:
 
         async def _noop_broadcast(_msg):
             return None
+        import threading
         daemon = SimpleNamespace(
             config=cfg,
             _db=store,
@@ -345,17 +346,37 @@ class TestGateEndToEnd:
             _gui_broadcast=_noop_broadcast,
             _audit=None,
             node_id="self-node-id-32-hex" + "0" * 14,
-            metrics=SimpleNamespace(messages_received_blocked=0),
+            # v0.8.5.7 B22: metrics stub now includes every counter
+            # `promote_pending_peer` / `block_pending_peer` / the
+            # cap-binding path touches via _reserve_counter_bump.
+            metrics=SimpleNamespace(
+                messages_received_blocked=0,
+                peer_promoted=0,
+                peer_blocked=0,
+                peer_cap_set_changed=0,
+                peer_cap_baseline=0,
+                peer_cap_accepted=0,
+                peer_cap_binding_partial=0,
+                msg_replay_cross_transport=0,
+                peer_revoked_local=0,
+                peer_state_changed=0,
+            ),
             bus=SimpleNamespace(publish=lambda *a, **k: None),
             trust_path=trust_path,
             # v0.8.5.2-R5: per-peer audit-write rate-limit dict.
             _gate_audit_last_write={},
+            # v0.8.5.7 B21 / B22: reservation dict + lock for the
+            # _reserve_counter_bump path; the audit-log scanner is
+            # inactive in these unit tests, so reservations just
+            # accumulate (harmless — we only read counter values).
+            _in_proc_counter_bumps={},
+            _counter_lock=threading.Lock(),
         )
         # Bind the gate methods to our stub.
         from ironmesh.bridge import BridgeDaemon
         for name in ("_gate_inbound_msg", "promote_pending_peer",
                      "block_pending_peer", "list_pending_trust",
-                     "_GATED_MSG_TYPES"):
+                     "_reserve_counter_bump", "_GATED_MSG_TYPES"):
             attr = getattr(BridgeDaemon, name)
             if callable(attr):
                 setattr(daemon, name, attr.__get__(daemon, daemon.__class__))

@@ -841,7 +841,10 @@ def cmd_trust(args):
             print("No trusted peers.")
             return 0
         show_caps = getattr(args, "show_caps", False)
-        import time
+        # v0.8.5.7: `time` is imported at module top; don't re-import
+        # locally here or Python's scoping rule makes `time` a local
+        # for the entire cmd_trust function, breaking other branches
+        # (cap-status) that also call time.strftime.
         if show_caps:
             # v0.8.5.7: include capability-binding status column so
             # operators can see at a glance which peers have a pinned
@@ -930,7 +933,6 @@ def cmd_trust(args):
             return 0
         print(f"{'Node ID':<22s} {'Revoker':<22s} {'Timestamp':<20s} {'Reason'}")
         print("-" * 80)
-        import time
         for r in revoked:
             ts = time.strftime("%Y-%m-%d %H:%M:%S",
                                time.localtime(r.get("timestamp", 0)))

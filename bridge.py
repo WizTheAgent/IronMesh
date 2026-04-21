@@ -259,6 +259,15 @@ class Metrics:
         self.msg_replay_cross_transport = 0
         self.peer_revoked_local = 0
         self.peer_state_changed = 0
+        # v0.8.5.7 B22 fix: trust-state operator transitions.
+        # Pre-existing PEER_PROMOTED and PEER_BLOCKED audit event types
+        # didn't have counters in any prior release. The audit-log
+        # scanner landed in v0.8.5.7 B21; now's the time to mirror
+        # them into Prometheus so operators can distinguish "operator
+        # accepted this peer" from "operator flipped state to
+        # something else" in Grafana.
+        self.peer_promoted = 0
+        self.peer_blocked = 0
 
     def to_dict(self) -> dict:
         return {
@@ -285,6 +294,8 @@ class Metrics:
             "msg_replay_cross_transport": self.msg_replay_cross_transport,
             "peer_revoked_local": self.peer_revoked_local,
             "peer_state_changed": self.peer_state_changed,
+            "peer_promoted": self.peer_promoted,
+            "peer_blocked": self.peer_blocked,
         }
 
 
@@ -1404,6 +1415,29 @@ class BridgeDaemon:
         # Audit log — initialized after keys are loaded
         self._audit: Optional[AuditLog] = None
 
+        # v0.8.5.7 B21: audit-log counter sync state.
+        # _audit_counter_offset — where the next scan picks up.
+        # _audit_counter_inode — tracks file identity. If the live
+        #   audit log has a different inode than we last saw, rotation
+        #   happened (even if the live file is now LARGER than the
+        #   offset we stored from the old file). B24 fix — the
+        #   `current_size < offset` heuristic missed the case where
+        #   post-rotation writes re-grew the live file past the
+        #   pre-rotation offset before the next scan.
+        # _in_proc_counter_bumps — events this daemon already bumped
+        #   in-process; decremented by the scanner so we don't
+        #   double-count.
+        # _counter_lock — protects both fields. The bump path can be
+        #   called from mesh.py's worker thread (cross-transport replay
+        #   dedup); the scanner runs on the asyncio thread. Without
+        #   the lock, a concurrent bump + scan could lose an increment
+        #   or corrupt the reservation dict.
+        self._audit_counter_offset: int = 0
+        self._audit_counter_inode: Optional[int] = None
+        self._in_proc_counter_bumps: Dict[str, int] = {}
+        import threading as _threading
+        self._counter_lock = _threading.Lock()
+
         # Fingerprint pinning for mDNS — maps agent_name -> {fingerprint, address}
         # Populated after first successful handshake. mDNS announcements rejected if
         # cached fingerprint doesn't match a new address claim.
@@ -1620,6 +1654,7 @@ class BridgeDaemon:
         # Background tasks
         asyncio.ensure_future(self._heartbeat_loop())
         asyncio.ensure_future(self._cleanup_loop())
+        asyncio.ensure_future(self._audit_counter_sync_loop())
         asyncio.ensure_future(self._reconnect_loop())
         asyncio.ensure_future(self._queue_flush_loop())
         asyncio.ensure_future(self._discover_loop())
@@ -2530,6 +2565,8 @@ class BridgeDaemon:
             except Exception as e:
                 logger.warning("Promote-drain re-publish failed for %s msg=%s: %s",
                                target_node_id, m["msg_id"], e)
+        # v0.8.5.7 B22: reserve counter bump so scanner doesn't double-count
+        self._reserve_counter_bump("peer_promoted")
         if self._audit:
             try:
                 self._audit.log(EVENT_PEER_PROMOTED, {
@@ -2560,6 +2597,8 @@ class BridgeDaemon:
             return {"ok": False, "discarded": 0,
                     "error": f"peer {target_node_id} not in trust store"}
         discarded = await self._db.discard_pending_trust(target_node_id)
+        # v0.8.5.7 B22: reserve counter bump so scanner doesn't double-count
+        self._reserve_counter_bump("peer_blocked")
         if self._audit:
             try:
                 self._audit.log(EVENT_PEER_BLOCKED, {
@@ -2658,7 +2697,10 @@ class BridgeDaemon:
             # v0.8.5.7: observability — mirror the audit event into a
             # Prometheus counter so Grafana alerts can fire on baseline
             # pinning events (the cap-binding TOFU-for-caps moment).
-            self.metrics.peer_cap_baseline += 1
+            # _reserve_counter_bump bumps now + tells the audit-log
+            # scanner to skip the next matching event (B21 fix: CLI +
+            # MCP-spawned-daemon paths are the OTHER counter source).
+            self._reserve_counter_bump("peer_cap_baseline")
             _otel_span_event("peer.cap.baseline", peer_id, {
                 "capability_hash": (result.get("hash") or "")[:16],
                 "capability_count": len(result.get("set") or []),
@@ -2751,10 +2793,11 @@ class BridgeDaemon:
             event = (EVENT_PEER_CAP_SET_CHANGED if fully_applied
                      else EVENT_PEER_CAP_BINDING_PARTIAL)
             # v0.8.5.7: Prometheus + OTel mirrors of the audit event
+            # (reserved so the audit-log scanner doesn't double-count)
             if fully_applied:
-                self.metrics.peer_cap_set_changed += 1
+                self._reserve_counter_bump("peer_cap_set_changed")
             else:
-                self.metrics.peer_cap_binding_partial += 1
+                self._reserve_counter_bump("peer_cap_binding_partial")
             _otel_span_event(
                 "peer.cap.set_changed" if fully_applied
                 else "peer.cap.binding_partial",
@@ -2840,7 +2883,8 @@ class BridgeDaemon:
             return {"ok": False, "error": "accept_capability_change returned False"}
         ts.set_trust_state(node_id, "trusted")
         # v0.8.5.7: observability for operator-accepted cap changes
-        self.metrics.peer_cap_accepted += 1
+        # (reserved so the audit-log scanner doesn't double-count)
+        self._reserve_counter_bump("peer_cap_accepted")
         _otel_span_event("peer.cap.accepted", node_id, {
             "new_hash": (new_hash or "")[:16],
         })
@@ -4023,6 +4067,174 @@ class BridgeDaemon:
             except Exception as e:
                 logger.warning("Cleanup loop error: %s", e)
 
+    # v0.8.5.7 B21 fix: single source of truth for event-driven counters.
+    # The daemon in-process bumps covered events it ORIGINATED, but CLI
+    # and MCP-in-a-separate-process paths fire the same audit events
+    # without access to daemon.metrics. Rather than have each process
+    # try to reach across to the daemon's memory, the daemon tails its
+    # own audit log: every second it reads from a stored byte offset to
+    # EOF, parses each new entry, and bumps the counter that matches the
+    # event type. Audit-log rotation resets the offset. In-process
+    # bumps are NOT duplicated — the scanner is authoritative so they
+    # live on the write path only as a "record of intent" (actual
+    # counter value comes from the scanner).
+    def _reserve_counter_bump(self, counter_name: str) -> None:
+        """Reserve an in-process counter bump. The daemon itself is
+        about to fire an audit event; bump the metric NOW (so /metrics
+        is fresh) and tell the scanner to skip the next matching event
+        when it reads back the log (avoid double-counting).
+
+        Thread-safe: mesh.py calls this from a worker thread; scanner
+        runs on the asyncio thread. _counter_lock serializes both.
+        """
+        try:
+            with self._counter_lock:
+                cur = getattr(self.metrics, counter_name)
+                setattr(self.metrics, counter_name, cur + 1)
+                self._in_proc_counter_bumps[counter_name] = \
+                    self._in_proc_counter_bumps.get(counter_name, 0) + 1
+        except AttributeError:
+            pass
+
+    _AUDIT_EVENT_TO_COUNTER = {
+        "PEER_CAP_SET_CHANGED":       "peer_cap_set_changed",
+        "PEER_CAP_BASELINE":          "peer_cap_baseline",
+        "PEER_CAP_ACCEPTED":          "peer_cap_accepted",
+        "PEER_CAP_BINDING_PARTIAL":   "peer_cap_binding_partial",
+        "MSG_REPLAY_CROSS_TRANSPORT": "msg_replay_cross_transport",
+        "PEER_REVOKED_LOCAL":         "peer_revoked_local",
+        "PEER_STATE_CHANGED":         "peer_state_changed",
+        # v0.8.5.7 B22: pre-existing events that now get Prometheus
+        # mirrors via the same scanner path.
+        "PEER_PROMOTED":              "peer_promoted",
+        "PEER_BLOCKED":               "peer_blocked",
+    }
+
+    async def _audit_counter_sync_loop(self):
+        """Periodically tail the audit log and increment counters for
+        events fired by CLI / MCP / other processes that can't reach
+        daemon.metrics directly. Idempotent on event reads because
+        the byte-offset advances monotonically within a single log file
+        and resets cleanly on rotation.
+        """
+        if self._audit is None:
+            return
+        log_path = self._audit._path  # noqa: SLF001
+        # Start from current EOF — we count events emitted from this
+        # daemon-run forward. Historical events (pre-restart) show up
+        # in the audit log but the counter starts at 0 on each restart,
+        # matching every other counter in the Metrics dataclass.
+        try:
+            st = os.stat(log_path)
+            self._audit_counter_offset = st.st_size
+            self._audit_counter_inode = st.st_ino
+        except OSError:
+            self._audit_counter_offset = 0
+            self._audit_counter_inode = None
+
+        # Track in-process increments so the scanner can deduct them
+        # rather than double-counting. _in_proc_bumps[event] = count.
+        # Each time the scanner reads an event, it checks if the daemon
+        # already bumped in-process for that event; if yes, it DOESN'T
+        # bump again, and decrements the in-process counter.
+        while self._running:
+            await asyncio.sleep(1.0)
+            try:
+                self._scan_audit_for_counters(log_path)
+            except Exception as e:
+                logger.debug("audit counter sync failed: %s", e)
+
+    def _scan_audit_for_counters(self, log_path: str) -> None:
+        """Read new audit entries from ``self._audit_counter_offset`` to
+        EOF, parse each one, and bump the matching metric counter.
+
+        Rotation detection is via inode comparison: when `audit.log` is
+        renamed to `.1` during rotation, the new live file has a
+        different st_ino. This catches the case where post-rotation
+        writes re-grow the live file past our stored offset before we
+        next scan (the naive size<offset check misses this — B24).
+        """
+        try:
+            st = os.stat(log_path)
+        except OSError:
+            return
+        current_size = st.st_size
+        current_inode = st.st_ino
+
+        rotated_path = log_path + ".1"
+        # v0.8.5.7 B24: inode change → rotation. Rescue events the
+        # scanner hadn't yet read from the file that just became `.1`,
+        # then reset offset.
+        if (self._audit_counter_inode is not None
+                and current_inode != self._audit_counter_inode):
+            if os.path.exists(rotated_path):
+                try:
+                    rot_st = os.stat(rotated_path)
+                    # Only rescue the file whose inode matches what we
+                    # were tracking — i.e. the file that just became .1.
+                    # If `.1` is an older rotation (already scanned),
+                    # skip to avoid double-counting.
+                    if rot_st.st_ino == self._audit_counter_inode:
+                        rot_size = rot_st.st_size
+                        start = min(self._audit_counter_offset, rot_size)
+                        with open(rotated_path, "r", encoding="utf-8") as rf:
+                            rf.seek(start)
+                            self._process_audit_buf(rf.read())
+                except OSError:
+                    pass
+            self._audit_counter_offset = 0
+            self._audit_counter_inode = current_inode
+        elif self._audit_counter_inode is None:
+            # First scan of this run — adopt the current file identity
+            self._audit_counter_inode = current_inode
+
+        if current_size < self._audit_counter_offset:
+            # Sanity fallback: file shrank but inode unchanged (truncation,
+            # operator manually zeroed the file). Don't try to rescue —
+            # there's no known prior file with this content.
+            self._audit_counter_offset = 0
+        if current_size == self._audit_counter_offset:
+            return  # nothing new
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                f.seek(self._audit_counter_offset)
+                buf = f.read()
+                new_offset = f.tell()
+        except OSError:
+            return
+        self._process_audit_buf(buf)
+        self._audit_counter_offset = new_offset
+
+    def _process_audit_buf(self, buf: str) -> None:
+        """Parse each line of an audit-log buffer and bump the matching
+        metric counter. Shared by the live-file path and the rotated-
+        file rescue path (v0.8.5.7 B24)."""
+        for line in buf.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue  # torn or malformed line — next scan will retry
+            event = entry.get("event")
+            counter_name = self._AUDIT_EVENT_TO_COUNTER.get(event)
+            if counter_name is None:
+                continue
+            # If the daemon already bumped in-process for this event,
+            # consume the reservation rather than double-counting.
+            # Lock the whole read-modify-write against concurrent
+            # _reserve_counter_bump from other threads.
+            with self._counter_lock:
+                if (self._in_proc_counter_bumps.get(counter_name, 0) > 0):
+                    self._in_proc_counter_bumps[counter_name] -= 1
+                    continue
+                try:
+                    cur = getattr(self.metrics, counter_name)
+                    setattr(self.metrics, counter_name, cur + 1)
+                except AttributeError:
+                    pass
+
     async def _long_drop_watchdog(self):
         """v0.7.2: alert on peers offline beyond the configured threshold.
 
@@ -4540,6 +4752,12 @@ class BridgeDaemon:
              "Local operator revoked a pinned peer via CLI (no network-wide propagation)"),
             ("peer_state_changed", "ironmesh_peer_state_changed_total", "counter",
              "Trust-state transitions via operator CLI (covers states other than PROMOTED/BLOCKED)"),
+            # v0.8.5.7 B22 — mirror the pre-existing PEER_PROMOTED /
+            # PEER_BLOCKED audit events into Prometheus counters.
+            ("peer_promoted", "ironmesh_peer_promoted_total", "counter",
+             "Operator promoted a pending peer to trusted (drained any queued messages)"),
+            ("peer_blocked", "ironmesh_peer_blocked_total", "counter",
+             "Operator blocked a peer (local-only quiet block; distinct from signed REVOCATION)"),
         ]
         lines = []
         for key, name, kind, help_text in spec:

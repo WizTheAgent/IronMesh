@@ -835,8 +835,12 @@ class MeshRouter:
                     # v0.8.5.7: bump the bridge's Prometheus counter +
                     # emit an OTel event so cross-transport replay is
                     # observable without scraping the audit log.
+                    # _reserve_counter_bump tells the audit-log scanner
+                    # to skip the matching event (B21: CLI / MCP paths
+                    # rely on the scanner for their counter bumps).
                     try:
-                        self.daemon.metrics.msg_replay_cross_transport += 1
+                        self.daemon._reserve_counter_bump(
+                            "msg_replay_cross_transport")
                     except Exception:
                         pass
                     try:
