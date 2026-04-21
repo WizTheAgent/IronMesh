@@ -167,6 +167,115 @@ class TestMacMismatchReadOnlyLatch:
         )
 
 
+class TestMetricsCounters:
+    """v0.8.5.7: every new audit event type has a matching Prometheus
+    counter on BridgeDaemon.metrics. This test asserts each counter
+    increments exactly once per fired event, so Grafana alerts fire
+    on real conditions rather than silently ignoring them.
+    """
+
+    def _make_daemon(self, tmp_path):
+        from ironmesh.bridge import BridgeDaemon
+        from ironmesh.keys import generate_keypair
+        daemon = BridgeDaemon(
+            name="metrics-test",
+            port=29810,
+            passphrase="test-passphrase-12-plus",
+            keys_path=str(tmp_path / "keys.json"),
+            db_path=str(tmp_path / "data.db"),
+            trust_path=str(tmp_path / "known_peers.json"),
+        )
+        daemon._keypair = generate_keypair()
+        return daemon
+
+    def test_first_observation_bumps_baseline_counter(self, tmp_path):
+        daemon = self._make_daemon(tmp_path)
+        before = daemon.metrics.peer_cap_baseline
+        daemon._handle_cap_observation("p" * 32, {
+            "status": "first-observation",
+            "hash": "a" * 64,
+            "set": ["llm:x"],
+        })
+        assert daemon.metrics.peer_cap_baseline == before + 1
+
+    def test_changed_with_full_persist_bumps_set_changed_counter(self, tmp_path):
+        daemon = self._make_daemon(tmp_path)
+        peer = "q" * 32
+        ts = daemon._open_trust_store()
+        ts.pin_peer(peer, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                    trust_state="trusted")
+        ts.observe_capabilities(peer, ["role:a"])
+        before_changed = daemon.metrics.peer_cap_set_changed
+        before_partial = daemon.metrics.peer_cap_binding_partial
+        daemon._handle_cap_observation(peer, {
+            "status": "changed",
+            "old_hash": "a" * 64,
+            "new_hash": "b" * 64,
+            "old_set": ["role:a"],
+            "new_set": ["role:b"],
+            "added": ["role:b"],
+            "removed": ["role:a"],
+        })
+        assert daemon.metrics.peer_cap_set_changed == before_changed + 1
+        assert daemon.metrics.peer_cap_binding_partial == before_partial
+
+    def test_changed_with_stash_failure_bumps_partial_counter(self, tmp_path):
+        # Force stash to fail by tampering the trust file so the
+        # read-only latch trips. The B8 partial-failure path should
+        # then emit EVENT_PEER_CAP_BINDING_PARTIAL and the partial
+        # counter — NOT the set-changed one.
+        import json as _json
+        daemon = self._make_daemon(tmp_path)
+        peer = "r" * 32
+        # Seed a peer via the normal path, then corrupt the on-disk MAC.
+        ts = daemon._open_trust_store()
+        ts.pin_peer(peer, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                    trust_state="trusted")
+        ts.observe_capabilities(peer, ["role:a"])
+        del ts
+        bad = {"peers": {peer: {
+            "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "fingerprint": peer,
+            "trust_state": "trusted",
+        }}, "revoked": {}, "_mac": "0" * 64}
+        with open(str(tmp_path / "known_peers.json"), "w") as f:
+            _json.dump(bad, f)
+        before_changed = daemon.metrics.peer_cap_set_changed
+        before_partial = daemon.metrics.peer_cap_binding_partial
+        daemon._handle_cap_observation(peer, {
+            "status": "changed",
+            "old_hash": "a" * 64,
+            "new_hash": "b" * 64,
+            "old_set": ["role:a"],
+            "new_set": ["role:b"],
+            "added": ["role:b"],
+            "removed": ["role:a"],
+        })
+        assert daemon.metrics.peer_cap_binding_partial == before_partial + 1
+        assert daemon.metrics.peer_cap_set_changed == before_changed
+
+    def test_to_dict_exports_all_seven_new_counters(self):
+        """Guard: if someone adds a counter but forgets to_dict, it
+        silently won't surface through Prometheus. Assert all 7 flow
+        end-to-end through the dict.
+        """
+        from ironmesh.bridge import BridgeDaemon
+        d = BridgeDaemon(
+            name="x", port=29811, passphrase="test-passphrase-12-plus",
+        )
+        md = d.metrics.to_dict()
+        for key in (
+            "peer_cap_set_changed",
+            "peer_cap_baseline",
+            "peer_cap_accepted",
+            "peer_cap_binding_partial",
+            "msg_replay_cross_transport",
+            "peer_revoked_local",
+            "peer_state_changed",
+        ):
+            assert key in md, f"metric {key!r} missing from to_dict()"
+
+
 class TestConcurrentCapPromoteRace:
     """S7 regression: simulate 5 concurrent operator-initiated
     cap-promote calls against a peer in pending-cap-change. Mirrors

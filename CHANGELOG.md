@@ -5,6 +5,99 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.5.7] — Finish shipping cap-binding
+
+Patch release on top of v0.8.5.6. No protocol or schema changes;
+every v0.8.x peer stays interoperable. This release polishes the
+capability-set binding feature that landed in v0.8.5.6, turning it
+from "usable via CLI" into "usable end-to-end through the dashboard
++ CLI + MCP + Prometheus + OpenTelemetry."
+
+### Added
+
+- **Dashboard `PENDING CAP CHANGE` panel.** Parallels the existing
+  PENDING TRUST panel with a per-peer row showing the capability-set
+  diff (added / removed tokens) and an ACCEPT button. Live-updates
+  via a new `cap_change_detected` WebSocket push from the daemon, so
+  operators don't need to refresh.
+- **Seven new Prometheus counters** — one per cap-binding /
+  cross-transport event type:
+  `ironmesh_peer_cap_set_changed_total`,
+  `ironmesh_peer_cap_baseline_total`,
+  `ironmesh_peer_cap_accepted_total`,
+  `ironmesh_peer_cap_binding_partial_total`,
+  `ironmesh_msg_replay_cross_transport_total`,
+  `ironmesh_peer_revoked_local_total`,
+  `ironmesh_peer_state_changed_total`. All surface in
+  `/metrics` and integrate with existing Grafana dashboards.
+- **OpenTelemetry spans** for the same events via
+  `telemetry.emit_event(...)` — a new helper that opens a
+  zero-duration span when OTel is configured, no-op otherwise.
+  Span names follow the `peer.cap.*` / `msg.replay.*` convention.
+- **`examples/cap_binding_workflow.py`** — runnable, fully in-process
+  walkthrough of pin → observe → change → review → accept → match.
+  No network, no LLM; exercises the same `TrustStore` paths the live
+  daemon uses.
+- **`ironmesh trust cap-reject <node_id>`** — explicit operator
+  "no" to a pending cap change. Clears the pending hash, keeps the
+  existing baseline, restores `trusted` state. `--block` flag also
+  flips trust state to `blocked` in one shot for the "suspicious
+  change" response flow.
+- **`ironmesh trust cap-status <node_id>`** — single-peer deep dive
+  with all cap-binding fields (baseline hash, pending hash, timestamps,
+  diff if any). `--json` for scripts.
+- **`ironmesh trust list --show-caps`** — adds a `Caps` column to the
+  existing peers list showing `baseline` / `pending` / `unknown`.
+- **`ironmesh audit tail --event <type> --since <window>`** — filtered
+  audit tail for operator triage. Accepts multiple event types
+  (comma-separated), relative windows (`1h`, `15m`, `2d`) or ISO-8601
+  timestamps. `--json` for scripts, `--limit` for paging.
+- **`ironmesh audit stats --since <window>`** — histogram of event
+  types over a recent window. Answers "what happened in the last
+  hour?" without manually paging the log.
+- **Two new MCP tools** (total surface grows 23 → 25):
+  - `ironmesh_cap_diff` — non-destructive cap diff for a single peer.
+  - `ironmesh_cap_reject_peer` — reject the pending change, optional
+    `block` flag.
+- **`docs/OPERATOR_RUNBOOK.md`** — playbook for the seven common
+  cap-binding + audit triage scenarios (peer demoting itself,
+  `PEER_CAP_BINDING_PARTIAL` fired, audit TAMPER reported, etc.).
+- **`AGENTS.md`** at the repo root — convention-aligned guide for AI
+  coding assistants (Claude Code, Cursor, Aider, Zed, Codex). Covers
+  operating rules, workflow, and common tasks.
+- **`scripts/stress_concurrent.py`** — standalone concurrent
+  cap-promote harness (promoted from the v0.8.5.6 ad-hoc audit).
+  Runs 2000 threads × 20 peers in ~3s on a laptop; asserts exactly
+  one winner per peer, no MAC corruption, correct final baseline.
+- **`.github/workflows/stress-nightly.yml`** — runs the stress
+  harness nightly on Ubuntu + Windows, Python 3.11 + 3.13. Catches
+  concurrency regressions in the trust-store locking contract (B7 /
+  B14 / B19 family) before they reach a release.
+
+### Changed
+
+- **Dashboard PENDING TRUST panel** now sits next to a parallel
+  PENDING CAP CHANGE panel under the peers tree. Both auto-refresh
+  via the existing WebSocket control channel.
+- **`docs/CONFIGURATION.md`** gains "Capability-set binding" and
+  "Audit log triage" sections covering every v0.8.5.6 / v0.8.5.7 CLI
+  command.
+
+### Verified
+
+- pytest: 722 passed (was 718 in v0.8.5.6; +4 for new metric-counter
+  tests, no regressions). Integration-only tests excluded.
+- 2000-thread concurrent cap-promote stress via
+  `scripts/stress_concurrent.py`: exactly 1 winner per peer, no MAC
+  corruption, <5 s runtime.
+- MCP tool surface: 25 tools registered; `test_total_tool_count`
+  updated.
+- `ruff check`: clean across touched files.
+- `scripts/leak-scan.sh --all`: clean.
+- `scripts/release-smoke.sh`: PASS.
+- Live 3-node mesh (see release post on the site): cap-binding
+  observed end-to-end through dashboard + CLI + MCP.
+
 ## [0.8.5.6] — Trust binding (capability-set + cross-transport replay)
 
 Patch release on top of v0.8.5.5. No protocol or schema changes;

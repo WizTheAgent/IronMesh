@@ -59,7 +59,10 @@ from ironmesh.audit import (
 from ironmesh.capabilities import CapabilityRegistry
 from ironmesh.mesh import MeshRouter
 from ironmesh.store import MessageStore
-from ironmesh.telemetry import span as _otel_span
+from ironmesh.telemetry import (
+    emit_event as _otel_span_event,
+    span as _otel_span,
+)
 
 logger = logging.getLogger("ironmesh.bridge")
 
@@ -244,6 +247,18 @@ class Metrics:
         self.messages_failed = 0
         self.session_rekeys = 0
         self.lora_oversized_messages = 0
+        # v0.8.5.7: cap-binding + cross-transport replay observability.
+        # One counter per audit event type introduced by v0.8.5.6 so
+        # operators can alert on them via Prometheus (e.g. fire a
+        # PagerDuty page when peer_cap_set_changed_total increases
+        # outside of a maintenance window).
+        self.peer_cap_set_changed = 0
+        self.peer_cap_baseline = 0
+        self.peer_cap_accepted = 0
+        self.peer_cap_binding_partial = 0
+        self.msg_replay_cross_transport = 0
+        self.peer_revoked_local = 0
+        self.peer_state_changed = 0
 
     def to_dict(self) -> dict:
         return {
@@ -263,6 +278,13 @@ class Metrics:
             "messages_failed": self.messages_failed,
             "session_rekeys": self.session_rekeys,
             "lora_oversized_messages": self.lora_oversized_messages,
+            "peer_cap_set_changed": self.peer_cap_set_changed,
+            "peer_cap_baseline": self.peer_cap_baseline,
+            "peer_cap_accepted": self.peer_cap_accepted,
+            "peer_cap_binding_partial": self.peer_cap_binding_partial,
+            "msg_replay_cross_transport": self.msg_replay_cross_transport,
+            "peer_revoked_local": self.peer_revoked_local,
+            "peer_state_changed": self.peer_state_changed,
         }
 
 
@@ -603,6 +625,24 @@ footer.ops .legal{color:var(--text-faint);font-size:10px;letter-spacing:.5px}
     <tbody id="pending-trust-body"></tbody>
    </table>
   </div>
+
+  <!-- v0.8.5.7: pending capability-set change (cap-binding operator surface) -->
+  <div class="panel-hdr" style="border-top:1px solid var(--border)">
+   <span class="title">PENDING CAP CHANGE</span>
+   <span class="count" id="pending-cap-count">0</span>
+   <span class="tools">
+    <span id="pending-cap-hint" style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.06em">capability-set binding</span>
+   </span>
+  </div>
+  <div class="pending-cap-wrap" id="pending-cap-wrap" style="padding:6px 10px 12px">
+   <div class="empty" id="pending-cap-empty" style="font-size:11px;color:var(--text-dim);padding:6px 0">no peers awaiting cap review</div>
+   <table class="peers" id="pending-cap-table" style="display:none">
+    <thead><tr>
+     <th>Node</th><th>Added</th><th>Removed</th><th>Action</th>
+    </tr></thead>
+    <tbody id="pending-cap-body"></tbody>
+   </table>
+  </div>
  </section>
 
  <section class="panel">
@@ -720,6 +760,8 @@ footer.ops .legal{color:var(--text-faint);font-size:10px;letter-spacing:.5px}
    statusline('control channel open · ephemeral ECDH complete');
    // v0.8.5: pull initial pending-trust state for the panel.
    try{ ws.send(JSON.stringify({action:'list_pending_trust'})); }catch(e){}
+   // v0.8.5.7: pull initial pending-cap-change state.
+   try{ ws.send(JSON.stringify({action:'list_pending_cap'})); }catch(e){}
   };
   ws.onclose   = () => { setMeshState('ISOLATED','CONTROL CHANNEL CLOSED'); statusline('control channel closed · reconnecting…', 'warn'); setTimeout(connect, 2000); };
   ws.onerror   = () => { try{ ws.close(); }catch(e){} };
@@ -756,6 +798,18 @@ footer.ops .legal{color:var(--text-faint);font-size:10px;letter-spacing:.5px}
   } else if(msg.type === 'block_ack'){
    statusline('blocked '+(msg.target||'').slice(0,12)+' · discarded '+msg.discarded, msg.ok?'warn':'alarm');
    if(ws && ws.readyState === 1) ws.send(JSON.stringify({action:'list_pending_trust'}));
+  } else if(msg.type === 'pending_cap_list'){
+   // v0.8.5.7: initial or refreshed list of peers in pending-cap-change
+   renderPendingCap(msg.pending || []);
+  } else if(msg.type === 'cap_change_detected'){
+   // v0.8.5.7: a peer's cap-set just changed. Surface on feed + refresh panel.
+   pushFeed({ t:Date.now()/1000, dir:'sys', sev:'warn', type:'CAPCHG',
+              peer:(msg.peer||'').slice(0,12),
+              payload:'+'+(msg.added||[]).length+' -'+(msg.removed||[]).length+' caps · review in panel' });
+   if(ws && ws.readyState === 1) ws.send(JSON.stringify({action:'list_pending_cap'}));
+  } else if(msg.type === 'cap_promote_ack'){
+   statusline('cap-accepted '+(msg.node_id||'').slice(0,12)+' · new baseline '+(msg.new_hash||'').slice(0,8), msg.ok?'ok':'alarm');
+   if(ws && ws.readyState === 1) ws.send(JSON.stringify({action:'list_pending_cap'}));
   }
  }
 
@@ -801,6 +855,47 @@ footer.ops .legal{color:var(--text-faint);font-size:10px;letter-spacing:.5px}
     const node = b.getAttribute('data-node');
     if(!confirm('Block peer '+node.slice(0,12)+'…? This drops queued messages and silences future MSGs from this peer.')) return;
     if(ws && ws.readyState === 1) ws.send(JSON.stringify({action:'block_peer', target_node_id:node}));
+   });
+  });
+ }
+
+ // v0.8.5.7: render the pending capability-set change panel. Parallels
+ // renderPendingTrust for the cap-binding feature. A row per peer whose
+ // currently-announced cap set differs from the accepted baseline;
+ // shows the diff (added/removed tokens) so the operator can decide.
+ function renderPendingCap(rows){
+  rows = rows || [];
+  $('pending-cap-count').textContent = rows.length;
+  const empty = $('pending-cap-empty');
+  const table = $('pending-cap-table');
+  if(!rows.length){
+   empty.style.display = '';
+   empty.textContent = 'no peers awaiting cap review';
+   table.style.display = 'none';
+   return;
+  }
+  empty.style.display = 'none';
+  table.style.display = '';
+  $('pending-cap-body').innerHTML = rows.map(r => {
+   const nid = r.node_id || '';
+   const added = (r.added || []).map(escHtml).join(', ') || '—';
+   const removed = (r.removed || []).map(escHtml).join(', ') || '—';
+   const addedTitle = 'Baseline hash: ' + (r.baseline_hash||'').slice(0,16) +
+                      '…\nPending hash:  ' + (r.pending_hash||'').slice(0,16) + '…';
+   return '<tr>'
+    + '<td><code title="'+escHtml(nid)+'">'+escHtml(nid.slice(0,12))+'…</code></td>'
+    + '<td style="color:var(--ok,#4ade80);max-width:180px;overflow:hidden;text-overflow:ellipsis" title="'+escHtml(addedTitle)+'">+ '+added+'</td>'
+    + '<td style="color:var(--warn,#f87171);max-width:180px;overflow:hidden;text-overflow:ellipsis">− '+removed+'</td>'
+    + '<td>'
+    +  '<button class="btn-signal cap-promote" data-node="'+escHtml(nid)+'" style="padding:2px 8px;font-size:10px" title="Accept the new capability set as the baseline and restore trust.">ACCEPT</button>'
+    + '</td>'
+    + '</tr>';
+  }).join('');
+  document.querySelectorAll('#pending-cap-body .cap-promote').forEach(b => {
+   b.addEventListener('click', () => {
+    const node = b.getAttribute('data-node');
+    if(!confirm('Accept the new capability set for '+node.slice(0,12)+'…?\n\nThis pins the peer\'s currently-advertised capability set as the new baseline and restores the trusted state. Inbound messages that were queueing at the daemon will drain.')) return;
+    if(ws && ws.readyState === 1) ws.send(JSON.stringify({action:'cap_promote_peer', target_node_id:node}));
    });
   });
  }
@@ -2560,6 +2655,14 @@ class BridgeDaemon:
         """
         status = result.get("status")
         if status == "first-observation":
+            # v0.8.5.7: observability — mirror the audit event into a
+            # Prometheus counter so Grafana alerts can fire on baseline
+            # pinning events (the cap-binding TOFU-for-caps moment).
+            self.metrics.peer_cap_baseline += 1
+            _otel_span_event("peer.cap.baseline", peer_id, {
+                "capability_hash": (result.get("hash") or "")[:16],
+                "capability_count": len(result.get("set") or []),
+            })
             if self._audit:
                 try:
                     self._audit.log(EVENT_PEER_CAP_BASELINE, {
@@ -2647,6 +2750,21 @@ class BridgeDaemon:
             fully_applied = stashed and demoted
             event = (EVENT_PEER_CAP_SET_CHANGED if fully_applied
                      else EVENT_PEER_CAP_BINDING_PARTIAL)
+            # v0.8.5.7: Prometheus + OTel mirrors of the audit event
+            if fully_applied:
+                self.metrics.peer_cap_set_changed += 1
+            else:
+                self.metrics.peer_cap_binding_partial += 1
+            _otel_span_event(
+                "peer.cap.set_changed" if fully_applied
+                else "peer.cap.binding_partial",
+                peer_id, {
+                    "added": len(result.get("added") or []),
+                    "removed": len(result.get("removed") or []),
+                    "stashed": stashed,
+                    "demoted": demoted,
+                },
+            )
             if self._audit:
                 try:
                     self._audit.log(event, {
@@ -2663,6 +2781,20 @@ class BridgeDaemon:
                     })
                 except Exception:
                     pass
+            # v0.8.5.7: push incremental notification to the dashboard
+            # so the operator doesn't need to refresh the panel manually.
+            if fully_applied and self._gui_clients:
+                try:
+                    asyncio.ensure_future(self._gui_broadcast({
+                        "type": "cap_change_detected",
+                        "peer": peer_id,
+                        "added": list(result.get("added") or []),
+                        "removed": list(result.get("removed") or []),
+                        "old_hash": result.get("old_hash"),
+                        "new_hash": result.get("new_hash"),
+                    }))
+                except Exception:
+                    pass  # broadcast is best-effort
             if fully_applied:
                 logger.warning(
                     "Peer %s demoted to pending-cap-change: "
@@ -2707,6 +2839,11 @@ class BridgeDaemon:
         if not accepted:
             return {"ok": False, "error": "accept_capability_change returned False"}
         ts.set_trust_state(node_id, "trusted")
+        # v0.8.5.7: observability for operator-accepted cap changes
+        self.metrics.peer_cap_accepted += 1
+        _otel_span_event("peer.cap.accepted", node_id, {
+            "new_hash": (new_hash or "")[:16],
+        })
         if self._audit:
             try:
                 self._audit.log(EVENT_PEER_CAP_ACCEPTED, {
@@ -4385,6 +4522,24 @@ class BridgeDaemon:
              "MSGs silently dropped at the gate because the peer is blocked"),
             ("messages_received_blocked", "ironmesh_messages_received_blocked_total", "counter",
              "Inbound MSGs from blocked peers (subset of pending_trust_dropped from operator's view)"),
+            # v0.8.5.7: cap-binding + cross-transport replay counters.
+            # Each mirrors one of the audit event types introduced in
+            # v0.8.5.6 so operators can alert on the underlying condition
+            # via Prometheus without scraping the audit log.
+            ("peer_cap_set_changed", "ironmesh_peer_cap_set_changed_total", "counter",
+             "Peer auto-demoted to pending-cap-change because advertised capabilities differ from the pinned baseline"),
+            ("peer_cap_baseline", "ironmesh_peer_cap_baseline_total", "counter",
+             "First-time capability-set observations recorded as the baseline (TOFU-for-capabilities)"),
+            ("peer_cap_accepted", "ironmesh_peer_cap_accepted_total", "counter",
+             "Operator-accepted capability-set changes promoted to new baseline"),
+            ("peer_cap_binding_partial", "ironmesh_peer_cap_binding_partial_total", "counter",
+             "Cap-change detected but stash / demote did NOT fully persist (disk or lock error). Needs investigation"),
+            ("msg_replay_cross_transport", "ironmesh_msg_replay_cross_transport_total", "counter",
+             "Duplicate frame arrived on a different transport than the original (potential active replay across paths)"),
+            ("peer_revoked_local", "ironmesh_peer_revoked_local_total", "counter",
+             "Local operator revoked a pinned peer via CLI (no network-wide propagation)"),
+            ("peer_state_changed", "ironmesh_peer_state_changed_total", "counter",
+             "Trust-state transitions via operator CLI (covers states other than PROMOTED/BLOCKED)"),
         ]
         lines = []
         for key, name, kind, help_text in spec:
@@ -4875,6 +5030,59 @@ class BridgeDaemon:
             except Exception as e:
                 await websocket.send(json.dumps({
                     "type": "send_error", "error": f"block failed: {e}",
+                }))
+
+        elif action == "list_pending_cap":
+            # v0.8.5.7: dashboard surface for the v0.8.5.6 cap-binding
+            # feature. Returns one entry per peer whose currently-
+            # announced capability set differs from the baseline.
+            try:
+                ts = self._open_trust_store()
+                if ts is None:
+                    await websocket.send(json.dumps({
+                        "type": "pending_cap_list", "pending": [],
+                    }))
+                    return
+                rows = []
+                for r in ts.list_by_capability_status("pending-cap-change"):
+                    baseline = set(r.get("capability_set") or [])
+                    pending = set(r.get("pending_set") or [])
+                    rows.append({
+                        "node_id": r["node_id"],
+                        "baseline_hash": r.get("capability_hash"),
+                        "pending_hash": r.get("pending_hash"),
+                        "baseline_set": sorted(baseline),
+                        "pending_set": sorted(pending),
+                        "added": sorted(pending - baseline),
+                        "removed": sorted(baseline - pending),
+                    })
+                await websocket.send(json.dumps({
+                    "type": "pending_cap_list", "pending": rows,
+                }, default=str))
+            except Exception as e:
+                await websocket.send(json.dumps({
+                    "type": "send_error",
+                    "error": f"list_pending_cap failed: {e}",
+                }))
+
+        elif action == "cap_promote_peer":
+            target = cmd.get("target_node_id")
+            if not target:
+                await websocket.send(json.dumps({
+                    "type": "send_error", "error": "target_node_id required",
+                }))
+                return
+            try:
+                result = await self.accept_pending_cap_change(target)
+                await websocket.send(json.dumps({
+                    "type": "cap_promote_ack",
+                    "node_id": target,
+                    **(result or {}),
+                }))
+            except Exception as e:
+                await websocket.send(json.dumps({
+                    "type": "send_error",
+                    "error": f"cap_promote_peer failed: {e}",
                 }))
 
         elif action == "rotate_session":

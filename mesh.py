@@ -832,6 +832,27 @@ class MeshRouter:
                     "source": frame.source, "msg_id": frame.msg_id,
                 })
                 if dedup_result.get("cross_transport"):
+                    # v0.8.5.7: bump the bridge's Prometheus counter +
+                    # emit an OTel event so cross-transport replay is
+                    # observable without scraping the audit log.
+                    try:
+                        self.daemon.metrics.msg_replay_cross_transport += 1
+                    except Exception:
+                        pass
+                    try:
+                        from ironmesh.telemetry import emit_event
+                        emit_event(
+                            "msg.replay.cross_transport", frame.source,
+                            {
+                                "msg_id": frame.msg_id,
+                                "original_transport": dedup_result.get(
+                                    "original_transport"),
+                                "replay_transport": dedup_result.get(
+                                    "this_transport"),
+                            },
+                        )
+                    except Exception:
+                        pass
                     self._audit_log(EVENT_MSG_REPLAY_CROSS_TRANSPORT, {
                         "peer": frame.source,
                         "msg_id": frame.msg_id,

@@ -10,6 +10,7 @@ import hashlib
 import logging
 import os
 import sys
+import time
 from typing import Optional
 
 
@@ -135,7 +136,10 @@ def parse_args():
                               help="Override trust store path (default ~/.ironmesh/known_peers.json). "
                                    "Use when targeting a non-default daemon's trust file.")
     trust_sub = trust_parser.add_subparsers(dest="trust_command")
-    trust_sub.add_parser("list", help="List trusted peers")
+    list_parser = trust_sub.add_parser("list", help="List trusted peers")
+    list_parser.add_argument("--show-caps", action="store_true",
+                             help="Include the capability-binding "
+                                  "column (baseline / pending / unknown)")
     revoke_parser = trust_sub.add_parser("revoke", help="Revoke trust for a peer")
     revoke_parser.add_argument("node_id", help="Node ID to revoke")
     revoke_parser.add_argument("--broadcast", action="store_true",
@@ -196,6 +200,35 @@ def parse_args():
     cap_diff.add_argument("node_id", help="Node ID to inspect")
     cap_diff.add_argument("--trust-path", default=None)
     cap_diff.add_argument("--keys-path", default="~/.ironmesh/keys.json")
+
+    # v0.8.5.7: operator surface completion.
+    cap_reject = trust_sub.add_parser(
+        "cap-reject",
+        help="Reject a peer's pending capability-set change; keep the "
+             "existing baseline and (optionally) block the peer.",
+    )
+    cap_reject.add_argument("node_id", nargs="?", default=None,
+                            help="Node ID to reject (omit with --all)")
+    cap_reject.add_argument("--all", action="store_true",
+                            help="Reject every peer currently in "
+                                 "pending-cap-change state")
+    cap_reject.add_argument("--block", action="store_true",
+                            help="Also flip trust_state to 'blocked' "
+                                 "so future messages from this peer are "
+                                 "silently dropped at the gate")
+    cap_reject.add_argument("--trust-path", default=None)
+    cap_reject.add_argument("--keys-path", default="~/.ironmesh/keys.json")
+
+    cap_status = trust_sub.add_parser(
+        "cap-status",
+        help="Detailed capability-binding status for a single peer "
+             "(baseline hash, pending hash, accepted_at, last_seen).",
+    )
+    cap_status.add_argument("node_id", help="Node ID to inspect")
+    cap_status.add_argument("--trust-path", default=None)
+    cap_status.add_argument("--keys-path", default="~/.ironmesh/keys.json")
+    cap_status.add_argument("--json", action="store_true",
+                            help="Emit JSON instead of human-readable text")
 
     # --- keys ---
     keys_parser = sub.add_parser("keys", help="Key management")
@@ -262,6 +295,36 @@ def parse_args():
     ae.add_argument("--keys-passphrase", default=None)
     avx = audit_sub.add_parser("verify-export", help="Verify a signed audit export")
     avx.add_argument("file", help="Signed export JSON file")
+
+    # v0.8.5.7: operator triage — filtered audit tail + event-type stats.
+    at = audit_sub.add_parser(
+        "tail",
+        help="Print audit entries, newest-first, optionally filtered "
+             "by event type and age. Does NOT verify the chain — use "
+             "`ironmesh audit verify` for that.",
+    )
+    at.add_argument("--path", default="~/.ironmesh/audit.log")
+    at.add_argument("--event", default=None,
+                    help="Only print entries with this event type "
+                         "(e.g. PEER_CAP_SET_CHANGED). Repeatable via "
+                         "comma: --event=A,B,C")
+    at.add_argument("--since", default=None,
+                    help="Only entries newer than this relative window "
+                         "(e.g. 1h, 15m, 2d) or an absolute ISO-8601 "
+                         "timestamp. Default: all.")
+    at.add_argument("--limit", type=int, default=200,
+                    help="Maximum entries to print (default 200)")
+    at.add_argument("--json", action="store_true",
+                    help="Emit JSON-lines instead of text")
+
+    ast_ = audit_sub.add_parser(
+        "stats",
+        help="Summarize audit events by type over a recent window "
+             "(useful for at-a-glance triage).",
+    )
+    ast_.add_argument("--path", default="~/.ironmesh/audit.log")
+    ast_.add_argument("--since", default="1h",
+                      help="Window size (e.g. 1h, 15m, 24h). Default 1h.")
 
     # --- session ---
     session_parser = sub.add_parser("session", help="Session management")
@@ -777,14 +840,45 @@ def cmd_trust(args):
         if not peers:
             print("No trusted peers.")
             return 0
-        print(f"{'Node ID':<20s} {'Fingerprint':<18s} {'State':<10s} {'First Seen':<24s} {'Last Seen':<24s}")
-        print("-" * 96)
+        show_caps = getattr(args, "show_caps", False)
         import time
-        for p in peers:
-            first = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(p["first_seen"])) if p["first_seen"] else "N/A"
-            last = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(p["last_seen"])) if p["last_seen"] else "N/A"
-            state = p.get("trust_state", "trusted")
-            print(f"{p['node_id']:<20s} {p['fingerprint']:<18s} {state:<10s} {first:<24s} {last:<24s}")
+        if show_caps:
+            # v0.8.5.7: include capability-binding status column so
+            # operators can see at a glance which peers have a pinned
+            # baseline vs which are pending vs which have no cap hash
+            # yet (pre-v0.8.5.6 peers, or peers that haven't yet
+            # advertised capabilities).
+            print(f"{'Node ID':<20s} {'Fingerprint':<18s} {'State':<18s} "
+                  f"{'Caps':<10s} {'Last Seen':<20s}")
+            print("-" * 92)
+            for p in peers:
+                last = (time.strftime("%Y-%m-%d %H:%M:%S",
+                                      time.localtime(p["last_seen"]))
+                        if p.get("last_seen") else "N/A")
+                state = p.get("trust_state", "trusted")
+                rec = store.get_peer(p["node_id"]) or {}
+                if rec.get("capability_hash_pending"):
+                    cap_col = "pending"
+                elif rec.get("capability_hash"):
+                    cap_col = "baseline"
+                else:
+                    cap_col = "unknown"
+                print(f"{p['node_id']:<20s} {p['fingerprint']:<18s} "
+                      f"{state:<18s} {cap_col:<10s} {last:<20s}")
+        else:
+            print(f"{'Node ID':<20s} {'Fingerprint':<18s} {'State':<10s} "
+                  f"{'First Seen':<24s} {'Last Seen':<24s}")
+            print("-" * 96)
+            for p in peers:
+                first = (time.strftime("%Y-%m-%d %H:%M:%S",
+                                       time.localtime(p["first_seen"]))
+                         if p["first_seen"] else "N/A")
+                last = (time.strftime("%Y-%m-%d %H:%M:%S",
+                                      time.localtime(p["last_seen"]))
+                        if p["last_seen"] else "N/A")
+                state = p.get("trust_state", "trusted")
+                print(f"{p['node_id']:<20s} {p['fingerprint']:<18s} "
+                      f"{state:<10s} {first:<24s} {last:<24s}")
     elif trust_cmd == "revoke":
         node_id = args.node_id
         broadcast = getattr(args, "broadcast", False)
@@ -991,11 +1085,152 @@ def cmd_trust(args):
         else:
             print("  pending set  : (none — peer not in pending-cap-change)")
         return 0
+    elif trust_cmd == "cap-reject":
+        # v0.8.5.7: the operator's explicit "no" to a cap change.
+        # Clears the pending hash + pending set without touching the
+        # accepted baseline. --block also flips trust_state to blocked
+        # in one shot for the common "this change is suspicious"
+        # response flow.
+        from ironmesh.audit import (
+            EVENT_PEER_STATE_CHANGED,
+            EVENT_PEER_BLOCKED,
+        )
+        targets = []
+        if getattr(args, "all", False):
+            targets = [p["node_id"] for p in
+                       store.list_by_capability_status("pending-cap-change")]
+            if not targets:
+                print("No peers in pending-cap-change.")
+                return 0
+        else:
+            if not args.node_id:
+                print("ERROR: pass <node_id> or --all.")
+                return 2
+            targets = [args.node_id]
+        want_block = getattr(args, "block", False)
+        rejected = 0
+        failed = 0
+        for nid in targets:
+            rec = store.get_peer(nid)
+            if rec is None:
+                print(f"  [SKIP] {nid}: unknown peer")
+                failed += 1
+                continue
+            if rec.get("capability_hash_pending") is None:
+                print(f"  [SKIP] {nid}: no pending capability change")
+                failed += 1
+                continue
+            pending_hash = rec.get("capability_hash_pending")
+            # Clear the pending stash in-memory + save
+            rec.pop("capability_hash_pending", None)
+            rec.pop("capability_set_pending", None)
+            rec["cap_rejected_at"] = time.time()
+            if not store._save():
+                print(f"  [FAIL] {nid}: trust store save refused")
+                failed += 1
+                continue
+            # Decide trust_state: block or restore to trusted
+            new_state = "blocked" if want_block else "trusted"
+            if store.set_trust_state(nid, new_state):
+                _audit_log_event(
+                    EVENT_PEER_BLOCKED if want_block
+                    else EVENT_PEER_STATE_CHANGED,
+                    {
+                        "peer_id": nid,
+                        "actor": "cli",
+                        "reason": "cap-reject",
+                        "rejected_pending_hash": pending_hash,
+                        "old_state": "pending-cap-change",
+                        "new_state": new_state,
+                    },
+                )
+                marker = "BLOCKED" if want_block else "trusted"
+                print(f"  [OK]   {nid}: pending hash {pending_hash[:12]}... "
+                      f"rejected -> {marker}")
+                rejected += 1
+            else:
+                print(f"  [FAIL] {nid}: set_trust_state returned False")
+                failed += 1
+        print()
+        print(f"Rejected {rejected} peer(s); {failed} skipped/failed.")
+        return 0 if failed == 0 else 1
+    elif trust_cmd == "cap-status":
+        # v0.8.5.7: single-peer operator diagnostic.
+        nid = args.node_id
+        rec = store.get_peer(nid)
+        if rec is None:
+            print(f"Peer {nid} not in trust store.")
+            return 1
+        if getattr(args, "json", False):
+            import json as _json
+            out = {
+                "node_id": nid,
+                "fingerprint": rec.get("fingerprint"),
+                "trust_state": rec.get("trust_state", "trusted"),
+                "first_seen": rec.get("first_seen"),
+                "last_seen": rec.get("last_seen"),
+                "capability_hash": rec.get("capability_hash"),
+                "capability_set": rec.get("capability_set"),
+                "cap_first_observed": rec.get("cap_first_observed"),
+                "cap_accepted_at": rec.get("cap_accepted_at"),
+                "cap_rejected_at": rec.get("cap_rejected_at"),
+                "capability_hash_pending": rec.get("capability_hash_pending"),
+                "capability_set_pending": rec.get("capability_set_pending"),
+            }
+            print(_json.dumps(out, default=str, indent=2))
+            return 0
+
+        def _fmtt(v):
+            if not v:
+                return "(never)"
+            return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(v))
+
+        print(f"Peer: {nid}")
+        print(f"  fingerprint        : {rec.get('fingerprint', '?')}")
+        print(f"  trust_state        : {rec.get('trust_state', 'trusted')}")
+        print(f"  first_seen         : {_fmtt(rec.get('first_seen'))}")
+        print(f"  last_seen          : {_fmtt(rec.get('last_seen'))}")
+        print()
+        print("Capability binding")
+        baseline_hash = rec.get("capability_hash")
+        if baseline_hash:
+            print(f"  baseline hash      : {baseline_hash[:32]}...")
+            print(f"  baseline set ({len(rec.get('capability_set') or [])})")
+            for c in sorted(rec.get("capability_set") or []):
+                print(f"    - {c}")
+            print(f"  cap_first_observed : "
+                  f"{_fmtt(rec.get('cap_first_observed'))}")
+            print(f"  cap_accepted_at    : "
+                  f"{_fmtt(rec.get('cap_accepted_at'))}")
+        else:
+            print("  baseline hash      : (unknown — peer has not "
+                  "advertised caps yet)")
+        pending_hash = rec.get("capability_hash_pending")
+        if pending_hash:
+            print()
+            print("PENDING cap change awaiting operator review:")
+            print(f"  pending hash       : {pending_hash[:32]}...")
+            baseline_set = set(rec.get("capability_set") or [])
+            pending_set = set(rec.get("capability_set_pending") or [])
+            added = sorted(pending_set - baseline_set)
+            removed = sorted(baseline_set - pending_set)
+            if added:
+                print(f"  added              : {', '.join(added)}")
+            if removed:
+                print(f"  removed            : {', '.join(removed)}")
+            print()
+            print(f"  Accept  : ironmesh trust cap-promote {nid}")
+            print(f"  Reject  : ironmesh trust cap-reject {nid}")
+            print(f"  Block   : ironmesh trust cap-reject {nid} --block")
+        if rec.get("cap_rejected_at"):
+            print(f"  cap_rejected_at    : "
+                  f"{_fmtt(rec.get('cap_rejected_at'))}")
+        return 0
     else:
-        print("Usage: ironmesh trust [list|revoke <node_id>|list-revoked|"
-              "set-state <node_id> <pending|trusted|blocked|pending-cap-change>"
-              "|cap-promote [<node_id>|--all]|list-cap-pending|"
-              "cap-diff <node_id>]")
+        print("Usage: ironmesh trust [list [--show-caps]|revoke <node_id>|"
+              "list-revoked|set-state <node_id> <state>|cap-promote "
+              "[<node_id>|--all]|cap-reject [<node_id>|--all] [--block]|"
+              "cap-status <node_id>|list-cap-pending|cap-diff <node_id>]")
 
     return 0
 
@@ -1212,8 +1447,114 @@ def cmd_audit(args):
             print(f"Verify failed: {e}")
             return 1
 
-    print("Usage: ironmesh audit [verify|export|verify-export]")
+    if sub == "tail":
+        # v0.8.5.7: filtered audit tail for operator triage.
+        import json as _json
+        path = os.path.expanduser(args.path)
+        if not os.path.exists(path):
+            print(f"No audit log at {path}")
+            return 1
+        since_ts = _parse_since(args.since) if args.since else 0.0
+        events = None
+        if args.event:
+            events = {s.strip() for s in args.event.split(",") if s.strip()}
+        out = []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = _json.loads(line)
+                    except Exception:
+                        continue  # torn / malformed lines: skip
+                    if since_ts and d.get("timestamp", 0) < since_ts:
+                        continue
+                    if events and d.get("event") not in events:
+                        continue
+                    out.append(d)
+        except Exception as e:
+            print(f"Failed to read audit log: {e}")
+            return 1
+        out = out[-int(args.limit):] if args.limit else out
+        if args.json:
+            for d in out:
+                print(_json.dumps(d, default=str))
+            return 0
+        if not out:
+            print("(no entries match)")
+            return 0
+        for d in out:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S",
+                               time.localtime(d.get("timestamp", 0)))
+            event = d.get("event", "?")
+            details = d.get("details") or {}
+            # Compact one-line format: ts  EVENT  key=val key=val ...
+            pairs = " ".join(f"{k}={v!r}" for k, v in details.items()
+                             if not isinstance(v, (list, dict))
+                             or len(str(v)) < 60)
+            print(f"{ts}  {event:<28s}  {pairs}")
+        return 0
+
+    if sub == "stats":
+        # v0.8.5.7: summary counts by event type over a recent window.
+        import json as _json
+        from collections import Counter
+        path = os.path.expanduser(args.path)
+        if not os.path.exists(path):
+            print(f"No audit log at {path}")
+            return 1
+        since_ts = _parse_since(args.since)
+        counter: Counter = Counter()
+        total = 0
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = _json.loads(line)
+                    except Exception:
+                        continue
+                    if since_ts and d.get("timestamp", 0) < since_ts:
+                        continue
+                    counter[d.get("event", "?")] += 1
+                    total += 1
+        except Exception as e:
+            print(f"Failed to read audit log: {e}")
+            return 1
+        if total == 0:
+            print(f"No entries in the last {args.since}.")
+            return 0
+        print(f"Audit events in the last {args.since}: {total} total")
+        print("-" * 52)
+        for event, n in counter.most_common():
+            print(f"  {n:>6d}  {event}")
+        return 0
+
+    print("Usage: ironmesh audit [verify|export|verify-export|tail|stats]")
     return 1
+
+
+def _parse_since(s: str) -> float:
+    """Parse a relative window (e.g. 1h, 15m, 2d) or ISO-8601 into a
+    POSIX timestamp cutoff. Returns 0.0 for 'all time' / unparseable.
+    """
+    if not s:
+        return 0.0
+    s = s.strip()
+    # Relative: <N>[smhd]
+    if len(s) >= 2 and s[:-1].isdigit() and s[-1] in "smhd":
+        mult = {"s": 1, "m": 60, "h": 3600, "d": 86400}[s[-1]]
+        return time.time() - int(s[:-1]) * mult
+    # Absolute ISO-ish
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(s).timestamp()
+    except Exception:
+        return 0.0
 
 
 def cmd_doctor(args):

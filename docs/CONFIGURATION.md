@@ -149,6 +149,50 @@ ironmesh audit export --out audit-bundle.tar.gz
 ironmesh audit verify-export audit-bundle.tar.gz
 ```
 
+## Capability-set binding (v0.8.5.6+)
+
+The pending-trust gate gained a second axis in v0.8.5.6: pinned peers
+now have their **advertised capability set** recorded alongside their
+identity key. A peer that reconnects with a changed capability set
+auto-demotes to `pending-cap-change` until an operator reviews.
+
+**Commands for everyday operation:**
+
+| Command | What it does |
+|---|---|
+| `ironmesh trust list --show-caps` | Peers table including a `Caps` column showing `baseline` / `pending` / `unknown` |
+| `ironmesh trust list-cap-pending` | Just the peers in `pending-cap-change` with their diff. `--json` for scripts. |
+| `ironmesh trust cap-status <node_id>` | Single-peer deep dive (hashes, accepted_at, rejected_at, diff) |
+| `ironmesh trust cap-diff <node_id>` | Just the diff, no surrounding context |
+| `ironmesh trust cap-promote <node_id>` | Accept the pending change as the new baseline. `--all` for bulk accept. |
+| `ironmesh trust cap-reject <node_id>` | Reject the pending change; keep the existing baseline. `--block` also sets state to `blocked`. |
+| `ironmesh trust set-state <node_id> pending-cap-change` | Manually demote a peer (rare — the daemon normally does this automatically) |
+
+**Audit events fired:** `PEER_CAP_BASELINE`, `PEER_CAP_SET_CHANGED`,
+`PEER_CAP_ACCEPTED`, `PEER_CAP_BINDING_PARTIAL`. Each has a matching
+Prometheus counter (`ironmesh_peer_cap_*_total`) + an OpenTelemetry
+span (`peer.cap.*`). See [OBSERVABILITY.md](OBSERVABILITY.md) for
+Grafana integration.
+
+**MCP tools:** `ironmesh_pending_cap_changes`, `ironmesh_cap_diff`,
+`ironmesh_cap_promote_peer`, `ironmesh_cap_reject_peer`. Total MCP
+surface is now 25 tools.
+
+## Audit log triage (v0.8.5.7+)
+
+| Command | What it does |
+|---|---|
+| `ironmesh audit verify` | HMAC-chain verification of the whole log |
+| `ironmesh audit verify --archives` | Verify across rotated archives too |
+| `ironmesh audit tail --since 1h` | Newest-first entries from the last hour |
+| `ironmesh audit tail --event PEER_CAP_SET_CHANGED,PEER_CAP_ACCEPTED` | Filter by event type (repeatable, comma-separated) |
+| `ironmesh audit stats --since 24h` | Histogram of event types over a window |
+| `ironmesh audit export --out snapshot.json` | Signed bundle for offline archival |
+| `ironmesh audit verify-export snapshot.json` | Verify a signed export |
+
+The `--since` argument accepts short forms (`30s`, `5m`, `2h`, `7d`)
+or ISO-8601 timestamps.
+
 ## See also
 
 - [QUICKSTART.md](QUICKSTART.md) — first-run walkthrough.
@@ -157,4 +201,6 @@ ironmesh audit verify-export audit-bundle.tar.gz
 - [WINDOWS_SERVICE.md](WINDOWS_SERVICE.md) — running as a Windows service via NSSM.
 - [NAT_TRAVERSAL.md](NAT_TRAVERSAL.md) — cross-NAT recipes.
 - [OPERATOR_TRUST_RUNBOOK.md](OPERATOR_TRUST_RUNBOOK.md) — pending-trust gate operations.
+- [OPERATOR_RUNBOOK.md](OPERATOR_RUNBOOK.md) — cap-binding + audit triage scenarios (v0.8.5.7+).
+- [TRUST_BINDING.md](TRUST_BINDING.md) — cap-binding design doc.
 - [migration/v0_9_default_deny.md](migration/v0_9_default_deny.md) — pending-trust default-on migration.

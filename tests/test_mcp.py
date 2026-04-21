@@ -528,13 +528,16 @@ class TestNewToolSpecs:
 
     def test_total_tool_count(self):
         # 8 core + 5 cross-agent + 5 self-introspection + 3 pending-trust
-        #     + 2 cap-binding (v0.8.5.6) = 23
-        assert len(TOOL_SPECS) == 23
+        #     + 2 cap-binding (v0.8.5.6) + 2 cap-binding extras (v0.8.5.7) = 25
+        assert len(TOOL_SPECS) == 25
 
     def test_cap_binding_tools_registered(self):
         names = {s["name"] for s in TOOL_SPECS}
         assert "ironmesh_pending_cap_changes" in names
         assert "ironmesh_cap_promote_peer" in names
+        # v0.8.5.7 additions
+        assert "ironmesh_cap_diff" in names
+        assert "ironmesh_cap_reject_peer" in names
 
     def test_pending_trust_tools_registered(self):
         names = {s["name"] for s in TOOL_SPECS}

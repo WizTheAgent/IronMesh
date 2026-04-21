@@ -1,0 +1,55 @@
+name: stress-nightly
+
+# v0.8.5.7: nightly concurrency stress test. Promotes what was an
+# ad-hoc inline script during the v0.8.5.6 hardening audit into a
+# tracked CI signal. Catches regressions in the trust-store locking
+# (B7 / B14 / B19) and the capability-set-binding happy path before
+# they reach a release.
+
+on:
+  schedule:
+    # 04:17 UTC nightly — off-peak for GitHub-hosted runners to avoid
+    # stacking on cron-heavy projects that all fire at :00.
+    - cron: "17 4 * * *"
+  workflow_dispatch: {}          # manual trigger for on-demand re-run
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    name: concurrent cap-promote stress (${{ matrix.os }} / py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install IronMesh (editable)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Quick profile — 5 peers x 20 threads (smoke gate)
+        run: python scripts/stress_concurrent.py --quick
+
+      - name: Full profile — 20 peers x 100 threads
+        run: python scripts/stress_concurrent.py --peers 20 --threads-per-peer 100
+
+      - name: High-pressure profile — 50 peers x 200 threads
+        # Only on Linux, where thread spawn is cheaper. 10 000 total
+        # thread starts; Windows GitHub runners can flake on this
+        # scale and we've already validated the lock contract there.
+        if: matrix.os == 'ubuntu-latest'
+        run: python scripts/stress_concurrent.py --peers 50 --threads-per-peer 200

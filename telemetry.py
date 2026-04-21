@@ -136,6 +136,40 @@ def record_exception(sp: Any, exc: BaseException) -> None:
         pass
 
 
+# v0.8.5.7: point-in-time event emission for things that happen outside
+# a request scope (cap-binding observations, cross-transport replay,
+# operator state transitions). Opens a zero-duration span so dashboards
+# that group by trace/span name pick them up like any other signal.
+def emit_event(name: str, subject: str, attributes: Optional[dict] = None) -> None:
+    """Emit a single point-in-time event as a zero-duration span.
+
+    Safe to call from any code path — falls through to a no-op if OTel
+    isn't installed or isn't configured with an OTLP endpoint.
+
+    Args:
+        name: dotted event name (e.g. ``peer.cap.set_changed``).
+        subject: the entity the event is about (typically a node_id or
+                 peer fingerprint). Attached as ``subject`` attribute.
+        attributes: additional attributes to attach.
+    """
+    tracer = get_tracer()
+    if tracer is None:
+        return
+    try:
+        attrs = {"subject": subject}
+        if attributes:
+            for k, v in attributes.items():
+                try:
+                    attrs[k] = v
+                except Exception:
+                    pass
+        with tracer.start_as_current_span(name, attributes=attrs):
+            pass
+    except Exception:
+        # Telemetry must never break the daemon.
+        pass
+
+
 def is_active() -> bool:
     """True if telemetry is actually exporting; False on no-op path."""
     return get_tracer() is not None

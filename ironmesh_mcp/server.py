@@ -626,6 +626,90 @@ class IronMeshMCP:
             "new_hash": result.get("new_hash"),
         }
 
+    # v0.8.5.7 new tool: reject a pending cap change.
+    def tool_cap_reject_peer(self, args: dict) -> dict:
+        """Reject a peer's pending capability-set change. Clears the
+        pending hash + set without touching the accepted baseline.
+        Optionally flips trust_state to ``blocked`` in one shot.
+
+        Args:
+            peer: peer name or node_id
+            block: if True, also set trust_state to ``blocked`` so
+                   future MSGs from this peer are silently dropped at
+                   the gate (default: False — restore to ``trusted``).
+        """
+        from ironmesh.trust import TrustStore
+        target = args.get("peer") or args.get("target")
+        if not target:
+            return {"error": "peer name or node_id required (field: 'peer')"}
+        node_id = self._resolve_node_id(target)
+        if not node_id:
+            return {"error": f"could not resolve {target!r} to a known peer"}
+        try:
+            mac_key = self.daemon._keypair.ed25519_secret[:32]
+            ts = TrustStore(agent_key=mac_key, path=self.daemon.trust_path)
+        except Exception as e:
+            return {"error": f"trust store load failed: {e}"}
+        rec = ts.get_peer(node_id)
+        if rec is None:
+            return {"error": "unknown peer"}
+        pending_hash = rec.get("capability_hash_pending")
+        if pending_hash is None:
+            return {"error": "no pending capability change"}
+        rec.pop("capability_hash_pending", None)
+        rec.pop("capability_set_pending", None)
+        import time as _t
+        rec["cap_rejected_at"] = _t.time()
+        if not ts._save():
+            return {"error": "trust store save refused (read-only latch?)"}
+        want_block = bool(args.get("block", False))
+        new_state = "blocked" if want_block else "trusted"
+        if not ts.set_trust_state(node_id, new_state):
+            return {"error": "set_trust_state returned False"}
+        return {
+            "ok": True,
+            "node_id": node_id,
+            "rejected_hash": pending_hash,
+            "new_state": new_state,
+        }
+
+    # v0.8.5.7 new tool: read-only cap diff between baseline and pending.
+    def tool_cap_diff(self, args: dict) -> dict:
+        """Return the capability-set diff for a single peer: the
+        accepted baseline set, the currently-pending set (if any),
+        and added/removed tokens. Non-destructive.
+
+        Args:
+            peer: peer name or node_id
+        """
+        from ironmesh.trust import TrustStore
+        target = args.get("peer") or args.get("target")
+        if not target:
+            return {"error": "peer name or node_id required (field: 'peer')"}
+        node_id = self._resolve_node_id(target)
+        if not node_id:
+            return {"error": f"could not resolve {target!r} to a known peer"}
+        try:
+            mac_key = self.daemon._keypair.ed25519_secret[:32]
+            ts = TrustStore(agent_key=mac_key, path=self.daemon.trust_path)
+        except Exception as e:
+            return {"error": f"trust store load failed: {e}"}
+        rec = ts.get_peer(node_id)
+        if rec is None:
+            return {"error": "unknown peer"}
+        baseline = set(rec.get("capability_set") or [])
+        pending = set(rec.get("capability_set_pending") or [])
+        return {
+            "node_id": node_id,
+            "trust_state": rec.get("trust_state", "trusted"),
+            "baseline_hash": rec.get("capability_hash"),
+            "baseline_set": sorted(baseline),
+            "pending_hash": rec.get("capability_hash_pending"),
+            "pending_set": sorted(pending) if pending else None,
+            "added": sorted(pending - baseline) if pending else [],
+            "removed": sorted(baseline - pending) if pending else [],
+        }
+
     # --- Cross-agent collaboration tools ------------------------------------
 
     # tool: discover_capabilities
@@ -1222,6 +1306,32 @@ TOOL_SPECS = [
             "type": "object",
             "properties": {
                 "peer": {"type": "string", "description": "agent name or 32-hex node_id"},
+            },
+            "required": ["peer"],
+            "additionalProperties": False,
+        },
+    },
+    # v0.8.5.7: read-only cap diff + explicit reject flow.
+    {
+        "name": "ironmesh_cap_diff",
+        "description": "Read-only: return the capability-set diff for a peer (baseline vs pending, added/removed tokens). Non-destructive; safe to call often.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "peer": {"type": "string", "description": "agent name or 32-hex node_id"},
+            },
+            "required": ["peer"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "ironmesh_cap_reject_peer",
+        "description": "Reject a peer's pending capability-set change. Clears the pending hash while keeping the existing baseline. Set block=true to also flip the peer to trust_state='blocked' in one shot. Use when a cap change is suspicious or unintended.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "peer":  {"type": "string", "description": "agent name or 32-hex node_id"},
+                "block": {"type": "boolean", "description": "also set trust_state to blocked (default: restore to trusted)", "default": False},
             },
             "required": ["peer"],
             "additionalProperties": False,
