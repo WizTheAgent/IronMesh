@@ -20,16 +20,25 @@ from "usable via CLI" into "usable end-to-end through the dashboard
   diff (added / removed tokens) and an ACCEPT button. Live-updates
   via a new `cap_change_detected` WebSocket push from the daemon, so
   operators don't need to refresh.
-- **Seven new Prometheus counters** — one per cap-binding /
-  cross-transport event type:
+- **Nine new Prometheus counters** — one per cap-binding /
+  cross-transport / trust-state audit event type:
   `ironmesh_peer_cap_set_changed_total`,
   `ironmesh_peer_cap_baseline_total`,
   `ironmesh_peer_cap_accepted_total`,
   `ironmesh_peer_cap_binding_partial_total`,
   `ironmesh_msg_replay_cross_transport_total`,
   `ironmesh_peer_revoked_local_total`,
-  `ironmesh_peer_state_changed_total`. All surface in
-  `/metrics` and integrate with existing Grafana dashboards.
+  `ironmesh_peer_state_changed_total`,
+  `ironmesh_peer_promoted_total`,
+  `ironmesh_peer_blocked_total`. All surface in `/metrics` and
+  integrate with existing Grafana dashboards.
+- **Audit-log counter sync loop.** The daemon tails its own audit log
+  every second and reconciles counters for events written by
+  out-of-process actors (CLI, MCP in a separate process).
+  Daemon-originated bumps use a reservation mechanism so the scanner
+  doesn't double-count. Rotation-aware — uses file-identity tracking
+  (`st_ino`) to rescue events that landed in a `.1` file between
+  scans.
 - **OpenTelemetry spans** for the same events via
   `telemetry.emit_event(...)` — a new helper that opens a
   zero-duration span when OTel is configured, no-op otherwise.
@@ -71,8 +80,8 @@ from "usable via CLI" into "usable end-to-end through the dashboard
   one winner per peer, no MAC corruption, correct final baseline.
 - **`.github/workflows/stress-nightly.yml`** — runs the stress
   harness nightly on Ubuntu + Windows, Python 3.11 + 3.13. Catches
-  concurrency regressions in the trust-store locking contract (B7 /
-  B14 / B19 family) before they reach a release.
+  concurrency regressions in the trust-store locking contract before
+  they reach a release.
 
 ### Changed
 
@@ -83,20 +92,77 @@ from "usable via CLI" into "usable end-to-end through the dashboard
   "Audit log triage" sections covering every v0.8.5.6 / v0.8.5.7 CLI
   command.
 
+### Fixed
+
+Eight bugs found during release hardening. Four surfaced during live
+testing against a multi-node mesh; four during a systematic static +
+Hypothesis fuzz audit.
+
+**High:**
+
+- **Observability gap for out-of-process audit events.** CLI and
+  MCP-spawned-in-a-separate-process paths fired audit events correctly
+  but couldn't bump the daemon's in-memory Prometheus counters.
+  Grafana dashboards therefore stayed blind to CLI-initiated operator
+  actions. The new audit-log tail scanner closes this end-to-end —
+  regardless of which process wrote the event, the counter moves.
+
+**Medium:**
+
+- **CLI `cmd_trust` local `import time` scope.** An `import time`
+  placed inside one subcommand branch shadowed `time` as function-local
+  for every other branch, breaking the new `cap-status` command with
+  `NameError`. Removed redundant local imports (`time` is imported at
+  module top).
+- **Counter reservation race.** `_reserve_counter_bump` and the
+  audit-log scanner raced on a shared reservation dict because the
+  mesh-dispatch path calls the bump from a worker thread while the
+  scanner runs on the asyncio loop. Added a `threading.Lock`
+  serializing the read-modify-write.
+- **Trust-state transitions via `set-state trusted`** fire
+  `PEER_PROMOTED`, not `PEER_STATE_CHANGED`, and the counter map
+  didn't include it — silent undercount. Added `peer_promoted` +
+  `peer_blocked` counters plus reservation bumps on the daemon-side
+  promote / block paths.
+- **MCP `cap_reject_peer` mutated the trust file without firing any
+  audit event.** Forensic review was blind to MCP-driven rejects.
+  Now fires the appropriate state-transition event with
+  `actor: "mcp"` + `reason: "cap-reject"` + `rejected_pending_hash`
+  for traceability.
+- **Audit-log rotation detection missed the re-grown case.** Scanner
+  used `current_size < offset` which failed when post-rotation writes
+  had already re-grown the live file past the pre-rotation offset.
+  Now tracks file identity via `os.stat().st_ino`; on inode change,
+  scans the rotated `.1` file for missed events before resetting.
+- **`Budget.from_dict(d)` crashed on non-dict input.** A peer sending
+  `{"budget": "0"}` used to raise `AttributeError` on `d.get("...")`.
+  Added `isinstance(d, dict)` guard. Caught by a Hypothesis fuzz
+  test.
+- **MCP `_resolve_node_id(target)` crashed on non-string target.**
+  An int or list target used to raise `TypeError` in `len()`. Now
+  returns `None` cleanly for any non-string input.
+
 ### Verified
 
-- pytest: 722 passed (was 718 in v0.8.5.6; +4 for new metric-counter
-  tests, no regressions). Integration-only tests excluded.
+- pytest: 726 passed (+4 from v0.8.5.6 for new metric-counter tests
+  and rotation regression). Integration-only tests excluded.
 - 2000-thread concurrent cap-promote stress via
   `scripts/stress_concurrent.py`: exactly 1 winner per peer, no MAC
-  corruption, <5 s runtime.
-- MCP tool surface: 25 tools registered; `test_total_tool_count`
-  updated.
+  corruption, under 3 s runtime.
+- 1000-operation concurrent counter stress (mixed in-process
+  reservations + external CLI-like events + log rotation): exactly
+  1000 counted, 0 residual reservations, 0 errors.
+- 13 816 concurrent trust-store reads + 254 writes over 3 s: 0
+  errors; MAC-mismatch latch 100 % activated on rogue-key loads.
+- Property fuzz across 8 malformed-input cases for every new MCP
+  tool and the `telemetry.emit_event` helper: all handled cleanly.
+- MCP tool surface: 25 tools registered.
 - `ruff check`: clean across touched files.
 - `scripts/leak-scan.sh --all`: clean.
 - `scripts/release-smoke.sh`: PASS.
-- Live 3-node mesh (see release post on the site): cap-binding
-  observed end-to-end through dashboard + CLI + MCP.
+- Live multi-node mesh: cap-binding observed end-to-end through
+  dashboard + CLI + MCP, with counter bumps visible in Prometheus
+  within one scan interval of every CLI-driven event.
 
 ## [0.8.5.6] — Trust binding (capability-set + cross-transport replay)
 
