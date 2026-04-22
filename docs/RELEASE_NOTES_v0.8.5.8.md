@@ -28,6 +28,27 @@ where they left off; the restart is invisible to Prometheus. Bounded
 at 10k entries so startup stays fast on hosts with very large audit
 logs.
 
+### CLI trust-mutation audit events now reach the target daemon
+
+Operators running a daemon with a custom `--db-path` hit a silent
+observability gap: `ironmesh trust cap-promote` / `cap-reject` /
+`revoke` / `set-state` wrote their audit events to the default
+`~/.ironmesh/audit.log`, but the daemon's audit log lived next to its
+db. The daemon's counter-sync loop only tailed its own log — so every
+operator mutation left the mirrored Prometheus counters
+(`ironmesh_peer_cap_accepted_total`, `ironmesh_peer_promoted_total`,
+`ironmesh_peer_blocked_total`, `ironmesh_peer_revoked_local_total`,
+`ironmesh_peer_state_changed_total`) stuck at their pre-mutation
+values, and trust-store baseline updates couldn't fully converge on
+the running daemon, producing a persistent "pending-cap-change"
+flap for peers that should have been trusted.
+
+The CLI now derives the audit log path from `--trust-path` when
+present (`<trust-path-dir>/audit.log`, matching the daemon's own
+path-derivation rule), and accepts an explicit `--audit-path`
+override when operators have unusual layouts. Default behavior is
+unchanged for stock-path deployments.
+
 ### Counter-drift fix: audit emit failures no longer corrupt counters
 
 The counter reservation mechanism introduced in v0.8.5.7 bumps the
