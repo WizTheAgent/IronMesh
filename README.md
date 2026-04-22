@@ -29,7 +29,7 @@ IronMesh gives you a production-grade transport layer that keeps working when th
 - Clean integration with Ollama, LangChain, AutoGen, CrewAI, and MCP
 
 <p align="center">
-  <img src="docs/assets/dashboard.png" alt="IronMesh dashboard: operator console showing three live encrypted peers, the 3-stage handshake diagram, and a live A2A dialogue between two local LLMs" width="900">
+  <img src="docs/assets/dashboard.png" alt="IronMesh operator console — live metrics, signed Ed25519 + X25519 handshake diagram, pending-trust + pending-cap-change review panels, encrypted message feed, and A2A conversation controls, all served by the daemon itself with no external dashboards required" width="900">
 </p>
 
 ## Why IronMesh Exists
