@@ -13,9 +13,20 @@
 > Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
-**Your agents. Your network. Your rules.**
+**IronMesh** — Local-first, end-to-end encrypted mesh protocol for AI agents.
+Zero-config on LAN. Optional LoRa transport. Works when the cloud doesn’t.
+`pip install ironmesh`
 
-Zero-config, end-to-end encrypted agent-to-agent communication that never leaves your local network.
+## Why IronMesh
+
+Most agent frameworks assume the cloud is always available.  
+IronMesh gives you a production-grade transport layer that keeps working when the router dies, the ISP is down, or you’re fully air-gapped.
+
+- Zero-config LAN discovery via mDNS  
+- End-to-end encryption with forward secrecy (NaCl/libsodium)  
+- Offline message queuing in encrypted SQLite  
+- Optional LoRa transport via Reticulum for off-grid use  
+- Clean integration with Ollama, LangChain, AutoGen, CrewAI, and MCP
 
 <p align="center">
   <img src="docs/assets/dashboard.png" alt="IronMesh dashboard: operator console showing three live encrypted peers, the 3-stage handshake diagram, and a live A2A dialogue between two local LLMs" width="900">
