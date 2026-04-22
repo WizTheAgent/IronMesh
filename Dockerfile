@@ -1,11 +1,11 @@
 # IronMesh — zero-config encrypted agent-to-agent protocol
 # Multi-stage build, non-root user, runs as UID 1000.
 #
-# Build:   docker build -t ironmesh:0.8.5 .
+# Build:   docker build -t ironmesh:0.8.5.8 .
 # Run:     docker run --rm -it -p 8765:8765 -p 8766:8766 \
 #              -e IRONMESH_PASSPHRASE=mysecretpassphrase \
 #              -v ironmesh-data:/data/ironmesh \
-#              ironmesh:0.8.5
+#              ironmesh:0.8.5.8
 
 FROM python:3.13-slim-bookworm AS builder
 

@@ -9,7 +9,7 @@
 
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **v0.8.5.8 — pre-1.0 release.** 726+ tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus a multi-node live-mesh validation pass.
+> **v0.8.5.8 — pre-1.0 release.** 758+ tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus a multi-node live-mesh validation pass.
 > Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -696,7 +696,7 @@ Full list: [CHANGELOG.md](CHANGELOG.md). Planned work: [docs/ROADMAP.md](docs/RO
 Where to get it and what's still rough:
 
 - **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport, `[keychain]` for OS-keychain passphrase storage, `[otel]` for OpenTelemetry tracing). Latest: **v0.8.5.8**.
-- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.8.5.6`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
+- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.8.5.8`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
 - **GitHub releases** — signed tags, wheel + sdist attached: [releases page](https://github.com/WizTheAgent/IronMesh/releases).
 - **Go client** — `clients/go/` (reference implementation, crypto primitives verified against Python).
 - **LoRa end-to-end latency** — Measured live at 915 MHz SF8/BW125 between two RNode-equipped nodes (1 hop, strong signal): 16-byte probe 1.07 — 1.23 s, 64-byte probe 1.17 — 1.25 s, 256-byte probe 1.77 — 1.98 s, 100% delivery across 9 probes. Multi-hop + long-range interference sweeps are still pending — see [`docs/LORA_VALIDATION.md`](docs/LORA_VALIDATION.md).
