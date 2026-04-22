@@ -140,6 +140,43 @@ handled by `BridgeDaemon._emit_audit_with_reservation` and enforced
 by a static-analysis test (`tests/test_bridge.py::TestCounterDriftOnAuditFailure`)
 that fails CI if a new call site spells out reserve/emit by hand.
 
+### CLI trust mutations and the `--audit-path` flag
+
+When you run an `ironmesh trust` mutation (`cap-promote`, `cap-reject`,
+`revoke`, `set-state`) against a daemon with a custom `--db-path`,
+the CLI needs to know where the daemon's audit log lives so its
+emitted event lands in the file the daemon's scanner-loop tails.
+Without that, the trust mutation succeeds but the mirrored
+Prometheus counter (`ironmesh_peer_cap_accepted_total`, etc.) never
+moves — the event landed in `~/.ironmesh/audit.log` while the
+daemon was watching `<custom-db-dir>/audit.log`.
+
+Two behaviors:
+
+1. **`--trust-path` provided, `--audit-path` omitted** — the CLI
+   derives the audit log path as `<dirname --trust-path>/audit.log`,
+   matching the daemon's own derivation rule. This is the common
+   case and Just Works.
+
+2. **`--audit-path` provided explicitly** — overrides the
+   derivation. Use when your trust store and audit log live in
+   different directories.
+
+3. **Neither flag** — the CLI uses `~/.ironmesh/audit.log` (the
+   default), matching the daemon's stock-path layout.
+
+Example (custom `--db-path` deployment):
+
+```bash
+ironmesh trust \
+    --keys-path /opt/ironmesh/state/keys.json \
+    --trust-path /opt/ironmesh/state/known_peers.json \
+    cap-promote 60a9cca12a98c5ffffe39fdbb6fcbd61
+# → audit event written to /opt/ironmesh/state/audit.log
+# → daemon scanner picks it up within 1s
+# → ironmesh_peer_cap_accepted_total bumps from N to N+1
+```
+
 ## Structured JSON logs
 
 ```bash
