@@ -168,6 +168,8 @@ Supports (v0.8.2+):
 
 ## lxmf_gateway.py
 
+**Extra dependency:** `pip install ironmesh[lxmf]` (pulls `rns` + `lxmf`).
+
 Bridges IronMesh to the Reticulum LXMF ecosystem so messages from a
 Sideband phone (or any LXMF client) reach IronMesh peers. See
 `docs/TERMUX.md` for the phone-side setup.

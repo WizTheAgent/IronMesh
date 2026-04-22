@@ -51,6 +51,14 @@ otel = [
     "opentelemetry-sdk>=1.25",
     "opentelemetry-exporter-otlp-proto-http>=1.25",
 ]
+lxmf = [
+    # LXMF messaging on top of Reticulum. Required by the
+    # examples/lxmf_gateway.py reference agent that bridges IronMesh
+    # to Sideband / NomadNet phones via LXMF over LoRa or any other
+    # rns transport. Pulls rns transitively.
+    "rns>=0.9.0",
+    "lxmf>=0.5.5",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21.0",

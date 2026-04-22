@@ -1747,18 +1747,32 @@ def cmd_doctor(args):
         print(f"      INFO — bind failed ({e}); a daemon may already be running here")
 
     # 7. Audit log presence + chain integrity (light check).
-    audit_path = os.path.expanduser("~/.ironmesh/audit.log")
+    # Derive the audit log path from --db-path so we look at the file
+    # the target daemon actually writes to. Without this derivation,
+    # doctor on a custom-db-path daemon would inspect ~/.ironmesh/audit.log
+    # while the daemon writes to <db-dir>/audit.log — and report on a
+    # different log entirely.
+    audit_path = os.path.join(os.path.dirname(db_path), "audit.log")
     print(f"[7/7] Audit log: {audit_path}")
     if not os.path.exists(audit_path):
         print("      OK — audit log does not exist yet (will be created on daemon start)")
     else:
         try:
             from ironmesh.audit import verify_chain
-            ok, msg = verify_chain(audit_path)
+            ok, entries, first_bad = verify_chain(
+                audit_path,
+                keys_path=keys_path,
+                keys_passphrase=args.keys_passphrase
+                or os.environ.get("IRONMESH_PASSPHRASE"),
+            )
             if ok:
-                print(f"      OK — {msg}")
+                print(f"      OK — chain verifies clean ({entries} entries)")
             else:
-                print(f"      WARN — {msg}")
+                print(
+                    f"      WARN — chain TAMPER at entry {first_bad} "
+                    f"(of {entries} scanned). New writes from this start "
+                    f"forward will chain cleanly. See OPERATOR_RUNBOOK §4."
+                )
                 failures += 1
         except ImportError:
             print("      SKIP — verify_chain not available in this build")

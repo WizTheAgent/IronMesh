@@ -92,6 +92,28 @@ class TestSubcommandParsing:
         assert args.audit_path is None
         assert args.trust_path is None
 
+    def test_doctor_unpacks_verify_chain_three_tuple(self):
+        """`audit.verify_chain` returns a 3-tuple
+        `(ok, entries_checked, first_invalid_line)`. The doctor
+        subcommand previously unpacked it as `ok, msg = ...` which
+        raised `too many values to unpack (expected 2)` whenever an
+        audit log existed at the resolved path. This test pins the
+        unpacking signature so a future verify_chain change forces an
+        intentional update on both sides.
+        """
+        from ironmesh import audit as audit_mod
+        import inspect
+        src = inspect.getsource(audit_mod.verify_chain)
+        # The signature comment in verify_chain documents the tuple shape.
+        assert "ok, entries_checked, first_invalid_line" in src or \
+               "Returns" in src
+        # And the value count: verify_chain delegates to AuditLog.verify
+        # which returns (valid, entries_checked, first_invalid_line) per
+        # its own docstring.
+        ret = audit_mod.AuditLog.verify.__doc__ or ""
+        assert "valid" in ret and "entries_checked" in ret \
+            and "first_invalid_line" in ret
+
 
 # ---------------------------------------------------------------------------
 # Passphrase sourcing

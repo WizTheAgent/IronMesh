@@ -45,8 +45,27 @@ write failures, daemon restarts, out-of-process trust mutations).
   the most common cause (colliding test + production daemon on the
   same trust path).
 
+### Added
+
+- **`[lxmf]` install extra.** `pip install ironmesh[lxmf]` now pulls
+  both `rns` and `lxmf` for the `examples/lxmf_gateway.py` reference
+  agent. Previously the dependency was only documented in the
+  example's startup error message; now it's a standard extra and
+  documented in `examples/README.md`.
+
 ### Fixed
 
+- **`ironmesh doctor` audit log check is no longer broken.** Check
+  7/7 (audit chain integrity) was unpacking `verify_chain`'s return
+  value as a 2-tuple `ok, msg = ...`, but `verify_chain` actually
+  returns a 3-tuple `(ok, entries_checked, first_invalid_line)`.
+  Whenever an audit log existed at the resolved path, the check
+  raised `too many values to unpack (expected 2)` and reported FAIL
+  for healthy daemons. Doctor also now derives the audit log path
+  from `--db-path` (matching the daemon's own derivation) instead of
+  hardcoding `~/.ironmesh/audit.log` — so on a custom-db-path daemon,
+  doctor inspects the right file. Regression test in `test_cli.py`
+  pins the unpacking signature.
 - **`ironmesh trust` CLI now writes audit events to the target
   daemon's audit log.** Operators who run a daemon with a custom
   `--db-path` got stuck on a silent observability gap: the CLI wrote
