@@ -68,6 +68,30 @@ class TestSubcommandParsing:
         assert args.command == "audit"
         assert args.audit_command == "verify"
 
+    def test_trust_accepts_audit_path(self):
+        """`trust --audit-path ...` is the explicit override so operators
+        can point the CLI at a daemon's audit log. Without this flag, a
+        daemon running with a custom --db-path would keep its audit log
+        next to the db, while the CLI wrote mutations to
+        ~/.ironmesh/audit.log — the daemon's scanner never saw them and
+        the PEER_CAP_ACCEPTED counter stayed stuck at zero.
+        """
+        args = _parse([
+            "trust",
+            "--trust-path", "/tmp/custom/known_peers.json",
+            "--audit-path", "/tmp/custom/audit.log",
+            "list",
+        ])
+        assert args.audit_path == "/tmp/custom/audit.log"
+        assert args.trust_path == "/tmp/custom/known_peers.json"
+
+    def test_trust_audit_path_defaults_to_none(self):
+        """When neither --audit-path nor --trust-path are given, the
+        CLI uses AuditLog's default (~/.ironmesh/audit.log)."""
+        args = _parse(["trust", "list"])
+        assert args.audit_path is None
+        assert args.trust_path is None
+
 
 # ---------------------------------------------------------------------------
 # Passphrase sourcing

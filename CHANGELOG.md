@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [Unreleased]
+
+### Fixed
+
+- **`ironmesh trust` CLI now writes audit events to the target
+  daemon's audit log.** Operators who run a daemon with a custom
+  `--db-path` got stuck on a silent observability gap: the CLI wrote
+  `PEER_CAP_ACCEPTED` / `PEER_PROMOTED` / `PEER_BLOCKED` /
+  `PEER_STATE_CHANGED` / `PEER_REVOKED_LOCAL` events to the default
+  `~/.ironmesh/audit.log`, while the daemon's audit log lived next to
+  its db. The daemon's counter-sync loop only tailed its own log, so
+  every operator-initiated mutation left the mirrored Prometheus
+  counters (`ironmesh_peer_cap_accepted_total`, etc.) stuck at their
+  pre-mutation values. Trust-store baseline updates also didn't
+  properly converge on the running daemon, manifesting as a
+  persistent "pending-cap-change" flap for peers that were
+  legitimately trusted. The CLI now derives the audit log path from
+  `--trust-path` (defaults to `<trust-path-dir>/audit.log`), and
+  accepts an explicit `--audit-path` override when needed. Default
+  behavior is unchanged for operators running a daemon with stock
+  paths.
+
 ## [0.8.5.8] — Counter correctness + observability polish
 
 Patch release on top of v0.8.5.7. No protocol or schema changes; every

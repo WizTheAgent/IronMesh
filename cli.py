@@ -135,6 +135,12 @@ def parse_args():
     trust_parser.add_argument("--trust-path", default=None,
                               help="Override trust store path (default ~/.ironmesh/known_peers.json). "
                                    "Use when targeting a non-default daemon's trust file.")
+    trust_parser.add_argument("--audit-path", default=None,
+                              help="Override audit log path. If unset and --trust-path is "
+                                   "provided, derives <trust-path-dir>/audit.log so trust "
+                                   "mutations land in the daemon's audit log (where the "
+                                   "daemon's counter-sync loop can pick them up). Falls "
+                                   "back to ~/.ironmesh/audit.log otherwise.")
     trust_sub = trust_parser.add_subparsers(dest="trust_command")
     list_parser = trust_sub.add_parser("list", help="List trusted peers")
     list_parser.add_argument("--show-caps", action="store_true",
@@ -828,7 +834,24 @@ def cmd_trust(args):
             audit_key = hashlib.sha256(
                 keypair.ed25519_secret + b"ironmesh-audit-v1"
             ).digest()
-            _audit_cache["log"] = AuditLog(hmac_key=audit_key)
+            # Resolve the audit log path so operator mutations land in
+            # the same file the target daemon tails. Without this, the
+            # CLI writes to ~/.ironmesh/audit.log but a daemon using a
+            # custom --db-path keeps its audit log next to its db, so
+            # the daemon's scanner loop never sees the operator event
+            # and the mirrored counter never bumps.
+            audit_path = getattr(args, "audit_path", None)
+            if not audit_path and getattr(args, "trust_path", None):
+                audit_path = os.path.join(
+                    os.path.dirname(os.path.expanduser(args.trust_path)),
+                    "audit.log",
+                )
+            if audit_path:
+                _audit_cache["log"] = AuditLog(
+                    path=audit_path, hmac_key=audit_key,
+                )
+            else:
+                _audit_cache["log"] = AuditLog(hmac_key=audit_key)
         try:
             _audit_cache["log"].log(event, details)
         except Exception as e:
