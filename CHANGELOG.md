@@ -7,8 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5.8] — Counter correctness + observability polish
+
+Patch release on top of v0.8.5.7. No protocol or schema changes; every
+v0.8.x peer stays interoperable. Focus is on making the v0.8.5.7
+observability layer robust under real operational pressure (audit-log
+write failures, daemon restarts, out-of-process trust mutations).
+
+### Added
+
+- **Counter continuity across restart.** The daemon now reconciles
+  mirrored Prometheus counters against the tail of the audit log
+  (last 10,000 entries) on startup. Before this, every mirrored
+  counter reset to zero on restart — which Prometheus reports as a
+  counter reset, creating a negative delta in `rate()` and
+  `increase()` queries. Counters now pick up where they left off;
+  restart is invisible to downstream Grafana alerts.
+- **Audit chain verified on startup.** The daemon runs
+  `audit.verify()` once after opening the audit log and logs a
+  WARNING with entry number + scan depth if the chain is corrupted.
+  Pre-existing corruption (from multi-writer races pre-v0.8.5.6 or
+  filesystem damage) now surfaces immediately instead of waiting for
+  someone to run a manual `ironmesh audit verify`.
+- **Structured `BridgeDaemon._emit_audit_with_reservation` helper.**
+  Bundles the counter reservation + audit emit + failure recovery so
+  every audit event that mirrors into a Prometheus counter goes
+  through one correct path. A static-analysis test fails CI if any
+  future call site spells out the reserve/emit pattern by hand.
+- **Grafana dashboard: two new panels.** `docs/grafana/ironmesh-dashboard.json`
+  now includes a cap-binding activity panel (cap-set changed,
+  baselines pinned, operator-accepted, binding partial) and an
+  operator-trust-actions + cross-transport-replay panel (revokes,
+  promotions, blocks, state changes, replay alerts).
+- **OPERATOR_RUNBOOK — new section 7:** trust-store corruption
+  recovery playbook for the `Trust store integrity check FAILED`
+  log line (read-only latch trip). Covers triage, recovery, and
+  the most common cause (colliding test + production daemon on the
+  same trust path).
+
 ### Fixed
 
+- **Prometheus counters no longer drift on audit-log write failure.**
+  The daemon bumps its observability counters and reserves the
+  matching audit event before emitting it to disk so the audit-log
+  scanner loop doesn't double-count. If the audit emit then failed
+  (disk pressure, flock timeout, rotation mid-write), the reservation
+  used to be silently orphaned — either leaving the counter +1 above
+  truth or silently absorbing the next real event of the same type.
+  Seven call sites across `bridge.py` and `mesh.py` now release the
+  reservation when the emit fails, and all audit-reserve emits are
+  now funneled through the structured helper. Drift accumulated in
+  long-running v0.8.5.7 daemons clears on next restart; the fix
+  prevents future drift.
+- **CLI audit-emit failures surface at WARNING.** `ironmesh trust
+  revoke`, `trust set-state`, `trust cap-promote`, and `trust
+  cap-reject` previously swallowed audit-log write failures silently
+  — the trust mutation applied, no audit record was written, and
+  the operator had no idea. Failures now print a WARNING to stderr
+  identifying the event, the underlying error, and the audit log
+  path so operators can investigate. The mutation itself is still
+  applied (the audit emit is separate from the state change).
 - **Dashboard version badge no longer lies.** The version pill in the
   operator console was a hardcoded string literal (`v0.8.5 · PRE-1.0`)
   that never got bumped alongside `__version__`, so the dashboard
@@ -19,6 +77,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tests in `test_gui.py` that assert the placeholder is present in
   the template and that the rendered HTML matches the current
   `__version__` — future drift fails loudly at CI.
+
+### Operator-visible behavior change
+
+- After upgrade, mirrored Prometheus counters no longer start at zero
+  on restart — they pick up from the last 10,000 audit entries. Any
+  existing Prometheus recording rule or Grafana panel that assumed
+  zero-reset behavior across restart will see a different pattern
+  (no more negative delta). Counter-type semantics are preserved;
+  `rate()` and `increase()` continue to produce the expected values.
 
 ## [0.8.5.7] — Finish shipping cap-binding
 

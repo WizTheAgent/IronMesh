@@ -832,17 +832,12 @@ class MeshRouter:
                     "source": frame.source, "msg_id": frame.msg_id,
                 })
                 if dedup_result.get("cross_transport"):
-                    # v0.8.5.7: bump the bridge's Prometheus counter +
-                    # emit an OTel event so cross-transport replay is
-                    # observable without scraping the audit log.
-                    # _reserve_counter_bump tells the audit-log scanner
-                    # to skip the matching event (CLI / MCP paths
-                    # rely on the scanner for their counter bumps).
-                    try:
-                        self.daemon._reserve_counter_bump(
-                            "msg_replay_cross_transport")
-                    except Exception:
-                        pass
+                    # Bump Prometheus counter + emit OTel event +
+                    # durable audit record so cross-transport replay
+                    # is observable without scraping the log. The
+                    # bridge daemon's helper bundles the counter
+                    # reservation and audit emit so the two stay
+                    # consistent even when the audit write fails.
                     try:
                         from ironmesh.telemetry import emit_event
                         emit_event(
@@ -857,16 +852,19 @@ class MeshRouter:
                         )
                     except Exception:
                         pass
-                    self._audit_log(EVENT_MSG_REPLAY_CROSS_TRANSPORT, {
-                        "peer": frame.source,
-                        "msg_id": frame.msg_id,
-                        "original_transport": dedup_result.get(
-                            "original_transport"),
-                        "replay_transport": dedup_result.get(
-                            "this_transport"),
-                        "time_delta_ms": int(round(
-                            dedup_result.get("time_delta_s", 0.0) * 1000)),
-                    })
+                    self.daemon._emit_audit_with_reservation(
+                        "msg_replay_cross_transport",
+                        EVENT_MSG_REPLAY_CROSS_TRANSPORT, {
+                            "peer": frame.source,
+                            "msg_id": frame.msg_id,
+                            "original_transport": dedup_result.get(
+                                "original_transport"),
+                            "replay_transport": dedup_result.get(
+                                "this_transport"),
+                            "time_delta_ms": int(round(
+                                dedup_result.get("time_delta_s", 0.0) * 1000)),
+                        },
+                    )
                 return False
         else:
             if self.dedup.check_and_add(frame.source, frame.msg_id):

@@ -105,7 +105,40 @@ ironmesh_gate_enabled                             0 or 1
 ironmesh_pending_trust_evicted                   v0.8.5.2+
 ironmesh_pending_trust_dropped                   v0.8.5.2+
 ironmesh_messages_received_blocked               v0.8.5.2+
+ironmesh_peer_cap_set_changed_total              v0.8.5.7+
+ironmesh_peer_cap_baseline_total                 v0.8.5.7+
+ironmesh_peer_cap_accepted_total                 v0.8.5.7+
+ironmesh_peer_cap_binding_partial_total          v0.8.5.7+
+ironmesh_msg_replay_cross_transport_total        v0.8.5.7+
+ironmesh_peer_revoked_local_total                v0.8.5.7+
+ironmesh_peer_state_changed_total                v0.8.5.7+
+ironmesh_peer_promoted_total                     v0.8.5.7+
+ironmesh_peer_blocked_total                      v0.8.5.7+
 ```
+
+### Counter continuity across restart
+
+Starting in v0.8.5.8 the daemon reconciles mirrored counters against
+the tail of the audit log (last 10,000 entries) on startup. Before
+this, every mirrored counter reset to zero on restart, which produced
+a negative delta that Prometheus reports as a counter reset — noisy
+in Grafana's `rate()` and `increase()` queries. The reconciliation
+seeds each counter to match the tail so the restart is invisible to
+downstream alerts. If the audit log is larger than the bound, older
+events don't contribute — operators running very long
+`increase(...)` windows should expect a one-time edge effect at log
+rotation boundaries.
+
+### Drift protection
+
+Each mirrored counter is bumped BEFORE its paired audit event reaches
+disk, with a reservation against the audit-log scanner's dedup window
+so the scanner doesn't also count the event. If the audit emit fails
+(disk pressure, filesystem error), the reservation is released so the
+counter stays consistent with the durable event count. This is
+handled by `BridgeDaemon._emit_audit_with_reservation` and enforced
+by a static-analysis test (`tests/test_bridge.py::TestCounterDriftOnAuditFailure`)
+that fails CI if a new call site spells out reserve/emit by hand.
 
 ## Structured JSON logs
 

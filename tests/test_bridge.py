@@ -106,3 +106,247 @@ class TestBridgeHandshake:
         eph_priv_1, eph_pub_1 = generate_ephemeral()
         eph_priv_2, eph_pub_2 = generate_ephemeral()
         assert bytes(eph_pub_1) != bytes(eph_pub_2)
+
+
+class TestCounterDriftOnAuditFailure:
+    """The daemon bumps Prometheus counters before the paired audit event
+    reaches disk and reserves the bump against the scanner loop's dedup
+    window. If the audit emit then fails, a stale reservation used to sit
+    in `_in_proc_counter_bumps` forever, either leaving the counter +1
+    above truth or silently absorbing the next real event of the same
+    type. `_emit_audit_with_reservation` releases the reservation on
+    failure so neither can happen.
+    """
+
+    def _daemon(self, tmp_path):
+        return BridgeDaemon(
+            name="drift-test",
+            passphrase="test-passphrase-12",
+            keys_path=str(tmp_path / "keys.json"),
+            db_path=str(tmp_path / "test.db"),
+        )
+
+    def test_reserve_then_unreserve_is_zero_net(self, tmp_path):
+        d = self._daemon(tmp_path)
+        d._reserve_counter_bump("peer_promoted")
+        assert d.metrics.peer_promoted == 1
+        assert d._in_proc_counter_bumps.get("peer_promoted") == 1
+        d._unreserve_counter_bump("peer_promoted")
+        assert d.metrics.peer_promoted == 0
+        assert d._in_proc_counter_bumps.get("peer_promoted", 0) == 0
+
+    def test_unreserve_floors_at_zero(self, tmp_path):
+        d = self._daemon(tmp_path)
+        # Unreserve with nothing reserved must not drive the counter
+        # negative nor the pending-bumps dict.
+        d._unreserve_counter_bump("peer_blocked")
+        d._unreserve_counter_bump("peer_blocked")
+        assert d.metrics.peer_blocked == 0
+        assert d._in_proc_counter_bumps.get("peer_blocked", 0) == 0
+
+    def test_unknown_counter_is_silently_ignored(self, tmp_path):
+        d = self._daemon(tmp_path)
+        # Reserve + unreserve of a non-existent counter must not raise
+        # — the helpers catch AttributeError so a typo in a new event
+        # wiring can't crash the daemon.
+        d._reserve_counter_bump("no_such_counter")
+        d._unreserve_counter_bump("no_such_counter")
+
+    def test_emit_with_reservation_no_audit_bumps_counter_only(self, tmp_path):
+        d = self._daemon(tmp_path)
+        assert d._audit is None
+        ok = d._emit_audit_with_reservation(
+            "peer_promoted", "PEER_PROMOTED", {"peer_id": "x"},
+        )
+        assert ok is False
+        # With no audit log attached, the scanner doesn't run either, so
+        # the reservation is never consumed. The counter bump is the only
+        # observable record — match the prior behavior exactly.
+        assert d.metrics.peer_promoted == 1
+        assert d._in_proc_counter_bumps.get("peer_promoted") == 1
+
+    def test_emit_with_reservation_emit_success(self, tmp_path):
+        d = self._daemon(tmp_path)
+        d._audit = MagicMock()
+        ok = d._emit_audit_with_reservation(
+            "peer_blocked", "PEER_BLOCKED", {"peer_id": "x"},
+        )
+        assert ok is True
+        d._audit.log.assert_called_once_with("PEER_BLOCKED", {"peer_id": "x"})
+        assert d.metrics.peer_blocked == 1
+        # Reservation sits until the scanner reads the event back; the
+        # helper must NOT release it on the happy path.
+        assert d._in_proc_counter_bumps.get("peer_blocked") == 1
+
+    def test_emit_with_reservation_emit_failure_releases_reservation(
+        self, tmp_path,
+    ):
+        d = self._daemon(tmp_path)
+        d._audit = MagicMock()
+        d._audit.log.side_effect = RuntimeError("disk full")
+        ok = d._emit_audit_with_reservation(
+            "peer_cap_baseline", "PEER_CAP_BASELINE", {"peer": "x"},
+        )
+        assert ok is False
+        d._audit.log.assert_called_once()
+        # The whole point: counter is back to zero and the reservation is
+        # gone, so the next real event of this type bumps the counter
+        # normally (no drift, no silent absorption).
+        assert d.metrics.peer_cap_baseline == 0
+        assert d._in_proc_counter_bumps.get("peer_cap_baseline", 0) == 0
+
+    def test_no_bare_reserve_counter_bump_outside_helper(self):
+        """Static guard: `_reserve_counter_bump` must not be called
+        directly from new code. The drift bug this test class exercises
+        was born from call sites that reserved a counter, then emitted
+        an audit event with a bare `except: pass`. `_emit_audit_with_reservation`
+        bundles both so the pattern is impossible. If a future change
+        re-introduces a bare `self._reserve_counter_bump(...)` outside
+        the helper, this test fails and asks the author to either use
+        the helper or justify the new call site.
+        """
+        import ast
+        import pathlib
+
+        repo = pathlib.Path(__file__).resolve().parent.parent
+        bridge_src = (repo / "bridge.py").read_text(encoding="utf-8")
+        tree = ast.parse(bridge_src)
+
+        allowed_enclosing_methods = {
+            "_emit_audit_with_reservation",
+            "_reserve_counter_bump",  # the helper may reference its own name in docstring
+            "_unreserve_counter_bump",
+        }
+
+        offenders: list[tuple[str, int]] = []
+
+        class Visitor(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.method_stack: list[str] = []
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                self.method_stack.append(node.name)
+                self.generic_visit(node)
+                self.method_stack.pop()
+
+            def visit_AsyncFunctionDef(
+                self, node: ast.AsyncFunctionDef,
+            ) -> None:
+                self.method_stack.append(node.name)
+                self.generic_visit(node)
+                self.method_stack.pop()
+
+            def visit_Call(self, node: ast.Call) -> None:
+                func = node.func
+                if isinstance(func, ast.Attribute) and \
+                        func.attr == "_reserve_counter_bump":
+                    enclosing = (self.method_stack[-1]
+                                 if self.method_stack else "<module>")
+                    if enclosing not in allowed_enclosing_methods:
+                        offenders.append((enclosing, node.lineno))
+                self.generic_visit(node)
+
+        Visitor().visit(tree)
+        assert not offenders, (
+            "Bare _reserve_counter_bump calls outside "
+            "_emit_audit_with_reservation re-introduce the drift bug. "
+            f"Offenders (method, line): {offenders}. "
+            "Use _emit_audit_with_reservation(counter, event, payload) "
+            "instead."
+        )
+
+    def test_reconcile_from_audit_tail_seeds_counters(self, tmp_path):
+        """Daemon restart should NOT zero mirrored counters. The
+        reconcile helper reads the audit tail and bumps counters to
+        match, so Grafana's rate() queries stay smooth across restart.
+        """
+        import json as _json
+        d = self._daemon(tmp_path)
+        # Fabricate an audit log next to the daemon's db path (same
+        # directory the real AuditLog writes into).
+        audit_path = tmp_path / "audit.log"
+        entries = (
+            [{"event": "PEER_PROMOTED"}] * 3
+            + [{"event": "PEER_CAP_BASELINE"}] * 2
+            + [{"event": "PEER_CAP_SET_CHANGED"}] * 1
+            + [{"event": "STARTUP"}] * 5  # not in _AUDIT_EVENT_TO_COUNTER
+        )
+        audit_path.write_text(
+            "\n".join(_json.dumps(e) for e in entries) + "\n",
+            encoding="utf-8",
+        )
+        # Attach a minimal audit-log stub (just needs ._path).
+        d._audit = type("Stub", (), {"_path": str(audit_path)})()
+        assert d.metrics.peer_promoted == 0
+        d._reconcile_counters_from_audit_tail(limit=10_000)
+        assert d.metrics.peer_promoted == 3
+        assert d.metrics.peer_cap_baseline == 2
+        assert d.metrics.peer_cap_set_changed == 1
+        # Events without a counter mapping are correctly ignored.
+        assert getattr(d.metrics, "startup", None) in (None, 0)
+
+    def test_reconcile_respects_limit(self, tmp_path):
+        """When the audit log has more than `limit` entries, only the
+        tail contributes. Older events beyond the bound are skipped —
+        a deliberate trade-off to keep startup fast on huge logs."""
+        import json as _json
+        d = self._daemon(tmp_path)
+        audit_path = tmp_path / "audit.log"
+        # 10 PEER_PROMOTED events, but limit=3 means only the last 3
+        # contribute (all still PEER_PROMOTED, so the counter is 3
+        # not 10).
+        entries = [{"event": "PEER_PROMOTED"}] * 10
+        audit_path.write_text(
+            "\n".join(_json.dumps(e) for e in entries) + "\n",
+            encoding="utf-8",
+        )
+        d._audit = type("Stub", (), {"_path": str(audit_path)})()
+        d._reconcile_counters_from_audit_tail(limit=3)
+        assert d.metrics.peer_promoted == 3
+
+    def test_reconcile_tolerates_missing_audit_log(self, tmp_path):
+        """Daemon start when audit.log doesn't exist must not raise."""
+        d = self._daemon(tmp_path)
+        d._audit = type("Stub", (), {"_path": str(tmp_path / "nope.log")})()
+        d._reconcile_counters_from_audit_tail(limit=100)
+        assert d.metrics.peer_promoted == 0
+
+    def test_reconcile_tolerates_torn_json_line(self, tmp_path):
+        """A torn trailing line (SIGKILL mid-write) must not crash the
+        reconcile — the malformed line is skipped, valid lines count."""
+        import json as _json
+        d = self._daemon(tmp_path)
+        audit_path = tmp_path / "audit.log"
+        good = _json.dumps({"event": "PEER_PROMOTED"})
+        # Trailing line is a truncated JSON fragment.
+        audit_path.write_text(good + "\n" + '{"event": "PEER_PROM',
+                              encoding="utf-8")
+        d._audit = type("Stub", (), {"_path": str(audit_path)})()
+        d._reconcile_counters_from_audit_tail(limit=100)
+        assert d.metrics.peer_promoted == 1
+
+    def test_every_counter_name_is_driftproof_on_failure(self, tmp_path):
+        # Covers every counter_name that the daemon passes to
+        # _emit_audit_with_reservation today. If a new one is added,
+        # this test will pass trivially until a site actually drives
+        # it through the helper (by design — the helper itself is
+        # the contract).
+        counter_names = [
+            "peer_promoted",
+            "peer_blocked",
+            "peer_cap_baseline",
+            "peer_cap_set_changed",
+            "peer_cap_binding_partial",
+            "peer_cap_accepted",
+            "msg_replay_cross_transport",
+        ]
+        d = self._daemon(tmp_path)
+        d._audit = MagicMock()
+        d._audit.log.side_effect = RuntimeError("simulated audit write failure")
+        for name in counter_names:
+            ok = d._emit_audit_with_reservation(name, "X", {})
+            assert ok is False, f"{name}: emit should report failure"
+            assert getattr(d.metrics, name) == 0, \
+                f"{name}: counter drifted after emit failure"
+            assert d._in_proc_counter_bumps.get(name, 0) == 0, \
+                f"{name}: reservation leaked after emit failure"

@@ -831,8 +831,17 @@ def cmd_trust(args):
             _audit_cache["log"] = AuditLog(hmac_key=audit_key)
         try:
             _audit_cache["log"].log(event, details)
-        except Exception:
-            pass
+        except Exception as e:
+            # Don't fail the CLI command — the trust mutation has
+            # already landed — but surface the audit-emit failure so
+            # a forensic gap doesn't accumulate silently.
+            print(
+                f"WARNING: audit log emit for {event} failed: {e}. "
+                "The mutation was applied but no audit record was written. "
+                "Check disk space / file permissions on "
+                f"{getattr(_audit_cache['log'], '_path', '~/.ironmesh/audit.log')}.",
+                file=sys.stderr,
+            )
 
     trust_cmd = getattr(args, "trust_command", None)
     if trust_cmd == "list":

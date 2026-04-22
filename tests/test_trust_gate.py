@@ -376,7 +376,9 @@ class TestGateEndToEnd:
         from ironmesh.bridge import BridgeDaemon
         for name in ("_gate_inbound_msg", "promote_pending_peer",
                      "block_pending_peer", "list_pending_trust",
-                     "_reserve_counter_bump", "_GATED_MSG_TYPES"):
+                     "_reserve_counter_bump", "_unreserve_counter_bump",
+                     "_emit_audit_with_reservation",
+                     "_GATED_MSG_TYPES"):
             attr = getattr(BridgeDaemon, name)
             if callable(attr):
                 setattr(daemon, name, attr.__get__(daemon, daemon.__class__))

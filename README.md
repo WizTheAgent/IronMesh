@@ -9,7 +9,7 @@
 
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **v0.8.5.7 — pre-1.0 release.** 726 tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus a multi-node live-mesh validation pass.
+> **v0.8.5.8 — pre-1.0 release.** 726+ tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus a multi-node live-mesh validation pass.
 > Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -153,7 +153,7 @@ Requires Python 3.10 or newer. On Linux the firewall must allow UDP 5353
 
 ```bash
 pip install ironmesh            # PyPI
-# or: docker pull wiztheagent/ironmesh:0.8.5.7
+# or: docker pull wiztheagent/ironmesh:0.8.5.8
 # or: ./scripts/install.sh       (Linux / macOS systemd)
 # or: see docs/TERMUX.md         (Android)
 ```
@@ -539,22 +539,28 @@ pytest tests/ -v --cov=ironmesh
 
 ## Recent changes
 
-**v0.8.5.7 (current):** Finishes shipping the capability-set binding
-feature end-to-end. Dashboard gains a `PENDING CAP CHANGE` panel with
-a live diff view and ACCEPT button. Nine new Prometheus counters (one
-per cap-binding / cross-transport / trust-state audit event) plus
-matching OpenTelemetry spans surface operator activity in Grafana.
-Five new / improved CLI subcommands (`trust cap-reject`,
-`trust cap-status`, `trust list --show-caps`, `audit tail`,
-`audit stats`). Two new MCP tools bring the total to 25
-(`ironmesh_cap_diff`, `ironmesh_cap_reject_peer`). New
-[`docs/OPERATOR_RUNBOOK.md`](docs/OPERATOR_RUNBOOK.md) playbook for
-common triage scenarios, plus [`AGENTS.md`](AGENTS.md) at the repo
-root for AI coding assistants. No protocol or schema changes; every
-v0.8.x peer stays interoperable. Eight bugs fixed during release
-hardening (observability gap for out-of-process audit events, counter
-reservation race, rotation-detection edge case, three input-validation
-fuzz finds, two more). See [`CHANGELOG.md`](CHANGELOG.md) and
+**v0.8.5.8 (current):** Hardens the v0.8.5.7 observability layer
+under real operational pressure. Counter continuity across daemon
+restart (reconciled from the audit log tail, so Grafana's `rate()`
+and `increase()` queries stay smooth through a restart). Every
+audit-event counter reservation now goes through a single structured
+helper that cannot drift if an emit fails — static-analysis test
+enforces the pattern. Audit chain is now verified automatically on
+daemon startup; tamper surfaces immediately instead of waiting for a
+manual `ironmesh audit verify`. CLI audit-emit failures surface at
+WARNING instead of silently swallowing. Grafana dashboard gains two
+new panels (cap-binding activity + operator trust actions /
+cross-transport replay). OPERATOR_RUNBOOK gains a trust-store
+corruption recovery playbook. Dashboard version badge is now driven
+by `__version__` instead of a stale string literal. No protocol or
+schema changes; every v0.8.x peer stays interoperable. See
+[`CHANGELOG.md`](CHANGELOG.md) and
+[`docs/RELEASE_NOTES_v0.8.5.8.md`](docs/RELEASE_NOTES_v0.8.5.8.md).
+
+**v0.8.5.7:** Finished shipping the capability-set binding
+feature end-to-end. Dashboard `PENDING CAP CHANGE` panel, nine new
+Prometheus counters + OpenTelemetry spans, five new / improved CLI
+subcommands, two new MCP tools (total 25). See
 [`docs/RELEASE_NOTES_v0.8.5.7.md`](docs/RELEASE_NOTES_v0.8.5.7.md).
 
 **v0.8.5.6:** Trust-binding patch on top of v0.8.5.5. Closes
@@ -689,7 +695,7 @@ Full list: [CHANGELOG.md](CHANGELOG.md). Planned work: [docs/ROADMAP.md](docs/RO
 
 Where to get it and what's still rough:
 
-- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport, `[keychain]` for OS-keychain passphrase storage, `[otel]` for OpenTelemetry tracing). Latest: **v0.8.5.7**.
+- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport, `[keychain]` for OS-keychain passphrase storage, `[otel]` for OpenTelemetry tracing). Latest: **v0.8.5.8**.
 - **Docker Hub** — `docker pull wiztheagent/ironmesh:0.8.5.6`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
 - **GitHub releases** — signed tags, wheel + sdist attached: [releases page](https://github.com/WizTheAgent/IronMesh/releases).
 - **Go client** — `clients/go/` (reference implementation, crypto primitives verified against Python).

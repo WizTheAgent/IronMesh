@@ -1578,6 +1578,32 @@ class BridgeDaemon:
             hmac_key=audit_key,
             max_bytes=getattr(self.config, "audit_log_max_bytes", 10 * 1024 * 1024),
         )
+        # Verify chain integrity once on startup. Surfaces pre-existing
+        # TAMPER without blocking — a corrupted chain is an operator
+        # problem, not a reason to refuse to start. Without this check,
+        # corruption from a prior run (multi-writer race pre-v0.8.5.6,
+        # or filesystem damage) only surfaced when someone ran
+        # `ironmesh audit verify` by hand.
+        try:
+            valid, entries, first_bad = self._audit.verify()
+            if not valid:
+                logger.warning(
+                    "Audit chain TAMPER detected at entry %s (of %d scanned). "
+                    "Prior entries remain valid; new writes from this start "
+                    "forward will chain cleanly. See OPERATOR_RUNBOOK for "
+                    "recovery guidance.",
+                    first_bad, entries,
+                )
+            else:
+                logger.info(
+                    "Audit chain verified clean (%d entries).", entries,
+                )
+        except Exception as e:
+            logger.warning("Audit chain verification skipped: %s", e)
+        # Reconcile Prometheus counters with the tail of the audit log
+        # so restart doesn't zero out every mirrored counter. Bounded
+        # at 10k entries to keep startup fast on hosts with huge logs.
+        self._reconcile_counters_from_audit_tail(limit=10_000)
         self._audit.log(EVENT_STARTUP, {
             "node_id": self.node_id, "name": self.name, "port": self.port,
         })
@@ -2565,16 +2591,12 @@ class BridgeDaemon:
             except Exception as e:
                 logger.warning("Promote-drain re-publish failed for %s msg=%s: %s",
                                target_node_id, m["msg_id"], e)
-        # v0.8.5.7: reserve counter bump so scanner doesn't double-count
-        self._reserve_counter_bump("peer_promoted")
-        if self._audit:
-            try:
-                self._audit.log(EVENT_PEER_PROMOTED, {
-                    "peer_id": target_node_id,
-                    "drained": len(drained),
-                })
-            except Exception:
-                pass
+        self._emit_audit_with_reservation(
+            "peer_promoted", EVENT_PEER_PROMOTED, {
+                "peer_id": target_node_id,
+                "drained": len(drained),
+            },
+        )
         logger.info("Promoted peer %s to trusted (drained %d queued)",
                     target_node_id, len(drained))
         return {"ok": True, "drained": len(drained), "error": None}
@@ -2597,16 +2619,12 @@ class BridgeDaemon:
             return {"ok": False, "discarded": 0,
                     "error": f"peer {target_node_id} not in trust store"}
         discarded = await self._db.discard_pending_trust(target_node_id)
-        # v0.8.5.7: reserve counter bump so scanner doesn't double-count
-        self._reserve_counter_bump("peer_blocked")
-        if self._audit:
-            try:
-                self._audit.log(EVENT_PEER_BLOCKED, {
-                    "peer_id": target_node_id,
-                    "discarded": discarded,
-                })
-            except Exception:
-                pass
+        self._emit_audit_with_reservation(
+            "peer_blocked", EVENT_PEER_BLOCKED, {
+                "peer_id": target_node_id,
+                "discarded": discarded,
+            },
+        )
         logger.info("Blocked peer %s (discarded %d queued)",
                     target_node_id, discarded)
         return {"ok": True, "discarded": discarded, "error": None}
@@ -2694,26 +2712,21 @@ class BridgeDaemon:
         """
         status = result.get("status")
         if status == "first-observation":
-            # v0.8.5.7: observability — mirror the audit event into a
-            # Prometheus counter so Grafana alerts can fire on baseline
-            # pinning events (the cap-binding TOFU-for-caps moment).
-            # _reserve_counter_bump bumps now + tells the audit-log
-            # scanner to skip the next matching event (CLI +
-            # MCP-spawned-daemon paths are the OTHER counter source).
-            self._reserve_counter_bump("peer_cap_baseline")
+            # Observability: counter mirror for the baseline pinning
+            # event (the cap-binding TOFU-for-caps moment). OTel span
+            # is independent of the counter path and fires regardless
+            # of audit-log health.
             _otel_span_event("peer.cap.baseline", peer_id, {
                 "capability_hash": (result.get("hash") or "")[:16],
                 "capability_count": len(result.get("set") or []),
             })
-            if self._audit:
-                try:
-                    self._audit.log(EVENT_PEER_CAP_BASELINE, {
-                        "peer": peer_id,
-                        "capability_hash": result.get("hash"),
-                        "capability_count": len(result.get("set") or []),
-                    })
-                except Exception:
-                    pass
+            self._emit_audit_with_reservation(
+                "peer_cap_baseline", EVENT_PEER_CAP_BASELINE, {
+                    "peer": peer_id,
+                    "capability_hash": result.get("hash"),
+                    "capability_count": len(result.get("set") or []),
+                },
+            )
             return
         if status == "match":
             return
@@ -2792,12 +2805,8 @@ class BridgeDaemon:
             fully_applied = stashed and demoted
             event = (EVENT_PEER_CAP_SET_CHANGED if fully_applied
                      else EVENT_PEER_CAP_BINDING_PARTIAL)
-            # v0.8.5.7: Prometheus + OTel mirrors of the audit event
-            # (reserved so the audit-log scanner doesn't double-count)
-            if fully_applied:
-                self._reserve_counter_bump("peer_cap_set_changed")
-            else:
-                self._reserve_counter_bump("peer_cap_binding_partial")
+            counter_name = ("peer_cap_set_changed" if fully_applied
+                            else "peer_cap_binding_partial")
             _otel_span_event(
                 "peer.cap.set_changed" if fully_applied
                 else "peer.cap.binding_partial",
@@ -2808,22 +2817,20 @@ class BridgeDaemon:
                     "demoted": demoted,
                 },
             )
-            if self._audit:
-                try:
-                    self._audit.log(event, {
-                        "peer": peer_id,
-                        "old_hash": result.get("old_hash"),
-                        "new_hash": result.get("new_hash"),
-                        "added": list(result.get("added") or []),
-                        "removed": list(result.get("removed") or []),
-                        "trust_state_effective":
-                            "pending-cap-change" if fully_applied
-                            else "unchanged (persistence failure)",
-                        "stashed": stashed,
-                        "demoted": demoted,
-                    })
-                except Exception:
-                    pass
+            self._emit_audit_with_reservation(
+                counter_name, event, {
+                    "peer": peer_id,
+                    "old_hash": result.get("old_hash"),
+                    "new_hash": result.get("new_hash"),
+                    "added": list(result.get("added") or []),
+                    "removed": list(result.get("removed") or []),
+                    "trust_state_effective":
+                        "pending-cap-change" if fully_applied
+                        else "unchanged (persistence failure)",
+                    "stashed": stashed,
+                    "demoted": demoted,
+                },
+            )
             # v0.8.5.7: push incremental notification to the dashboard
             # so the operator doesn't need to refresh the panel manually.
             if fully_applied and self._gui_clients:
@@ -2882,22 +2889,17 @@ class BridgeDaemon:
         if not accepted:
             return {"ok": False, "error": "accept_capability_change returned False"}
         ts.set_trust_state(node_id, "trusted")
-        # v0.8.5.7: observability for operator-accepted cap changes
-        # (reserved so the audit-log scanner doesn't double-count)
-        self._reserve_counter_bump("peer_cap_accepted")
         _otel_span_event("peer.cap.accepted", node_id, {
             "new_hash": (new_hash or "")[:16],
         })
-        if self._audit:
-            try:
-                self._audit.log(EVENT_PEER_CAP_ACCEPTED, {
-                    "peer": node_id,
-                    "old_hash": old_hash,
-                    "new_hash": new_hash,
-                    "trust_state_effective": "trusted",
-                })
-            except Exception:
-                pass
+        self._emit_audit_with_reservation(
+            "peer_cap_accepted", EVENT_PEER_CAP_ACCEPTED, {
+                "peer": node_id,
+                "old_hash": old_hash,
+                "new_hash": new_hash,
+                "trust_state_effective": "trusted",
+            },
+        )
         return {"ok": True, "old_hash": old_hash, "new_hash": new_hash}
 
     # ------------------------------------------------------------------
@@ -4096,6 +4098,60 @@ class BridgeDaemon:
         except AttributeError:
             pass
 
+    def _unreserve_counter_bump(self, counter_name: str) -> None:
+        """Undo a prior _reserve_counter_bump when the paired audit
+        emit failed to persist. Without this, the metric counter
+        stays +1 above truth until the next durable emit of the same
+        type arrives and consumes the stale reservation — at which
+        point that real event is silently absorbed by the scanner
+        instead of bumping the counter. Either way the counter
+        misreports. Releasing the reservation here restores both
+        invariants.
+
+        Floored at zero so a double-unreserve can never drive the
+        counter negative. Same lock as _reserve_counter_bump — safe
+        from any thread.
+        """
+        try:
+            with self._counter_lock:
+                cur = getattr(self.metrics, counter_name)
+                setattr(self.metrics, counter_name, max(0, cur - 1))
+                pending = self._in_proc_counter_bumps.get(counter_name, 0)
+                if pending > 0:
+                    self._in_proc_counter_bumps[counter_name] = pending - 1
+        except AttributeError:
+            pass
+
+    def _emit_audit_with_reservation(
+        self,
+        counter_name: str,
+        event: str,
+        payload: dict,
+    ) -> bool:
+        """Bundled: bump counter + reserve it against the scanner, emit
+        the audit event, and release the reservation if the emit fails.
+
+        This is the ONE correct pattern for firing an audit event whose
+        type has a Prometheus counter mirror. Every call site that
+        spells the reserve/emit/except block out by hand is a latent
+        drift bug — prefer this helper.
+
+        Returns True if the audit event reached disk, False otherwise
+        (no audit log attached, or emit raised). The caller rarely
+        needs the return value; the helper already handles the
+        observability bookkeeping.
+        """
+        self._reserve_counter_bump(counter_name)
+        if self._audit is None:
+            return False
+        try:
+            self._audit.log(event, payload)
+            return True
+        except Exception as e:
+            logger.warning("audit emit %s failed: %s", event, e)
+            self._unreserve_counter_bump(counter_name)
+            return False
+
     _AUDIT_EVENT_TO_COUNTER = {
         "PEER_CAP_SET_CHANGED":       "peer_cap_set_changed",
         "PEER_CAP_BASELINE":          "peer_cap_baseline",
@@ -4109,6 +4165,91 @@ class BridgeDaemon:
         "PEER_PROMOTED":              "peer_promoted",
         "PEER_BLOCKED":               "peer_blocked",
     }
+
+    def _reconcile_counters_from_audit_tail(self, limit: int = 10_000) -> None:
+        """Bump Prometheus counters for the last `limit` entries of the
+        audit log so restart doesn't zero out the mirrored counters.
+
+        Counter continuity across restart matters because Grafana's
+        `rate()` / `increase()` queries assume monotonic counters. A
+        zero-reset on restart creates a negative delta that Prometheus
+        reports as a counter reset — noisy and misleading. Seeding
+        from the log tail makes the restart invisible to downstream
+        alerts.
+
+        Bounded at `limit` entries (last N) so startup stays fast even
+        when the audit log is very large (>200 MB). Entries older than
+        the bound don't contribute; operators running `increase(...)`
+        with long time windows already expect edge-effects at log
+        rotation boundaries, so this is a reasonable compromise.
+        """
+        if self._audit is None:
+            return
+        path = self._audit._path  # noqa: SLF001
+        if not os.path.exists(path):
+            return
+        try:
+            # Read the last `limit` lines via a simple tail that
+            # doesn't load the entire file. Python doesn't have a
+            # built-in; this buffered-block-from-end approach is
+            # O(limit * avg_line_len) memory.
+            tail_lines = self._tail_lines(path, limit)
+        except Exception as e:
+            logger.debug("counter reconcile: tail read failed: %s", e)
+            return
+        bumped = 0
+        for line in tail_lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+            event = entry.get("event")
+            counter_name = self._AUDIT_EVENT_TO_COUNTER.get(event)
+            if counter_name is None:
+                continue
+            try:
+                with self._counter_lock:
+                    cur = getattr(self.metrics, counter_name)
+                    setattr(self.metrics, counter_name, cur + 1)
+                bumped += 1
+            except AttributeError:
+                continue
+        if bumped:
+            logger.info(
+                "Reconciled %d audit-mirror counter bump(s) from the last "
+                "%d audit entries.", bumped, limit,
+            )
+
+    @staticmethod
+    def _tail_lines(path: str, limit: int, block_size: int = 8192) -> list:
+        """Return up to the last `limit` lines of `path` as a list of
+        strings (order preserved, oldest first). Reads backward in
+        block_size chunks so a 1 GB file doesn't fully load into
+        memory. Returns [] on any read error."""
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, 2)
+                file_size = f.tell()
+                if file_size == 0:
+                    return []
+                chunks: list = []
+                line_count = 0
+                offset = file_size
+                while offset > 0 and line_count <= limit:
+                    read_size = min(block_size, offset)
+                    offset -= read_size
+                    f.seek(offset)
+                    chunk = f.read(read_size)
+                    chunks.append(chunk)
+                    line_count += chunk.count(b"\n")
+                raw = b"".join(reversed(chunks))
+                lines = raw.decode("utf-8", errors="replace").splitlines()
+                return lines[-limit:]
+        except OSError:
+            return []
 
     async def _audit_counter_sync_loop(self):
         """Periodically tail the audit log and increment counters for

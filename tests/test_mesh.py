@@ -321,6 +321,18 @@ class _FakeDaemon:
     async def _send_frame(self, peer_id, frame):
         self.sent.append((peer_id, frame))
 
+    def _emit_audit_with_reservation(self, counter_name, event, payload):
+        # Test double: mirrors BridgeDaemon's bundled reserve+emit helper
+        # (introduced when cross-transport replay audit emit was routed
+        # through the daemon so counter drift is impossible even when
+        # audit emit fails).
+        if self._audit is not None:
+            try:
+                self._audit.log(event, payload)
+            except Exception:
+                return False
+        return True
+
 
 class _FakeConfig:
     mesh_routing = "relay"

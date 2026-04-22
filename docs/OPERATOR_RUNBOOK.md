@@ -105,6 +105,18 @@ $ ironmesh audit verify
 TAMPER DETECTED at entry 286 (checked 286)
 ```
 
+Or in the daemon startup log:
+
+```
+WARNING  Audit chain TAMPER detected at entry 286 (of 917 scanned).
+         Prior entries remain valid; new writes from this start forward
+         will chain cleanly.
+```
+
+The daemon now runs `audit.verify()` automatically on startup so
+corruption surfaces immediately instead of accumulating silently until
+someone runs a manual check.
+
 **First question:** did you run multiple daemons or CLI invocations on
 the same host without `--trust-path` / `--audit-path` overrides? The
 v0.8.5.6 fix added cross-process locking, but a pre-v0.8.5.6 daemon or
@@ -189,7 +201,52 @@ across a different network.
 
 ---
 
-## 7. Daemon won't start after key rotation
+## 7. `Trust store integrity check FAILED` in the daemon log
+
+**Symptom:**
+
+```
+CRITICAL  Trust store integrity check FAILED (peers_in_file=3).
+          Refusing to load peers.
+ERROR     Refusing to _save(): TrustStore is in MAC-failure read-only mode.
+          Mutations will NOT persist.
+```
+
+**Meaning:** a second process opened your trust file with a
+different HMAC key. The trust store has entered a read-only latch
+(v0.8.5.6 fix) to protect the on-disk file from being overwritten
+with an empty in-memory copy.
+
+**Most common cause:** integration tests or a second development
+daemon running against the default `~/.ironmesh/known_peers.json`
+instead of a per-process `--trust-path`.
+
+**Triage:**
+
+1. `ps -ef | grep ironmesh` — what processes are touching the trust
+   file right now?
+2. Look at each daemon's `~/.ironmesh/keys.json` fingerprint: if two
+   daemons have different fingerprints but the same trust path, that's
+   your collision.
+
+**Recovery:**
+
+1. Stop the rogue process (the one with the *different* fingerprint
+   from the one you want to keep).
+2. Restart the surviving daemon. The latch resets on process start;
+   the real trust file is still intact on disk.
+3. Future: give each daemon its own `--trust-path`, or isolate tests
+   by setting `IRONMESH_TRUST_PATH` to a per-test directory (the
+   autouse fixture in `tests/conftest.py` does this already for the
+   project's own tests).
+
+**Prevention:** the v0.8.5.6 read-only latch is the defense. Never
+point two daemons with different identity keys at the same trust
+file.
+
+---
+
+## 8. Daemon won't start after key rotation
 
 **Symptom:** `ironmesh run` fails with "identity key decryption
 failed" or similar.

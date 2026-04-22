@@ -192,6 +192,100 @@
       ],
       "title": "Pending-trust gate activity",
       "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 20 },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 27 },
+      "id": 6,
+      "options": {
+        "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "right" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "rate(ironmesh_peer_cap_set_changed_total[5m])",
+          "legendFormat": "cap-set changed/sec",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "rate(ironmesh_peer_cap_baseline_total[5m])",
+          "legendFormat": "baselines pinned/sec",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "rate(ironmesh_peer_cap_accepted_total[5m])",
+          "legendFormat": "operator-accepted/sec",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "rate(ironmesh_peer_cap_binding_partial_total[5m])",
+          "legendFormat": "binding PARTIAL/sec (alert)",
+          "refId": "D"
+        }
+      ],
+      "title": "Cap-binding activity (5m rate)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 20 },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 27 },
+      "id": 7,
+      "options": {
+        "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "right" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "rate(ironmesh_msg_replay_cross_transport_total[5m])",
+          "legendFormat": "cross-transport replay/sec (alert)",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "rate(ironmesh_peer_revoked_local_total[5m])",
+          "legendFormat": "operator revoke/sec",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "rate(ironmesh_peer_promoted_total[5m])",
+          "legendFormat": "promoted/sec",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "rate(ironmesh_peer_blocked_total[5m])",
+          "legendFormat": "blocked/sec",
+          "refId": "D"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "rate(ironmesh_peer_state_changed_total[5m])",
+          "legendFormat": "other state change/sec",
+          "refId": "E"
+        }
+      ],
+      "title": "Operator trust actions + cross-transport replay (5m rate)",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",
