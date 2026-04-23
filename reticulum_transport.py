@@ -31,10 +31,22 @@ except ImportError:
     _HAS_RNS = False
 
 
-# Maximum accepted message length in the RNS deframing loop (audit C-05).
+# Maximum accepted message length in the RNS deframing loop.
 # Matches bridge.py's MAX_MESSAGE_SIZE to prevent memory exhaustion from
 # a malformed or malicious 4-byte length prefix.
 MAX_RNS_MSG = 1_048_576  # 1 MB
+
+# Frames larger than this are sent via RNS Resource (chunked, compressed,
+# resumable) instead of being inlined in the Buffer stream. The Buffer
+# path is fine for short MSG/PING/ACK frames but degenerates badly on
+# multi-MB payloads — Resource is the right tool for those.
+RESOURCE_THRESHOLD_BYTES = 32_768
+
+# Hard cap on a single Resource transfer. Resources are reliable but
+# they consume a Link for the duration of the transfer; an attacker
+# advertising a 4 GB Resource shouldn't be able to lock out other
+# traffic. Operators can raise this for trusted-network deployments.
+MAX_RESOURCE_BYTES = 64 * 1024 * 1024  # 64 MB
 
 # Announces are bandwidth-sensitive on LoRa (3.12 kbps at SF8/BW125),
 # so the announce app_data uses single-character keys to keep the
@@ -150,6 +162,12 @@ class RNSLinkAdapter:
         # v0.9.1: peer node_id once the IronMesh handshake binds it,
         # so the stats poller knows which PeerState to update.
         self.peer_id: Optional[str] = None
+        # v0.9.1: per-peer feature awareness for transport selection.
+        # Set by the daemon when it learns the peer's announce feature
+        # set (`resource`, `lxmf`, etc.). Defaults to False so we never
+        # surprise an unknown peer with a Resource it can't accept.
+        self.peer_supports_resource: bool = False
+        self.resources_sent: int = 0
 
         # Enable physical-layer stats tracking on this link so the
         # periodic poller can read RSSI/SNR/Q from radio interfaces.
@@ -173,6 +191,25 @@ class RNSLinkAdapter:
         )
 
         link.set_link_closed_callback(self._on_link_closed)
+
+        # Accept incoming RNS Resources for large-payload transfer.
+        # ACCEPT_ALL is set in ReticulumTransport._on_incoming_link for
+        # server-side links; for client-side links we set it here too,
+        # paired with a callback that pushes the completed Resource's
+        # bytes onto the same _queue the Buffer path feeds. Receivers
+        # pre-Phase-3 just won't have this callback installed and will
+        # silently drop incoming Resources — which is fine, the sender
+        # will only route via Resource for peers that advertised the
+        # `resource` feature in their announce.
+        try:
+            link.set_resource_strategy(RNS.Link.ACCEPT_ALL)
+        except Exception:
+            pass
+        if hasattr(link, "set_resource_concluded_callback"):
+            try:
+                link.set_resource_concluded_callback(self._on_resource_concluded)
+            except Exception:
+                pass
 
         # Capture the remote's RNS Identity hash as soon as RNS confirms
         # it. Stored separately from any IronMesh-layer identity so
@@ -288,6 +325,46 @@ class RNSLinkAdapter:
         self._closed = True
         self._loop.call_soon_threadsafe(self._queue.put_nowait, None)
 
+    def _on_resource_concluded(self, resource) -> None:
+        """Called by RNS when an incoming Resource transfer completes.
+
+        Pushes the assembled Resource bytes onto the same async queue
+        the Buffer path uses, so the daemon's existing per-message loop
+        consumes large-payload frames identically to small ones.
+
+        ResourceStatus is checked because RNS calls this on both
+        completion and failure; failures are logged but don't disturb
+        the queue (the sender's retry policy handles it).
+        """
+        try:
+            status = getattr(resource, "status", None)
+            done = getattr(RNS.Resource, "COMPLETE", "complete")
+            if status != done:
+                logger.warning(
+                    "RNS Resource transfer ended with status=%r (not COMPLETE) — dropped",
+                    status,
+                )
+                return
+            data = getattr(resource, "data", None)
+            if data is None:
+                return
+            # Resource.data is a BytesIO-like; read it out
+            if hasattr(data, "read"):
+                payload = data.read()
+            else:
+                payload = bytes(data)
+            if not payload:
+                return
+            if len(payload) > MAX_RESOURCE_BYTES:
+                logger.warning(
+                    "RNS Resource exceeds MAX_RESOURCE_BYTES (%d > %d) — dropped",
+                    len(payload), MAX_RESOURCE_BYTES,
+                )
+                return
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, payload)
+        except Exception:
+            logger.exception("_on_resource_concluded failed")
+
     # -- WebSocket-compatible interface ------------------------------------
 
     @property
@@ -302,14 +379,37 @@ class RNSLinkAdapter:
         return self._link.status == RNS.Link.ACTIVE
 
     async def send(self, data) -> None:
-        """Send a message over the RNS link (length-prefixed)."""
+        """Send a message over the RNS link.
+
+        Frames at or below RESOURCE_THRESHOLD_BYTES travel as
+        length-prefixed bytes on the established Buffer stream — fast,
+        cheap, no per-message setup.
+
+        Frames above the threshold are sent via RNS Resource, which
+        handles chunking, sequencing, integrity, optional bz2
+        compression, and resume on its own. Resource is the right
+        primitive for multi-MB payloads (file outputs, screenshots,
+        large LLM responses) — it doesn't lock up the Buffer stream
+        and the receiver gets a single completion callback rather
+        than reassembling chunks itself.
+
+        Resource is only used when the peer advertised the `resource`
+        feature in its announce. Without that signal we fall back to
+        the Buffer path, which will reject anything over MAX_RNS_MSG.
+        """
         if self._closed or self._link is None:
             raise websockets.ConnectionClosed(None, None)
         if isinstance(data, str):
             data = data.encode("utf-8")
+
+        if len(data) > RESOURCE_THRESHOLD_BYTES and self.peer_supports_resource:
+            await self._send_via_resource(data)
+            return
+
         if len(data) > MAX_RNS_MSG:
             raise ValueError(
-                f"payload size {len(data)} exceeds MAX_RNS_MSG ({MAX_RNS_MSG})"
+                f"payload size {len(data)} exceeds MAX_RNS_MSG ({MAX_RNS_MSG}) "
+                f"and peer did not advertise the `resource` feature"
             )
         frame = struct.pack(">I", len(data)) + data
         # Buffer.write() is synchronous; run in executor to avoid
@@ -317,6 +417,30 @@ class RNSLinkAdapter:
         await self._loop.run_in_executor(
             None, self._buffer.write, frame)
         await self._loop.run_in_executor(None, self._buffer.flush)
+
+    async def _send_via_resource(self, data: bytes) -> None:
+        """Hand off a large payload to RNS Resource for transfer.
+
+        RNS handles chunking/compression/integrity; we just await the
+        advertise call (synchronous in RNS) on the executor so the
+        asyncio loop stays responsive. The receiver picks up the
+        completed bytes via ``_on_resource_concluded``.
+        """
+        if len(data) > MAX_RESOURCE_BYTES:
+            raise ValueError(
+                f"payload size {len(data)} exceeds MAX_RESOURCE_BYTES ({MAX_RESOURCE_BYTES})"
+            )
+        try:
+            await self._loop.run_in_executor(
+                None,
+                lambda: RNS.Resource(data, self._link,
+                                      auto_compress=True,
+                                      advertise=True),
+            )
+            self.resources_sent += 1
+        except Exception as e:
+            logger.warning("RNS Resource send failed: %s", e)
+            raise
 
     async def recv(self) -> bytes:
         """Await next message from the RNS link."""
@@ -579,7 +703,10 @@ class ReticulumTransport:
             except Exception:
                 pass
         # Static feature set for v0.9.1; later phases extend this list.
-        features = ["mesh"]
+        # `mesh` = IronMesh distance-vector routing.
+        # `resource` = peer accepts large payloads via RNS Resource.
+        # `lxmf` = peer hosts an LXMF gateway listener.
+        features = ["mesh", "resource"]
         if getattr(daemon, "_lxmf_enabled", False):
             features.append("lxmf")
         return encode_app_data(name, ironmesh_version, node_id,

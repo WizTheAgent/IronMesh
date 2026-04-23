@@ -58,6 +58,9 @@ def _make_mock_rns():
     rns.Buffer = MagicMock()
     rns.Buffer.create_bidirectional_buffer = MagicMock(return_value=MagicMock())
     rns.Channel = MagicMock()
+    # Resource is a callable; tests assert on its construction args
+    rns.Resource = MagicMock()
+    rns.Resource.COMPLETE = "complete"
 
     return rns
 
@@ -499,6 +502,92 @@ class TestIronMeshAnnounceHandler:
         stats = adapter.sample_link_stats()
         assert stats["mtu"] == 500
         assert "rssi" not in stats
+
+    @pytest.mark.asyncio
+    async def test_send_uses_buffer_for_small_payloads(self):
+        loop = asyncio.get_running_loop()
+        link = MagicMock()
+        link.status = _mock_rns.Link.ACTIVE
+        link.get_channel = MagicMock(return_value=MagicMock())
+        link.set_resource_strategy = MagicMock()
+        adapter = RNSLinkAdapter(link, loop, dest_hash_hex="abc")
+        adapter.peer_supports_resource = True
+        # Reset Resource constructor call count from any prior tests
+        _mock_rns.Resource.reset_mock()
+        await adapter.send(b"x" * 1024)  # well under threshold
+        # Buffer write was called; Resource was not constructed
+        adapter._buffer.write.assert_called()
+        _mock_rns.Resource.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_routes_large_payload_via_resource_when_supported(self):
+        loop = asyncio.get_running_loop()
+        link = MagicMock()
+        link.status = _mock_rns.Link.ACTIVE
+        link.get_channel = MagicMock(return_value=MagicMock())
+        link.set_resource_strategy = MagicMock()
+        adapter = RNSLinkAdapter(link, loop, dest_hash_hex="abc")
+        adapter.peer_supports_resource = True
+        _mock_rns.Resource.reset_mock()
+        large_payload = b"y" * (rt_mod.RESOURCE_THRESHOLD_BYTES + 1)
+        await adapter.send(large_payload)
+        # Resource was constructed exactly once with the payload + link
+        _mock_rns.Resource.assert_called_once()
+        args, kwargs = _mock_rns.Resource.call_args
+        assert args[0] == large_payload
+        assert args[1] is link
+        assert kwargs.get("auto_compress") is True
+        assert kwargs.get("advertise") is True
+        assert adapter.resources_sent == 1
+
+    @pytest.mark.asyncio
+    async def test_send_rejects_large_when_peer_lacks_resource_feature(self):
+        loop = asyncio.get_running_loop()
+        link = MagicMock()
+        link.status = _mock_rns.Link.ACTIVE
+        link.get_channel = MagicMock(return_value=MagicMock())
+        link.set_resource_strategy = MagicMock()
+        adapter = RNSLinkAdapter(link, loop, dest_hash_hex="abc")
+        # peer_supports_resource defaults to False
+        assert adapter.peer_supports_resource is False
+        # Payload above MAX_RNS_MSG must raise (matches old behavior)
+        with pytest.raises(ValueError):
+            await adapter.send(b"z" * (rt_mod.MAX_RNS_MSG + 1))
+
+    @pytest.mark.asyncio
+    async def test_resource_concluded_enqueues_payload(self):
+        loop = asyncio.get_running_loop()
+        link = MagicMock()
+        link.status = _mock_rns.Link.ACTIVE
+        link.get_channel = MagicMock(return_value=MagicMock())
+        link.set_resource_strategy = MagicMock()
+        adapter = RNSLinkAdapter(link, loop, dest_hash_hex="abc")
+        # Simulate a completed Resource
+        from io import BytesIO
+        resource = MagicMock()
+        resource.status = _mock_rns.Resource.COMPLETE
+        resource.data = BytesIO(b"large-bytes-payload")
+        adapter._on_resource_concluded(resource)
+        await asyncio.sleep(0.01)
+        msg = await asyncio.wait_for(adapter.recv(), timeout=1.0)
+        assert msg == b"large-bytes-payload"
+
+    @pytest.mark.asyncio
+    async def test_resource_failed_status_dropped(self):
+        loop = asyncio.get_running_loop()
+        link = MagicMock()
+        link.status = _mock_rns.Link.ACTIVE
+        link.get_channel = MagicMock(return_value=MagicMock())
+        link.set_resource_strategy = MagicMock()
+        adapter = RNSLinkAdapter(link, loop, dest_hash_hex="abc")
+        from io import BytesIO
+        resource = MagicMock()
+        resource.status = "failed"
+        resource.data = BytesIO(b"would-be-payload")
+        adapter._on_resource_concluded(resource)
+        await asyncio.sleep(0.01)
+        # Queue should be empty (failed transfer dropped)
+        assert adapter._queue.empty()
 
     @pytest.mark.asyncio
     async def test_handler_survives_bad_app_data(self):

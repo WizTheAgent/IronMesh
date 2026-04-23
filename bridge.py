@@ -2081,6 +2081,19 @@ class BridgeDaemon:
                 # Bind peer_id onto the adapter so the RNS stats poller
                 # knows which PeerState to update for this Link.
                 websocket.peer_id = peer_id
+                # v0.9.1: tell the adapter what the peer's announce
+                # said it supports, so large payloads can be routed
+                # via Resource only for peers that will accept them.
+                node_id_for_caps = getattr(peer_state, "node_id", None) or peer_id
+                discovered = None
+                for entry in self._rns_discovered.values():
+                    if entry.get("node_id") == node_id_for_caps:
+                        discovered = entry
+                        break
+                if discovered:
+                    websocket.peer_supports_resource = (
+                        "resource" in discovered.get("features", [])
+                    )
                 rns_hash = getattr(websocket, '_dest_hash_hex', None)
                 if rns_hash and rns_hash != "unknown":
                     peer_state.rns_dest_hash = rns_hash
