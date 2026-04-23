@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	ironmesh-go --host 192.168.1.37 --port 8765 \
+//	ironmesh-go --host 192.168.1.10 --port 8765 \
 //	  --name go-client --passphrase "your-passphrase"
 //
 // This is a reference implementation — it proves the wire protocol is
