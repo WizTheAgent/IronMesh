@@ -4171,17 +4171,55 @@ class BridgeDaemon:
     # ------------------------------------------------------------------
 
     async def _heartbeat_loop(self):
+        # RNS Links carry their own keepalive (~0.45 bps) plus a closed-
+        # callback that fires immediately on disconnect. Sending a full
+        # IronMesh PING/PONG every heartbeat_interval over LoRa wastes
+        # scarce bandwidth and provides no information the Link itself
+        # doesn't already give us. For RNS peers we use a longer cadence
+        # (5x default) and short-circuit on no_data_for() exceeding the
+        # silence threshold so dead Links surface in seconds, not minutes.
+        rns_interval_multiplier = 5
+        rns_silence_threshold = self._heartbeat_interval * 3
         while self._running:
             await asyncio.sleep(self._heartbeat_interval)
             for peer_id, state in list(self.peers.items()):
-                if state.is_online:
-                    try:
-                        self._pending_pings[peer_id] = time.monotonic()
-                        await self._send_encrypted_control(
-                            peer_id, ew_protocol.MessageType.PING
+                if not state.is_online:
+                    continue
+                is_rns = (state.transport_type == "rns")
+                # Native liveness check for RNS peers — read from the
+                # latest stats sample. If the Link has been silent past
+                # the threshold, mark offline immediately rather than
+                # waiting for the IronMesh PING timeout chain.
+                if is_rns:
+                    silence = None
+                    adapter = self.ws_clients.get(peer_id)
+                    if adapter is not None and hasattr(adapter, "_link"):
+                        try:
+                            silence = adapter._link.no_data_for()
+                        except Exception:
+                            silence = None
+                    if silence is not None and silence > rns_silence_threshold:
+                        logger.info(
+                            "RNS peer %s silent for %.1fs (>%.0fs threshold) — marking offline",
+                            peer_id, silence, rns_silence_threshold,
                         )
-                        state.last_seen = time.time()
-                    except Exception:
+                        state.transition(ew_protocol.PeerState.Status.OFFLINE)
+                        state.session_key = None
+                        self.ws_clients.pop(peer_id, None)
+                        self._pending_pings.pop(peer_id, None)
+                        continue
+                    # Skip PING this tick on a longer cadence
+                    last_ping = self._pending_pings.get(peer_id, 0)
+                    if (time.monotonic() - last_ping
+                            < self._heartbeat_interval * rns_interval_multiplier):
+                        continue
+                try:
+                    self._pending_pings[peer_id] = time.monotonic()
+                    await self._send_encrypted_control(
+                        peer_id, ew_protocol.MessageType.PING
+                    )
+                    state.last_seen = time.time()
+                except Exception:
                         logger.warning("Heartbeat failed for %s", peer_id)
                         state.transition(ew_protocol.PeerState.Status.OFFLINE)
                         state.session_key = None
