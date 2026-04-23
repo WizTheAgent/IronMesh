@@ -174,6 +174,45 @@ class RNSLinkAdapter:
 
         link.set_link_closed_callback(self._on_link_closed)
 
+        # Capture the remote's RNS Identity hash as soon as RNS confirms
+        # it. Stored separately from any IronMesh-layer identity so
+        # consumers can decide their own trust policy. The callback fires
+        # on the RNS thread so we just stash the hash — no async work.
+        self.remote_identity_hash: Optional[str] = None
+        if hasattr(link, "set_remote_identified_callback"):
+            try:
+                link.set_remote_identified_callback(self._on_remote_identified)
+            except Exception:
+                pass
+        # If the remote already identified before we attached the callback
+        # (possible on a fast LAN handshake), populate from the link state.
+        try:
+            ri = link.get_remote_identity() if hasattr(link, "get_remote_identity") else None
+            if ri is not None and getattr(ri, "hash", None):
+                self.remote_identity_hash = (
+                    RNS.hexrep(ri.hash, delimit=False)
+                    if hasattr(RNS, "hexrep") else ri.hash.hex()
+                )
+        except Exception:
+            pass
+
+    def _on_remote_identified(self, link, identity) -> None:
+        """RNS callback when the remote side calls ``link.identify()``.
+
+        Runs on the RNS transport thread. We just stash the identity
+        hash — any IronMesh-side trust decisions happen later, on the
+        asyncio loop, when the daemon's handshake code reads it.
+        """
+        try:
+            if identity is None:
+                return
+            self.remote_identity_hash = (
+                RNS.hexrep(identity.hash, delimit=False)
+                if hasattr(RNS, "hexrep") else identity.hash.hex()
+            )
+        except Exception:
+            logger.exception("_on_remote_identified failed")
+
     def sample_link_stats(self) -> Dict[str, Any]:
         """Snapshot of the underlying RNS Link's live stats.
 
@@ -627,20 +666,42 @@ class ReticulumTransport:
             logger.error("Invalid destination hash: %s", dest_hash_hex)
             return None
 
-        # Request path (may take a while on LoRa)
+        # Resolve path. Prefer RNS's native await_path when present
+        # (added in 1.1.x) so the loop blocks on the actual path-response
+        # signal rather than busy-polling has_path() on a backoff timer.
+        # We still fall back to the polling path for older RNS — the
+        # behaviour is otherwise identical, just chattier on slow links.
         if not RNS.Transport.has_path(dest_hash):
             RNS.Transport.request_path(dest_hash)
-            # Wait for path. Audit L-12: exponential backoff keeps us
-            # from busy-polling on long LoRa path resolutions.
-            start = time.monotonic()
-            attempt = 0
-            while not RNS.Transport.has_path(dest_hash):
-                if time.monotonic() - start > timeout:
-                    logger.warning("Path resolution timed out for %s", dest_hash_hex)
-                    return None
-                delay = min(0.5 * (2 ** attempt), 10.0)
-                await asyncio.sleep(delay)
-                attempt += 1
+            await_path = getattr(RNS.Transport, "await_path", None)
+            if await_path is not None:
+                try:
+                    # await_path is a blocking call into RNS — run in
+                    # the default executor so the asyncio loop stays
+                    # responsive (path resolution can take seconds on LoRa).
+                    ok = await self._loop.run_in_executor(
+                        None, lambda: await_path(dest_hash, timeout=timeout),
+                    )
+                    if not ok and not RNS.Transport.has_path(dest_hash):
+                        logger.warning("Path resolution timed out for %s", dest_hash_hex)
+                        return None
+                except Exception:
+                    # await_path absent or signature mismatch — fall through
+                    # to the polling loop below.
+                    pass
+            if not RNS.Transport.has_path(dest_hash):
+                # Polling fallback for older RNS. Exponential backoff
+                # keeps us from hammering the network on long LoRa
+                # path resolutions.
+                start = time.monotonic()
+                attempt = 0
+                while not RNS.Transport.has_path(dest_hash):
+                    if time.monotonic() - start > timeout:
+                        logger.warning("Path resolution timed out for %s", dest_hash_hex)
+                        return None
+                    delay = min(0.5 * (2 ** attempt), 10.0)
+                    await asyncio.sleep(delay)
+                    attempt += 1
 
         dest_identity = RNS.Identity.recall(dest_hash)
         if not dest_identity:

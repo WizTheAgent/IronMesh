@@ -449,6 +449,44 @@ class TestIronMeshAnnounceHandler:
         assert "establishment_bps" not in stats
 
     @pytest.mark.asyncio
+    async def test_remote_identity_captured_on_construction(self):
+        # If the remote already identified before our callback was wired,
+        # the adapter pulls the identity hash off the link directly.
+        loop = asyncio.get_running_loop()
+        link = MagicMock()
+        link.status = _mock_rns.Link.ACTIVE
+        link.get_channel = MagicMock(return_value=MagicMock())
+        identity = MagicMock()
+        identity.hash = b"\xab" * 16
+        link.get_remote_identity = MagicMock(return_value=identity)
+        adapter = RNSLinkAdapter(link, loop, dest_hash_hex="abc")
+        assert adapter.remote_identity_hash is not None
+        assert adapter.remote_identity_hash.startswith("ab")
+
+    @pytest.mark.asyncio
+    async def test_remote_identified_callback_updates_hash(self):
+        # If the remote identifies after construction, the callback fires
+        # and the adapter records the new identity hash.
+        loop = asyncio.get_running_loop()
+        link = MagicMock()
+        link.status = _mock_rns.Link.ACTIVE
+        link.get_channel = MagicMock(return_value=MagicMock())
+        link.get_remote_identity = MagicMock(return_value=None)
+        captured_cb = {}
+        def _set_cb(cb):
+            captured_cb["cb"] = cb
+        link.set_remote_identified_callback = _set_cb
+        adapter = RNSLinkAdapter(link, loop, dest_hash_hex="abc")
+        assert adapter.remote_identity_hash is None
+        assert "cb" in captured_cb
+        # Simulate a later identify
+        identity = MagicMock()
+        identity.hash = b"\xcd" * 16
+        captured_cb["cb"](link, identity)
+        assert adapter.remote_identity_hash is not None
+        assert adapter.remote_identity_hash.startswith("cd")
+
+    @pytest.mark.asyncio
     async def test_sample_link_stats_swallows_per_attr_errors(self):
         loop = asyncio.get_running_loop()
         link = MagicMock()
