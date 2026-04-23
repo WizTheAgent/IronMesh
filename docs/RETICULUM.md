@@ -204,6 +204,113 @@ A working example client lives at
 [`examples/rns_capability_client.py`](../examples/rns_capability_client.py).
 It imports only the `rns` package — no ironmesh dependency.
 
+## Running as a Reticulum Transport Node
+
+A Transport Node forwards announces and packets on behalf of other
+nodes — it's how the Reticulum mesh stays connected across multi-hop
+paths. Any always-on IronMesh host that bridges multiple interfaces
+(e.g. a Pi with both a LAN AutoInterface and a LoRa RNodeInterface)
+is a strong candidate to also run as a Transport Node.
+
+This is a **Reticulum-level** setting, not an IronMesh daemon flag.
+Edit your `~/.reticulum/config`:
+
+```ini
+[reticulum]
+  enable_transport = Yes
+```
+
+Restart `rnsd` (or your IronMesh daemon if it's running its own
+Reticulum instance) for the change to take effect. The node will
+announce itself as a Transport Node and start serving path requests
+for unknown destinations on behalf of its neighbours.
+
+Pair this with `interface_mode = gateway` on the wide-area interface
+so the node actively resolves paths *across* the gateway boundary,
+not just within each segment.
+
+### Trade-offs
+
+* **Pro:** Better path convergence, higher throughput across the
+  whole local mesh, helps every peer behind your node reach destinations
+  they couldn't see directly.
+* **Pro:** Caches public keys, so peers can recall identities through
+  you without each having to hear the original announce.
+* **Con:** Extra outbound bandwidth — you're forwarding announces and
+  packets that aren't yours. On a metered or expensive WAN link this
+  can be material. Use `interface_mode = boundary` to limit cross-
+  segment propagation to explicit requests.
+
+## Bootstrap interfaces (`bootstrap_only`)
+
+A bootstrap interface is a temporary first-contact path that detaches
+once better local infrastructure is discovered. Useful when the only
+way to reach a new node is via a slow or expensive medium (a TCP
+tunnel over cellular, an out-of-band relay) but you expect a faster
+local interface to come up shortly after.
+
+Mark such an interface with `bootstrap_only` in the Reticulum config:
+
+```ini
+[interfaces]
+  [[Cellular Tunnel]]
+    type = TCPClientInterface
+    enabled = yes
+    bootstrap_only = yes
+    target_host = relay.example.org
+    target_port = 4242
+```
+
+Once any other interface comes up that exposes the same destinations,
+Reticulum stops using the bootstrap interface and the connection costs
+go away. Good fit for off-grid IronMesh deployments that occasionally
+need a one-off fallback.
+
+## Interface discovery
+
+Newer Reticulum versions support encrypted on-network discovery of
+*interfaces themselves* — different from announce-handler discovery
+(which finds destinations). Enable it on a node that should auto-form
+mesh segments without explicit interface configuration on every host:
+
+```ini
+[reticulum]
+  discover_interfaces = Yes
+  required_discovery_value = some-shared-network-secret
+```
+
+`required_discovery_value` works like an IFAC at the discovery layer —
+only nodes that share the secret will peer up. Pair with IFAC on each
+discovered interface for end-to-end membership control.
+
+Combined with IronMesh's announce-handler discovery, a fresh node can
+go from "just installed" to "fully meshed with the rest of the fleet"
+without any operator-typed addresses on either side.
+
+## Distributed blackhole list (opt-in)
+
+Reticulum supports a network-wide spam/abuse control list that can be
+published and synchronised across Transport Nodes. When enabled, a
+node refuses to forward packets from sources on the list and can
+publish its own additions for other nodes to pick up.
+
+```ini
+[reticulum]
+  publish_blackhole = Yes
+```
+
+This pairs naturally with IronMesh's pending-trust gate
+(`--require-message-promotion`). When a peer is rejected by the gate,
+their RNS Identity hash can be optionally fed into the local
+blackhole publication — a future IronMesh release will wire this
+automatically. For now, blackhole entries must be managed via RNS's
+own config and CLI tools.
+
+**Operational caution:** blackhole publication is consensus-free —
+any node can publish any source. Treat published lists as advisory,
+not authoritative. The IronMesh trust store remains the source of
+truth for who you talk to.
+
 ## Tuning
 
 | Flag | Default | Notes |
