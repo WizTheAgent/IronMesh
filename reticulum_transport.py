@@ -510,6 +510,24 @@ RPC_PATH_INFO = "/im/info"
 RPC_PATH_CAP_LIST = "/im/cap/list"
 RPC_PATH_CAP_FIND = "/im/cap/find"
 
+# Admin RPC paths — gated by an explicit identity-hash allow-list
+# managed by the operator (--rns-admin-identities CLI arg or
+# IRONMESH_RNS_ADMIN_IDENTITIES env var). Each handler checks the
+# caller's RNS identity hash against the allow-list and rejects
+# unauthorised requests with a structured error.
+#
+#   /im/admin/status — daemon health snapshot (uptime, peer counts,
+#                      message rates, audit chain head)
+#   /im/admin/peers  — full peer table with admin detail
+#   /im/admin/audit  — last N audit log entries (?n=100 default)
+#
+# A future release will cross-reference the IronMesh trust store so
+# admin access can be granted by promoting a peer rather than editing
+# a separate allow-list. Until then, the explicit list is the contract.
+RPC_PATH_ADMIN_STATUS = "/im/admin/status"
+RPC_PATH_ADMIN_PEERS = "/im/admin/peers"
+RPC_PATH_ADMIN_AUDIT = "/im/admin/audit"
+
 
 # ---------------------------------------------------------------------------
 # AnnounceHandler — auto-discovery of other IronMesh nodes on the RNS mesh
@@ -577,7 +595,8 @@ class ReticulumTransport:
                  ratchets_enabled: bool = True,
                  ratchet_interval: float = 1800.0,
                  retained_ratchets: int = 8,
-                 stats_poll_interval: float = 5.0):
+                 stats_poll_interval: float = 5.0,
+                 admin_identities: Optional[list] = None):
         if not _HAS_RNS:
             raise RuntimeError("rns package is not installed — install with: pip install rns")
         self._daemon = daemon
@@ -587,6 +606,14 @@ class ReticulumTransport:
         self._ratchet_interval = ratchet_interval
         self._retained_ratchets = retained_ratchets
         self._stats_poll_interval = stats_poll_interval
+        # Normalise admin identities to lowercase hex with no separators.
+        # Empty list means admin RPC is disabled — paths still register
+        # but every call returns "unauthorized".
+        self._admin_identities: set = set()
+        for h in (admin_identities or []):
+            if isinstance(h, str) and h.strip():
+                norm = h.strip().lower().replace(":", "").replace(" ", "")
+                self._admin_identities.add(norm)
         self._reticulum = None
         self._identity = None
         self._destination = None
@@ -732,8 +759,29 @@ class ReticulumTransport:
                 response_generator=self._rpc_cap_find,
                 allow=allow_all,
             )
-            logger.info("Registered public RPC paths: %s, %s, %s",
-                        RPC_PATH_INFO, RPC_PATH_CAP_LIST, RPC_PATH_CAP_FIND)
+            # Admin paths are registered with ALLOW_ALL so RNS dispatches
+            # the call; the handler then enforces the per-identity check.
+            # This lets us swap the allow-list at runtime without
+            # re-registering — useful when promoting/demoting admins.
+            self._destination.register_request_handler(
+                RPC_PATH_ADMIN_STATUS,
+                response_generator=self._rpc_admin_status,
+                allow=allow_all,
+            )
+            self._destination.register_request_handler(
+                RPC_PATH_ADMIN_PEERS,
+                response_generator=self._rpc_admin_peers,
+                allow=allow_all,
+            )
+            self._destination.register_request_handler(
+                RPC_PATH_ADMIN_AUDIT,
+                response_generator=self._rpc_admin_audit,
+                allow=allow_all,
+            )
+            logger.info(
+                "Registered RPC paths: 3 public + 3 admin (admin allow-list: %d entries)",
+                len(self._admin_identities),
+            )
         except Exception as e:
             logger.warning("Failed to register public RPC handlers: %s", e)
 
@@ -783,6 +831,116 @@ class ReticulumTransport:
         except Exception:
             logger.exception("/im/cap/list handler failed")
             return b"{}"
+
+    # -- Admin RPC handlers (identity-gated) -------------------------------
+
+    def _check_admin(self, remote_identity) -> bool:
+        """Verify the calling identity is in the admin allow-list."""
+        if not self._admin_identities:
+            return False
+        if remote_identity is None:
+            return False
+        try:
+            h = getattr(remote_identity, "hash", None)
+            if h is None:
+                return False
+            hex_hash = (
+                RNS.hexrep(h, delimit=False).lower()
+                if hasattr(RNS, "hexrep") else h.hex().lower()
+            )
+            return hex_hash in self._admin_identities
+        except Exception:
+            return False
+
+    @staticmethod
+    def _unauthorized_response() -> bytes:
+        return json.dumps(
+            {"error": "unauthorized",
+             "detail": "RNS identity not in admin allow-list"},
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    def _rpc_admin_status(self, path, data, request_id, link_id, remote_identity, requested_at):
+        """Respond to /im/admin/status — daemon health snapshot."""
+        try:
+            if not self._check_admin(remote_identity):
+                return self._unauthorized_response()
+            daemon = self._daemon
+            now = time.time()
+            started = getattr(daemon, "_started_at", now) if daemon else now
+            metrics = getattr(daemon, "metrics", None) if daemon else None
+            payload = {
+                "name": getattr(daemon, "name", "ironmesh") if daemon else "ironmesh",
+                "node_id": getattr(daemon, "node_id", "") if daemon else "",
+                "uptime_s": now - started,
+                "peer_count": len(getattr(daemon, "peers", {})) if daemon else 0,
+                "rns_discovered_count": len(
+                    getattr(daemon, "_rns_discovered", {})) if daemon else 0,
+                "messages_sent": getattr(metrics, "messages_sent", 0) if metrics else 0,
+                "messages_received": getattr(metrics, "messages_received", 0) if metrics else 0,
+                "bytes_sent": getattr(metrics, "bytes_sent", 0) if metrics else 0,
+                "bytes_received": getattr(metrics, "bytes_received", 0) if metrics else 0,
+                "handshake_successes": getattr(metrics, "handshake_successes", 0) if metrics else 0,
+            }
+            return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        except Exception:
+            logger.exception("/im/admin/status handler failed")
+            return b'{"error":"internal"}'
+
+    def _rpc_admin_peers(self, path, data, request_id, link_id, remote_identity, requested_at):
+        """Respond to /im/admin/peers — full peer table for admin use."""
+        try:
+            if not self._check_admin(remote_identity):
+                return self._unauthorized_response()
+            daemon = self._daemon
+            peers = getattr(daemon, "peers", {}) if daemon else {}
+            out = []
+            for peer_id, state in peers.items():
+                try:
+                    out.append(state.to_dict())
+                except Exception:
+                    out.append({"node_id": peer_id, "error": "to_dict_failed"})
+            return json.dumps(out, separators=(",", ":")).encode("utf-8")
+        except Exception:
+            logger.exception("/im/admin/peers handler failed")
+            return b'{"error":"internal"}'
+
+    def _rpc_admin_audit(self, path, data, request_id, link_id, remote_identity, requested_at):
+        """Respond to /im/admin/audit — last N audit log entries.
+
+        Query body: {"n": 100} (default 100, capped at 1000).
+        """
+        try:
+            if not self._check_admin(remote_identity):
+                return self._unauthorized_response()
+            n = 100
+            if data:
+                try:
+                    query = json.loads(data.decode("utf-8") if isinstance(data, bytes) else data)
+                    if isinstance(query, dict):
+                        n = int(query.get("n", 100))
+                except Exception:
+                    n = 100
+            n = max(1, min(n, 1000))
+            audit = getattr(self._daemon, "_audit", None) if self._daemon else None
+            if audit is None:
+                return json.dumps({"entries": []}).encode("utf-8")
+            entries = []
+            try:
+                # Audit objects across IronMesh versions expose either a
+                # tail() method or a read_all()/iter() pattern. Try the
+                # common shapes; fall back to empty.
+                if hasattr(audit, "tail"):
+                    entries = list(audit.tail(n))
+                elif hasattr(audit, "recent"):
+                    entries = list(audit.recent(n))
+            except Exception:
+                logger.exception("audit log read failed")
+            return json.dumps({"count": len(entries), "entries": entries},
+                              separators=(",", ":")).encode("utf-8")
+        except Exception:
+            logger.exception("/im/admin/audit handler failed")
+            return b'{"error":"internal"}'
 
     def _rpc_cap_find(self, path, data, request_id, link_id, remote_identity, requested_at):
         """Respond to /im/cap/find — pattern lookup. Query: {pattern: str}."""

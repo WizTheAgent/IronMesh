@@ -204,6 +204,56 @@ A working example client lives at
 [`examples/rns_capability_client.py`](../examples/rns_capability_client.py).
 It imports only the `rns` package — no ironmesh dependency.
 
+## Admin RPC paths (gated)
+
+Three additional paths expose admin-level information about the
+running daemon. Each is gated by an explicit allow-list of RNS
+identity hashes — calls from any other identity get a structured
+`{"error": "unauthorized"}` response.
+
+| Path | Returns |
+| --- | --- |
+| `/im/admin/status` | Daemon health snapshot — uptime, peer counts, message rates, byte totals, handshake successes |
+| `/im/admin/peers` | Full per-peer state dictionaries (same shape as `PeerState.to_dict()`) |
+| `/im/admin/audit` | Last N audit-log entries; query body `{"n": 100}`, capped at 1000 |
+
+### Configuring the allow-list
+
+Pass identity hashes via CLI flag or environment variable:
+
+```bash
+ironmesh run --reticulum --rns-admin-identities aabbcc...,ddeeff...
+# or
+IRONMESH_RNS_ADMIN_IDENTITIES=aabbcc...,ddeeff... ironmesh run --reticulum
+```
+
+Each entry is a hex-encoded RNS identity hash (case-insensitive,
+colons / spaces tolerated). The hash is what the admin client's
+`RNS.Identity` produces — read it from the admin host with `rnstatus`
+or by calling `RNS.hexrep(identity.hash, delimit=False)` programmatically.
+
+An empty allow-list (the default) means admin RPC is registered but
+every call returns unauthorized. This is the safe default — admin
+access is opt-in, not opt-out.
+
+### Why an explicit list and not the IronMesh trust store?
+
+Two reasons:
+
+1. **Different identity space.** RNS identities and IronMesh node IDs
+   are separate keysets. A peer can be in the IronMesh trust store
+   without ever having identified over RNS, and vice versa. Coupling
+   them requires a mapping that can stale.
+2. **Admin scope is intentionally narrower.** Most peers in your
+   trust store should not be able to read your audit log or query
+   your peer table. Promoting "trusted to handshake with" into
+   "trusted to administer" is an explicit operator decision.
+
+A future release will add an optional cross-reference so identities
+in the IronMesh trust store with a specific role tag (e.g. `admin`)
+are automatically eligible. Until then, the explicit list is the
+contract.
+
 ## Running as a Reticulum Transport Node
 
 A Transport Node forwards announces and packets on behalf of other

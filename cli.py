@@ -14,6 +14,19 @@ import time
 from typing import Optional
 
 
+def _parse_admin_identities(raw):
+    """Split a comma-separated identity-hash list into a normalised list.
+
+    Empty / None input returns []. Each entry is lowercased and stripped
+    of common separators (colons, spaces). Per-entry validation happens
+    in ReticulumTransport — bad entries silently fail the admin check
+    rather than crashing startup.
+    """
+    if not raw:
+        return []
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="IronMesh — Zero-config encrypted A2A protocol",
@@ -102,6 +115,10 @@ def parse_args():
                            help="Seconds between ratchet key rotations (default: 1800)")
     run_parser.add_argument("--rns-retained-ratchets", type=int, default=8,
                            help="Number of past ratchet keys retained for in-flight packets (default: 8)")
+    run_parser.add_argument("--rns-admin-identities", default=None,
+                           help="Comma-separated RNS identity hashes (hex) permitted "
+                                "to call /im/admin/* RPC paths. Empty = admin RPC "
+                                "disabled. Override via IRONMESH_RNS_ADMIN_IDENTITIES env var.")
     # v0.9.1: LXMF interop (Sideband / Nomadnet)
     run_parser.add_argument("--lxmf", action="store_true",
                            help="Enable the LXMF delivery identity listener "
@@ -819,6 +836,10 @@ def cmd_run(args):
         rns_ratchets_enabled=not getattr(args, "rns_no_ratchets", False),
         rns_ratchet_interval=getattr(args, "rns_ratchet_interval", 1800.0),
         rns_retained_ratchets=getattr(args, "rns_retained_ratchets", 8),
+        rns_admin_identities=_parse_admin_identities(
+            getattr(args, "rns_admin_identities", None)
+            or os.environ.get("IRONMESH_RNS_ADMIN_IDENTITIES")
+        ),
         # v0.9.1: LXMF
         lxmf_enabled=getattr(args, "lxmf", False),
         lxmf_storage=getattr(args, "lxmf_storage", "~/.ironmesh/lxmf"),

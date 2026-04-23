@@ -653,6 +653,109 @@ class TestIronMeshAnnounceHandler:
         decoded = _json.loads(body.decode("utf-8"))
         assert decoded == {"local": [], "remote": {}}
 
+    def test_admin_status_rejects_when_allow_list_empty(self):
+        daemon = MagicMock()
+        transport = ReticulumTransport(daemon, announce_interval=60.0)
+        # admin_identities defaulted to [] → all admin calls reject
+        identity = MagicMock()
+        identity.hash = b"\xaa" * 16
+        body = transport._rpc_admin_status(None, b"", 0, 0, identity, 0)
+        decoded = json.loads(body.decode("utf-8"))
+        assert decoded["error"] == "unauthorized"
+
+    def test_admin_status_rejects_unknown_identity(self):
+        daemon = MagicMock()
+        transport = ReticulumTransport(
+            daemon, announce_interval=60.0,
+            admin_identities=["dead" * 16],  # 64-hex lowercase
+        )
+        identity = MagicMock()
+        identity.hash = b"\xbb" * 16
+        body = transport._rpc_admin_status(None, b"", 0, 0, identity, 0)
+        decoded = json.loads(body.decode("utf-8"))
+        assert decoded["error"] == "unauthorized"
+
+    def test_admin_status_accepts_listed_identity(self):
+        daemon = MagicMock()
+        daemon.name = "node-x"
+        daemon.node_id = "node-id-x"
+        daemon._started_at = 1000.0
+        daemon.peers = {"p1": MagicMock(), "p2": MagicMock()}
+        daemon._rns_discovered = {"hash1": {}, "hash2": {}}
+        metrics = MagicMock()
+        metrics.messages_sent = 42
+        metrics.messages_received = 17
+        metrics.bytes_sent = 1024
+        metrics.bytes_received = 2048
+        metrics.handshake_successes = 3
+        daemon.metrics = metrics
+        admin_hash_bytes = b"\xcc" * 16
+        admin_hash_hex = admin_hash_bytes.hex()  # 32-char hex
+        transport = ReticulumTransport(
+            daemon, announce_interval=60.0,
+            admin_identities=[admin_hash_hex],
+        )
+        identity = MagicMock()
+        identity.hash = admin_hash_bytes
+        body = transport._rpc_admin_status(None, b"", 0, 0, identity, 0)
+        decoded = json.loads(body.decode("utf-8"))
+        assert decoded["name"] == "node-x"
+        assert decoded["node_id"] == "node-id-x"
+        assert decoded["peer_count"] == 2
+        assert decoded["rns_discovered_count"] == 2
+        assert decoded["messages_sent"] == 42
+        assert decoded["bytes_sent"] == 1024
+
+    def test_admin_peers_returns_state_dicts_when_authorised(self):
+        daemon = MagicMock()
+        peer1 = MagicMock()
+        peer1.to_dict = MagicMock(return_value={"node_id": "p1", "status": "online"})
+        peer2 = MagicMock()
+        peer2.to_dict = MagicMock(return_value={"node_id": "p2", "status": "offline"})
+        daemon.peers = {"p1": peer1, "p2": peer2}
+        admin_hash_bytes = b"\xdd" * 16
+        transport = ReticulumTransport(
+            daemon, announce_interval=60.0,
+            admin_identities=[admin_hash_bytes.hex()],
+        )
+        identity = MagicMock()
+        identity.hash = admin_hash_bytes
+        body = transport._rpc_admin_peers(None, b"", 0, 0, identity, 0)
+        decoded = json.loads(body.decode("utf-8"))
+        assert len(decoded) == 2
+        node_ids = {entry["node_id"] for entry in decoded}
+        assert node_ids == {"p1", "p2"}
+
+    def test_admin_audit_caps_n_to_1000(self):
+        daemon = MagicMock()
+        audit = MagicMock()
+        # tail() returns whatever n is asked for; we record the call
+        audit.tail = MagicMock(return_value=[])
+        daemon._audit = audit
+        admin_hash_bytes = b"\xee" * 16
+        transport = ReticulumTransport(
+            daemon, announce_interval=60.0,
+            admin_identities=[admin_hash_bytes.hex()],
+        )
+        identity = MagicMock()
+        identity.hash = admin_hash_bytes
+        # Ask for 5000, should be clamped to 1000
+        query = json.dumps({"n": 5000}).encode("utf-8")
+        transport._rpc_admin_audit(None, query, 0, 0, identity, 0)
+        audit.tail.assert_called_once_with(1000)
+
+    def test_admin_identity_normalisation_handles_separators(self):
+        # Operator-supplied hashes may include colons or spaces; the
+        # normaliser strips both and lowercases. Verify via _check_admin.
+        daemon = MagicMock()
+        transport = ReticulumTransport(
+            daemon, announce_interval=60.0,
+            admin_identities=["AA:BB:CC:DD" * 4],  # 64-char hex with colons
+        )
+        identity = MagicMock()
+        identity.hash = bytes.fromhex("aabbccdd" * 4)
+        assert transport._check_admin(identity) is True
+
     @pytest.mark.asyncio
     async def test_handler_survives_bad_app_data(self):
         loop = asyncio.get_running_loop()

@@ -77,6 +77,17 @@ Nomadnet, LXMF).
   (full / gateway / boundary / roaming / access_point), IFAC
   (Interface Access Code) network-layer membership, LXMF setup,
   the public RPC paths, tuning flags, and troubleshooting.
+- **Admin RPC paths gated by identity allow-list.** Three additional
+  paths expose daemon-level admin information, each requiring the
+  caller's RNS identity hash to be in an explicit allow-list:
+  `/im/admin/status` (uptime, peer counts, message rates),
+  `/im/admin/peers` (full per-peer state), `/im/admin/audit` (last N
+  audit entries; capped at 1000). Configure via `--rns-admin-identities`
+  or `IRONMESH_RNS_ADMIN_IDENTITIES` env var. Empty allow-list
+  (default) means every admin call returns unauthorized — admin
+  access is explicitly opt-in. The allow-list is checked per-call so
+  it can be updated at runtime without re-registering handlers.
+  Documented in `docs/RETICULUM.md`.
 - **Public RNS request handlers for capability RPC.** Three new paths
   are registered on the IronMesh destination, queryable by any
   RNS-speaking client without an ironmesh dependency:

@@ -1312,6 +1312,7 @@ class BridgeDaemon:
                  rns_ratchets_enabled: bool = True,
                  rns_ratchet_interval: float = 1800.0,
                  rns_retained_ratchets: int = 8,
+                 rns_admin_identities: Optional[list] = None,
                  # v0.9.1: optional LXMF interop (Sideband / Nomadnet)
                  lxmf_enabled: bool = False,
                  lxmf_storage: str = "~/.ironmesh/lxmf",
@@ -1509,6 +1510,9 @@ class BridgeDaemon:
         self._rns_ratchets_enabled = rns_ratchets_enabled
         self._rns_ratchet_interval = rns_ratchet_interval
         self._rns_retained_ratchets = rns_retained_ratchets
+        # v0.9.1: Admin RPC allow-list — explicit RNS identity hashes
+        # permitted to call /im/admin/* paths. Empty = admin RPC disabled.
+        self._rns_admin_identities = list(rns_admin_identities or [])
         # v0.9.1: LXMF listener config — when _lxmf_enabled is True
         # the announce app_data also advertises the `lxmf` feature so
         # peers know this node speaks Sideband / Nomadnet messages.
@@ -1773,6 +1777,7 @@ class BridgeDaemon:
                     ratchets_enabled=self._rns_ratchets_enabled,
                     ratchet_interval=self._rns_ratchet_interval,
                     retained_ratchets=self._rns_retained_ratchets,
+                    admin_identities=self._rns_admin_identities,
                 )
                 self._reticulum.start(asyncio.get_event_loop())
                 # Connect to any startup destinations
