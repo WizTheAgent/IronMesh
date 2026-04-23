@@ -1504,6 +1504,13 @@ class BridgeDaemon:
         self._rns_retained_ratchets = rns_retained_ratchets
         self._reticulum: Optional[object] = None  # ReticulumTransport instance
         self._known_rns_hashes: dict = {}  # peer_id -> rns_dest_hash_hex
+        # v0.9.1: peers heard via RNS announces but not (yet) connected.
+        # dest_hash_hex -> {name, version, node_id, capabilities, features,
+        #                   identity_hash, hops, first_seen, last_seen}
+        # Auto-Link to these peers is a Phase 2/11 concern; Phase 1 just
+        # records what we hear so the dashboard and capability registry
+        # see the same view as the WebSocket peers.
+        self._rns_discovered: dict = {}
         self._pending_pings: dict = {}  # peer_id -> monotonic send time (for RTT)
         # v0.5.2: LoRa QoS + session key rotation
         self._lora_max_payload = lora_max_payload
@@ -4068,6 +4075,67 @@ class BridgeDaemon:
         if peer_id:
             self._known_rns_hashes[peer_id] = dest_hash
         return peer_id
+
+    async def _on_rns_peer_announced(self, dest_hash_hex: str,
+                                     identity_hash_hex: Optional[str],
+                                     app_data: dict,
+                                     hops: Optional[int]) -> None:
+        """Record a peer heard via the RNS announce handler.
+
+        Called from ReticulumTransport when an ironmesh/bridge announce
+        arrives. The current scope just tracks the peer so the dashboard
+        and capability registry see them. A later release auto-establishes
+        a Link when an Agent SDK call tries to reach them by name, so that
+        ``agent.send_to("alice")`` resolves transparently whether alice is
+        reachable via WebSocket, RNS, or LXMF.
+        """
+        try:
+            now = time.time()
+            entry = self._rns_discovered.get(dest_hash_hex)
+            new_peer = entry is None
+            if entry is None:
+                entry = {
+                    "dest_hash": dest_hash_hex,
+                    "first_seen": now,
+                }
+                self._rns_discovered[dest_hash_hex] = entry
+            entry["last_seen"] = now
+            entry["identity_hash"] = identity_hash_hex
+            entry["hops"] = hops
+            entry["name"] = app_data.get("n")
+            entry["version"] = app_data.get("v")
+            entry["node_id"] = app_data.get("i")
+            entry["capabilities"] = list(app_data.get("c") or [])
+            entry["features"] = list(app_data.get("f") or [])
+
+            # If this peer is also currently connected, mirror the
+            # announce-derived metadata onto its PeerState so the
+            # dashboard sees a single unified view.
+            node_id = entry["node_id"]
+            if node_id and node_id in self.peers:
+                state = self.peers[node_id]
+                state.rns_announced_at = now
+                state.rns_capabilities = entry["capabilities"]
+                state.rns_features = entry["features"]
+                state.rns_announced_version = entry["version"]
+                state.rns_hops = hops
+                if not state.rns_dest_hash:
+                    state.rns_dest_hash = dest_hash_hex
+                self._known_rns_hashes.setdefault(node_id, dest_hash_hex)
+
+            if new_peer:
+                logger.info(
+                    "RNS announce: discovered %s (name=%s ver=%s hops=%s caps=%d)",
+                    dest_hash_hex[:12], entry["name"], entry["version"],
+                    hops, len(entry["capabilities"]),
+                )
+            else:
+                logger.debug(
+                    "RNS announce refresh: %s (hops=%s)",
+                    dest_hash_hex[:12], hops,
+                )
+        except Exception:
+            logger.exception("_on_rns_peer_announced failed")
 
     # ------------------------------------------------------------------
     # Background loops

@@ -9,11 +9,12 @@ optional dependency.
 """
 
 import asyncio
+import json
 import logging
 import struct
 import threading
 import time
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import websockets  # only for ConnectionClosed exception
 
@@ -34,6 +35,76 @@ except ImportError:
 # Matches bridge.py's MAX_MESSAGE_SIZE to prevent memory exhaustion from
 # a malformed or malicious 4-byte length prefix.
 MAX_RNS_MSG = 1_048_576  # 1 MB
+
+# Announces are bandwidth-sensitive on LoRa (3.12 kbps at SF8/BW125),
+# so the announce app_data uses single-character keys to keep the
+# encoded payload small. The schema is forward-compatible: peers
+# ignore unknown keys and tolerate missing ones.
+#
+#   n: agent name (str)
+#   v: ironmesh version (str)
+#   i: ironmesh node_id (str — already a short id)
+#   c: capability list (list[str])
+#   f: feature flags (list[str]; e.g. ["mesh","lxmf","resource"])
+#
+# Hard cap on the encoded size so a runaway capability list can't
+# exceed RNS's announce app_data limit.
+APP_DATA_MAX_BYTES = 256
+
+
+def encode_app_data(name: str, version: str, node_id: str,
+                    capabilities: Optional[list] = None,
+                    features: Optional[list] = None) -> bytes:
+    """Encode IronMesh announce app_data as compact JSON.
+
+    Truncates capabilities and features as needed to fit within
+    APP_DATA_MAX_BYTES. Name and version are never truncated; if even
+    the bare minimum exceeds the cap, the caller will hit the hard
+    error from RNS itself, which is the right outcome — that means
+    a misconfigured node, not a runtime corner case to mask.
+    """
+    payload: Dict[str, Any] = {"n": name, "v": version, "i": node_id}
+    caps = list(capabilities) if capabilities else []
+    feats = list(features) if features else []
+    while True:
+        if caps:
+            payload["c"] = caps
+        if feats:
+            payload["f"] = feats
+        encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        if len(encoded) <= APP_DATA_MAX_BYTES:
+            return encoded
+        # Trim oldest capability/feature first
+        if caps:
+            caps.pop()
+            continue
+        if feats:
+            feats.pop()
+            continue
+        # Nothing left to trim — return what we have and let RNS reject
+        return encoded
+
+
+def decode_app_data(raw: bytes) -> Optional[Dict[str, Any]]:
+    """Decode IronMesh announce app_data. Returns None on garbage.
+
+    Old IronMesh nodes (pre-v0.9.1) emit raw agent name bytes — not JSON.
+    We treat any non-JSON payload as the legacy {n: <bytes>} form so
+    discovery still works during the version-skew window.
+    """
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        # Legacy plain-name announce
+        try:
+            return {"n": raw.decode("utf-8", errors="replace")}
+        except Exception:
+            return None
+    if not isinstance(data, dict):
+        return None
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +283,55 @@ _APP_NAME = "ironmesh"
 _ASPECT_BRIDGE = "bridge"
 
 
+# ---------------------------------------------------------------------------
+# AnnounceHandler — auto-discovery of other IronMesh nodes on the RNS mesh
+# ---------------------------------------------------------------------------
+
+class _IronMeshAnnounceHandler:
+    """RNS announce handler for the ironmesh/bridge aspect.
+
+    RNS calls ``received_announce`` on its transport thread whenever an
+    announce matching ``aspect_filter`` is heard. We decode the IronMesh
+    app_data and forward it to the daemon on the asyncio loop.
+    """
+
+    # RNS reads this attribute to decide whether to dispatch.
+    aspect_filter = f"{_APP_NAME}.{_ASPECT_BRIDGE}"
+
+    def __init__(self, transport: "ReticulumTransport"):
+        self._transport = transport
+
+    def received_announce(self, destination_hash, announced_identity, app_data,
+                          *args, **kwargs) -> None:
+        """Called by RNS when an ironmesh/bridge announce arrives.
+
+        Signature accepts *args/**kwargs because newer RNS versions added
+        positional path-response arguments and we want to stay forward-
+        compatible without pinning to a single RNS minor version.
+        """
+        try:
+            decoded = decode_app_data(app_data) if app_data else None
+            dest_hash_hex = RNS.hexrep(destination_hash, delimit=False)
+            identity_hash_hex = (
+                RNS.hexrep(announced_identity.hash, delimit=False)
+                if announced_identity is not None else None
+            )
+            # Self-announces: skip
+            if (self._transport._destination is not None
+                    and destination_hash == self._transport._destination.hash):
+                return
+            hops = None
+            try:
+                hops = RNS.Transport.hops_to(destination_hash)
+            except Exception:
+                pass
+            self._transport._on_announce_received(
+                dest_hash_hex, identity_hash_hex, decoded or {}, hops,
+            )
+        except Exception:
+            logger.exception("RNS announce handler crashed")
+
+
 class ReticulumTransport:
     """Manages the Reticulum side of IronMesh.
 
@@ -312,9 +432,21 @@ class ReticulumTransport:
         # dispatch incoming links to the callback.
         self._destination_ref = self._destination
 
+        # Register the announce handler so we auto-discover other IronMesh
+        # nodes on the RNS mesh — including ones we have no LAN connectivity
+        # to. Without this, IronMesh-over-RNS only finds peers the operator
+        # types in by hex hash, which defeats the point of being on a mesh.
+        try:
+            self._announce_handler = _IronMeshAnnounceHandler(self)
+            RNS.Transport.register_announce_handler(self._announce_handler)
+            logger.info("Registered RNS announce handler for aspect %s",
+                        self._announce_handler.aspect_filter)
+        except Exception as e:
+            logger.warning("Failed to register announce handler: %s", e)
+            self._announce_handler = None
+
         # Initial announce
-        agent_name = self._daemon.name if self._daemon else "ironmesh"
-        self._destination.announce(app_data=agent_name.encode("utf-8"))
+        self._destination.announce(app_data=self._build_app_data())
 
         logger.info(
             "Reticulum transport active — destination %s",
@@ -323,6 +455,68 @@ class ReticulumTransport:
 
         # Start periodic announce loop on asyncio
         self._announce_task = loop.create_task(self._announce_loop())
+
+    # -- App data construction ---------------------------------------------
+
+    def _build_app_data(self) -> bytes:
+        """Build the announce app_data payload from current daemon state.
+
+        Defensive against partially-initialised or mock daemons: any
+        non-string field falls back to a sane default so we never feed
+        json.dumps an unserialisable object during startup.
+        """
+        daemon = self._daemon
+        def _str(value, default: str) -> str:
+            return value if isinstance(value, str) and value else default
+        name = _str(getattr(daemon, "name", None), "ironmesh")
+        node_id = _str(getattr(daemon, "node_id", None), "")
+        try:
+            from . import __version__ as ironmesh_version
+        except ImportError:
+            ironmesh_version = "unknown"
+        if not isinstance(ironmesh_version, str):
+            ironmesh_version = "unknown"
+        capabilities: list = []
+        if daemon is not None:
+            try:
+                cfg_caps = getattr(getattr(daemon, "config", None),
+                                   "capabilities", None)
+                if cfg_caps and isinstance(cfg_caps, (list, tuple)):
+                    capabilities = [c for c in cfg_caps if isinstance(c, str)]
+            except Exception:
+                pass
+        # Static feature set for v0.9.1; later phases extend this list.
+        features = ["mesh"]
+        if getattr(daemon, "_lxmf_enabled", False):
+            features.append("lxmf")
+        return encode_app_data(name, ironmesh_version, node_id,
+                                capabilities, features)
+
+    # -- Announce-handler bridge to asyncio --------------------------------
+
+    def _on_announce_received(self, dest_hash_hex: str,
+                              identity_hash_hex: Optional[str],
+                              app_data: Dict[str, Any],
+                              hops: Optional[int]) -> None:
+        """Schedule daemon notification on the asyncio loop.
+
+        Runs on the RNS transport thread.
+        """
+        if self._loop is None or self._daemon is None:
+            return
+        daemon = self._daemon
+        cb = getattr(daemon, "_on_rns_peer_announced", None)
+        if cb is None:
+            return  # daemon doesn't implement the hook yet
+        try:
+            self._loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(
+                    cb(dest_hash_hex, identity_hash_hex, app_data, hops)
+                ),
+            )
+        except RuntimeError:
+            # Loop closed during shutdown — drop silently
+            pass
 
     # -- Incoming links ----------------------------------------------------
 
@@ -439,9 +633,9 @@ class ReticulumTransport:
             if self._shutdown:
                 break
             try:
-                agent_name = self._daemon.name if self._daemon else "ironmesh"
-                self._destination.announce(app_data=agent_name.encode("utf-8"))
-                logger.debug("RNS announce sent (agent=%s)", agent_name)
+                app_data = self._build_app_data()
+                self._destination.announce(app_data=app_data)
+                logger.debug("RNS announce sent (%d bytes app_data)", len(app_data))
             except Exception as e:
                 logger.warning("RNS announce failed: %s", e)
 
@@ -452,6 +646,12 @@ class ReticulumTransport:
         self._shutdown = True
         if self._announce_task:
             self._announce_task.cancel()
+        if getattr(self, "_announce_handler", None) is not None:
+            try:
+                RNS.Transport.deregister_announce_handler(self._announce_handler)
+            except Exception:
+                pass
+            self._announce_handler = None
         # Snapshot under the lock, then iterate outside to avoid
         # holding the lock while calling teardown (which may take time).
         with self._adapters_lock:

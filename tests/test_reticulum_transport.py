@@ -48,6 +48,12 @@ def _make_mock_rns():
     rns.Transport.has_path = MagicMock(return_value=True)
     rns.Transport.request_path = MagicMock()
     rns.prettyhexrep = lambda h: h.hex() if isinstance(h, bytes) else str(h)
+    rns.hexrep = lambda h, delimit=True: h.hex() if isinstance(h, bytes) else str(h)
+    # Transport now needs hops_to + (de)register_announce_handler for the
+    # v0.9.1 announce-discovery path.
+    rns.Transport.hops_to = MagicMock(return_value=2)
+    rns.Transport.register_announce_handler = MagicMock()
+    rns.Transport.deregister_announce_handler = MagicMock()
     # Buffer/Channel are the bidirectional stream API the adapter now uses.
     rns.Buffer = MagicMock()
     rns.Buffer.create_bidirectional_buffer = MagicMock(return_value=MagicMock())
@@ -304,3 +310,123 @@ class TestReticulumTransport:
         finally:
             transport.shutdown()
             loop.close()
+
+
+# ===========================================================================
+# Announce-discovery tests (v0.9.1 Phase 1)
+# ===========================================================================
+
+class TestAnnounceAppData:
+    """Round-trip and forward-compat tests for the announce app_data codec."""
+
+    def test_encode_decode_roundtrip(self):
+        raw = rt_mod.encode_app_data(
+            "wiz", "0.9.1", "abc123",
+            capabilities=["llm:chat", "tool:echo"],
+            features=["mesh", "lxmf"],
+        )
+        decoded = rt_mod.decode_app_data(raw)
+        assert decoded["n"] == "wiz"
+        assert decoded["v"] == "0.9.1"
+        assert decoded["i"] == "abc123"
+        assert decoded["c"] == ["llm:chat", "tool:echo"]
+        assert decoded["f"] == ["mesh", "lxmf"]
+
+    def test_decode_legacy_plain_name(self):
+        # Pre-v0.9.1 nodes emit raw bytes as the agent name.
+        decoded = rt_mod.decode_app_data(b"old-agent")
+        assert decoded == {"n": "old-agent"}
+
+    def test_decode_garbage_returns_none_or_legacy(self):
+        # Truly broken bytes should not raise — they fall back to the
+        # legacy "treat as name" path or return None.
+        result = rt_mod.decode_app_data(b"")
+        assert result is None
+        # Random bytes still decodable as a string -> legacy form
+        result = rt_mod.decode_app_data(b"\xff\xfe")
+        assert result is not None
+        assert "n" in result
+
+    def test_encode_respects_size_cap(self):
+        # Stuff in many capabilities; encoder should trim until it fits.
+        many_caps = [f"cap:item-{i:03d}" for i in range(100)]
+        raw = rt_mod.encode_app_data(
+            "node", "0.9.1", "id" * 16,
+            capabilities=many_caps,
+        )
+        assert len(raw) <= rt_mod.APP_DATA_MAX_BYTES
+        decoded = rt_mod.decode_app_data(raw)
+        # Some capabilities trimmed but base fields survived
+        assert decoded["n"] == "node"
+        assert decoded["v"] == "0.9.1"
+        assert len(decoded.get("c", [])) < len(many_caps)
+
+
+class TestIronMeshAnnounceHandler:
+    """The handler bridges RNS-thread callbacks into the asyncio loop."""
+
+    def _make_transport_with_loop(self, loop):
+        daemon = MagicMock()
+        daemon.name = "self-node"
+        # Daemon implements the discovery hook
+        daemon._on_rns_peer_announced = AsyncMock()
+        transport = ReticulumTransport(daemon, announce_interval=60.0)
+        transport._loop = loop
+        # Fake destination so self-announce filter has something to compare
+        fake_dest = MagicMock()
+        fake_dest.hash = b"\x00" * 16
+        transport._destination = fake_dest
+        return transport, daemon
+
+    @pytest.mark.asyncio
+    async def test_received_announce_dispatches_to_daemon(self):
+        loop = asyncio.get_running_loop()
+        transport, daemon = self._make_transport_with_loop(loop)
+        handler = rt_mod._IronMeshAnnounceHandler(transport)
+        # Identity has a .hash attribute; supply distinct bytes from self
+        announced_identity = MagicMock()
+        announced_identity.hash = b"\x11" * 16
+        app_data = rt_mod.encode_app_data(
+            "peer-a", "0.9.1", "node-peer-a",
+            capabilities=["llm:chat"],
+            features=["mesh"],
+        )
+        handler.received_announce(b"\x22" * 16, announced_identity, app_data)
+        # Wait for the asyncio scheduling
+        await asyncio.sleep(0.05)
+        daemon._on_rns_peer_announced.assert_called_once()
+        args = daemon._on_rns_peer_announced.call_args.args
+        # (dest_hash_hex, identity_hash_hex, app_data_dict, hops)
+        assert args[0].startswith("22")
+        assert args[1].startswith("11")
+        assert args[2]["n"] == "peer-a"
+        assert args[3] == 2  # mock hops_to returns 2
+
+    @pytest.mark.asyncio
+    async def test_self_announce_ignored(self):
+        loop = asyncio.get_running_loop()
+        transport, daemon = self._make_transport_with_loop(loop)
+        handler = rt_mod._IronMeshAnnounceHandler(transport)
+        # Use the same hash as the destination
+        announced_identity = MagicMock()
+        announced_identity.hash = b"\x11" * 16
+        handler.received_announce(
+            transport._destination.hash, announced_identity,
+            rt_mod.encode_app_data("self-node", "0.9.1", "self"),
+        )
+        await asyncio.sleep(0.05)
+        daemon._on_rns_peer_announced.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handler_survives_bad_app_data(self):
+        loop = asyncio.get_running_loop()
+        transport, daemon = self._make_transport_with_loop(loop)
+        handler = rt_mod._IronMeshAnnounceHandler(transport)
+        announced_identity = MagicMock()
+        announced_identity.hash = b"\x33" * 16
+        # Should not raise even with garbage app_data
+        handler.received_announce(b"\x44" * 16, announced_identity, b"")
+        await asyncio.sleep(0.05)
+        # Empty app_data still fires the callback with an empty dict
+        daemon._on_rns_peer_announced.assert_called_once()
+        assert daemon._on_rns_peer_announced.call_args.args[2] == {}

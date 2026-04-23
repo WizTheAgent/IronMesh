@@ -745,6 +745,22 @@ class PeerState:
         self.rns_dest_hash: Optional[str] = None  # RNS destination hash if known
         self.ws_address: Optional[str] = None  # WebSocket host:port for reconnection
 
+        # v0.9.1: RNS announce-driven discovery state
+        self.rns_announced_at: Optional[float] = None
+        self.rns_capabilities: list = []
+        self.rns_features: list = []
+        self.rns_announced_version: Optional[str] = None
+        self.rns_hops: Optional[int] = None
+        # Live link stats from RNS — only populated while a Link is active
+        self.rns_estimated_rtt_ms: Optional[float] = None
+        self.rns_estimated_bps: Optional[float] = None
+        self.rns_link_mtu: Optional[int] = None
+        self.rns_link_mdu: Optional[int] = None
+        # Physical layer stats — only meaningful on radio interfaces
+        self.rns_rssi: Optional[float] = None
+        self.rns_snr: Optional[float] = None
+        self.rns_q: Optional[float] = None
+
         # v0.5.2: session key rotation
         self.session_rekey_count: int = 0
         self.last_rekey_at: Optional[float] = None
@@ -832,6 +848,19 @@ class PeerState:
             "transport_type": self.transport_type,
             "rns_dest_hash": self.rns_dest_hash,
             "ws_address": self.ws_address,
+            # v0.9.1: RNS-derived discovery + link metrics for the dashboard
+            "rns_announced_at": self.rns_announced_at,
+            "rns_capabilities": list(self.rns_capabilities),
+            "rns_features": list(self.rns_features),
+            "rns_announced_version": self.rns_announced_version,
+            "rns_hops": self.rns_hops,
+            "rns_estimated_rtt_ms": self.rns_estimated_rtt_ms,
+            "rns_estimated_bps": self.rns_estimated_bps,
+            "rns_link_mtu": self.rns_link_mtu,
+            "rns_link_mdu": self.rns_link_mdu,
+            "rns_rssi": self.rns_rssi,
+            "rns_snr": self.rns_snr,
+            "rns_q": self.rns_q,
             # v0.7.2: per-peer observability surfaced to GUI
             "bytes_sent_total": self.bytes_sent_total,
             "bytes_received_total": self.bytes_received_total,
