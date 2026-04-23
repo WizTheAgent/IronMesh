@@ -57,6 +57,26 @@ Nomadnet, LXMF).
   fed onto the same async queue the Buffer path uses, so the daemon's
   message loop is unchanged. Routing is gated on the peer advertising
   the `resource` feature; old peers see no behavioural change.
+- **LXMF interop listener (`--lxmf`).** New `lxmf_listener.py` module
+  brings up an LXMF delivery identity alongside the IronMesh bridge so
+  Sideband / Nomadnet users can message IronMesh agents and vice
+  versa. Inbound LXMessages are routed to a configurable IronMesh
+  peer (`--lxmf-default-peer` or per-source `inbound_route` map);
+  outbound IronMesh MSG events on mapped peers round-trip to LXMF
+  automatically. Loop prevention via `[LXMF]` / `[IM]` payload
+  prefixes. Persistent identity in `~/.ironmesh/lxmf/`. New CLI
+  flags: `--lxmf`, `--lxmf-storage`, `--lxmf-display-name`,
+  `--lxmf-default-peer`. Requires the `lxmf` extra
+  (`pip install ironmesh[lxmf]`).
+- **LXMF propagation node mode (`--lxmf-propagation-node`).** Opt-in
+  store-and-forward infrastructure for offline LXMF peers. Recommended
+  only on always-on hosts with persistent storage. Storage path
+  configurable via `--lxmf-propagation-storage`.
+- **`docs/RETICULUM.md` integration guide.** Single-page operator
+  reference covering installation, interface configuration matrix
+  (full / gateway / boundary / roaming / access_point), IFAC
+  (Interface Access Code) network-layer membership, LXMF setup,
+  the public RPC paths, tuning flags, and troubleshooting.
 - **Public RNS request handlers for capability RPC.** Three new paths
   are registered on the IronMesh destination, queryable by any
   RNS-speaking client without an ironmesh dependency:

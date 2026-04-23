@@ -1312,6 +1312,13 @@ class BridgeDaemon:
                  rns_ratchets_enabled: bool = True,
                  rns_ratchet_interval: float = 1800.0,
                  rns_retained_ratchets: int = 8,
+                 # v0.9.1: optional LXMF interop (Sideband / Nomadnet)
+                 lxmf_enabled: bool = False,
+                 lxmf_storage: str = "~/.ironmesh/lxmf",
+                 lxmf_display_name: str = "IronMesh",
+                 lxmf_default_peer: Optional[str] = None,
+                 lxmf_propagation_node: bool = False,
+                 lxmf_propagation_storage: str = "~/.ironmesh/lxmf/propagation",
                  # v0.5.2: QoS + rekey
                  lora_max_payload: int = 128,
                  rekey_interval: float = 1800.0,
@@ -1502,6 +1509,16 @@ class BridgeDaemon:
         self._rns_ratchets_enabled = rns_ratchets_enabled
         self._rns_ratchet_interval = rns_ratchet_interval
         self._rns_retained_ratchets = rns_retained_ratchets
+        # v0.9.1: LXMF listener config — when _lxmf_enabled is True
+        # the announce app_data also advertises the `lxmf` feature so
+        # peers know this node speaks Sideband / Nomadnet messages.
+        self._lxmf_enabled = lxmf_enabled
+        self._lxmf_storage = lxmf_storage
+        self._lxmf_display_name = lxmf_display_name
+        self._lxmf_default_peer = lxmf_default_peer
+        self._lxmf_propagation_node = lxmf_propagation_node
+        self._lxmf_propagation_storage = lxmf_propagation_storage
+        self._lxmf: Optional[object] = None  # LXMFListener instance once started
         self._reticulum: Optional[object] = None  # ReticulumTransport instance
         self._known_rns_hashes: dict = {}  # peer_id -> rns_dest_hash_hex
         # v0.9.1: peers heard via RNS announces but not (yet) connected.
@@ -1769,6 +1786,32 @@ class BridgeDaemon:
         elif self._rns_enabled and not _HAS_RNS:
             logger.warning("--reticulum flag set but rns package not installed. "
                            "Install with: pip install rns")
+
+        # v0.9.1: optional LXMF listener for Sideband / Nomadnet interop.
+        # Requires the `lxmf` extra. Reuses the Reticulum singleton the
+        # peer transport just started (or starts its own if --reticulum
+        # was not also passed).
+        if self._lxmf_enabled:
+            try:
+                from .lxmf_listener import LXMFListener, _HAS_LXMF
+                if not _HAS_LXMF:
+                    logger.warning(
+                        "--lxmf flag set but lxmf package not installed. "
+                        "Install with: pip install ironmesh[lxmf]"
+                    )
+                else:
+                    self._lxmf = LXMFListener(
+                        daemon=self,
+                        storage_path=self._lxmf_storage,
+                        display_name=self._lxmf_display_name,
+                        default_inbound_peer=self._lxmf_default_peer,
+                        propagation_node=self._lxmf_propagation_node,
+                        propagation_storage_path=self._lxmf_propagation_storage,
+                    )
+                    self._lxmf.start(asyncio.get_event_loop())
+            except Exception as e:
+                logger.error("LXMF listener failed to start: %s", e)
+                self._lxmf = None
 
         logger.info("IronMesh Bridge running as '%s' (node_id=%s)", self.name, self.node_id)
         logger.info("GUI token: %s", self._gui_token)

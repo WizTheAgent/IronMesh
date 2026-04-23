@@ -102,6 +102,26 @@ def parse_args():
                            help="Seconds between ratchet key rotations (default: 1800)")
     run_parser.add_argument("--rns-retained-ratchets", type=int, default=8,
                            help="Number of past ratchet keys retained for in-flight packets (default: 8)")
+    # v0.9.1: LXMF interop (Sideband / Nomadnet)
+    run_parser.add_argument("--lxmf", action="store_true",
+                           help="Enable the LXMF delivery identity listener "
+                                "(requires the lxmf extra). Lets Sideband and "
+                                "Nomadnet users message this node.")
+    run_parser.add_argument("--lxmf-storage", default="~/.ironmesh/lxmf",
+                           help="LXMF identity + message storage path "
+                                "(default: ~/.ironmesh/lxmf)")
+    run_parser.add_argument("--lxmf-display-name", default="IronMesh",
+                           help="Display name shown to other LXMF users (default: IronMesh)")
+    run_parser.add_argument("--lxmf-default-peer", default=None,
+                           help="IronMesh peer_id to forward unmapped inbound LXMF "
+                                "messages to. Without this, unmapped messages are dropped.")
+    run_parser.add_argument("--lxmf-propagation-node", action="store_true",
+                           help="Also run as an LXMF propagation node — store-and-forward "
+                                "infrastructure for offline LXMF peers. Recommended only "
+                                "for always-on hosts with persistent storage.")
+    run_parser.add_argument("--lxmf-propagation-storage", default="~/.ironmesh/lxmf/propagation",
+                           help="Storage path for the propagation node "
+                                "(default: ~/.ironmesh/lxmf/propagation)")
     run_parser.add_argument("--lora-max-payload", type=int, default=128,
                            help="Max payload bytes for RNS/LoRa transport (default: 128, 0 to disable)")
     run_parser.add_argument("--rekey-interval", type=float, default=1800.0,
@@ -799,6 +819,14 @@ def cmd_run(args):
         rns_ratchets_enabled=not getattr(args, "rns_no_ratchets", False),
         rns_ratchet_interval=getattr(args, "rns_ratchet_interval", 1800.0),
         rns_retained_ratchets=getattr(args, "rns_retained_ratchets", 8),
+        # v0.9.1: LXMF
+        lxmf_enabled=getattr(args, "lxmf", False),
+        lxmf_storage=getattr(args, "lxmf_storage", "~/.ironmesh/lxmf"),
+        lxmf_display_name=getattr(args, "lxmf_display_name", "IronMesh"),
+        lxmf_default_peer=getattr(args, "lxmf_default_peer", None),
+        lxmf_propagation_node=getattr(args, "lxmf_propagation_node", False),
+        lxmf_propagation_storage=getattr(args, "lxmf_propagation_storage",
+                                           "~/.ironmesh/lxmf/propagation"),
         # v0.5.2: QoS + rekey
         lora_max_payload=getattr(args, "lora_max_payload", 128),
         rekey_interval=getattr(args, "rekey_interval", 1800.0),
