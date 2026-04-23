@@ -17,21 +17,31 @@ a live multi-node mesh.
 ### Fixed
 
 - **Capability registry now persists learned remote capabilities.**
-  `bridge.py:_capability_announce_loop` and the inbound
-  `CAPABILITY_ANNOUNCE` handler both call
-  `CapabilityRegistry.save()` after updating remote-capability state.
-  Previously, `capabilities.json` was only written at startup (with an
-  empty `remote: {}` body) and on local-capability changes; remote caps
-  learned via gossip were held only in memory and lost on restart.
+  The capability gossip loop and the inbound `CAPABILITY_ANNOUNCE`
+  handler both call `CapabilityRegistry.save()` after updating
+  remote-capability state. Previously, `capabilities.json` was only
+  written at startup (with an empty `remote: {}` body) and on
+  local-capability changes; remote caps learned via gossip were held
+  only in memory and lost on restart.
 - **`ironmesh-mcp` accepts manual peer bootstrap.** New
   `--peer host:port[,host2:port2,…]` flag. When mDNS discovery is
-  unavailable (corporate LAN, Docker bridge, name conflicts with another
-  process holding the same mDNS slot), operators can pass explicit peer
-  hints. The embedded daemon connects to each on startup.
+  unavailable (restrictive networks, container bridges, name conflicts
+  with another process holding the same mDNS slot), operators can
+  pass explicit peer hints. The embedded daemon connects to each on
+  startup.
 - **`ironmesh audit verify --rotate-corrupt`.** New flag rotates a
   corrupted audit log to `audit.log.corrupted-<ISO timestamp>` and
-  starts a fresh chain. Recovery for the operator-runbook case where
-  two daemons collided on the same audit path pre-v0.8.5.6.
+  lets the daemon start a fresh chain on the next write. Recovery for
+  the operator-runbook case where two daemons collided on the same
+  audit path pre-v0.8.5.6.
+- **TypeScript client honours per-message destination.**
+  `IronMeshClient.sendMessage(payload, opts)` now respects an
+  `opts.toNodeId` (32-hex) hint and writes it into the encrypted
+  envelope's `destination` field. Previously the destination was
+  hardcoded to the handshake peer, so messages addressed to another
+  mesh node were always delivered to the directly-connected daemon
+  instead of being relayed. The daemon's existing routing table
+  handles the relay; no protocol changes were required.
 
 ### Changed
 

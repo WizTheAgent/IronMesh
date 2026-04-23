@@ -14,15 +14,17 @@ complementary; you can run both at the same time.
 ## Prerequisites
 
 - OpenClaw 2026.3 or later (`openclaw --version`)
-- IronMesh ≥ 0.8.4 installed (`pip install ironmesh` or `pipx install ironmesh`)
-- Your IronMesh passphrase available (in an env var or a file)
+- IronMesh `>=0.8.5.9` installed (`pip install ironmesh` or `pipx install ironmesh`)
+- The IronMesh mesh-wide passphrase available (in an env var or a file)
 
-In v0.8.4 the MCP server **always spins up its own embedded `BridgeDaemon`
-in-process** when launched. There is no attach-to-existing-daemon path yet
-(tracked for v0.8.5+). For now: don't run a long-lived `ironmesh run`
-daemon and the MCP server on the same host with the same port — pick one
-or the other, or give MCP its own `--port`. Embedded mode is fine for
-laptop / ad-hoc usage; for a long-lived host daemon, use the regular CLI.
+The MCP server **spins up its own embedded `BridgeDaemon` in-process**
+when launched. It joins the mesh as a peer like any other node. By
+default it discovers other peers via mDNS; in environments where mDNS
+is unavailable (restrictive networks, container bridges, name-slot
+conflicts), pass `--peer host:port[,host:port,…]` to bootstrap with
+explicit peer hints (added in v0.8.5.9). Don't bind the embedded
+daemon and a separate `ironmesh run` daemon to the same port on the
+same host — pick distinct ports.
 
 ## 1. Add the MCP server to OpenClaw
 
@@ -43,6 +45,28 @@ Edit `~/.openclaw/openclaw.json` and add an `ironmesh` entry under `mcp.servers`
   }
 }
 ```
+
+For non-mDNS environments, add `--peer host:port` arguments:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "ironmesh": {
+        "command": "python",
+        "args": [
+          "-m", "ironmesh_mcp",
+          "--peer", "192.0.2.10:8765",
+          "--peer", "192.0.2.11:8765"
+        ],
+        "env": { "IRONMESH_PASSPHRASE": "${IRONMESH_PASSPHRASE}" }
+      }
+    }
+  }
+}
+```
+
+Repeat `--peer` per host, or comma-separate inside one flag.
 
 If your IronMesh installation is in a venv or pipx, replace `"python"` with
 the absolute path to that interpreter (e.g. `~/.local/pipx/venvs/ironmesh/bin/python`).
@@ -83,9 +107,13 @@ The agent should call `ironmesh_discover_capabilities` with `pattern: "llm:*"`.
 
 ## Tool reference
 
-The `ironmesh` MCP server exposes 13 tools. Eight pre-existing core
-operations and five new bridge tools added in v0.8.4 specifically for
-agent-to-agent collaboration.
+The `ironmesh` MCP server exposes 25 tools as of v0.8.5.9. The first
+sections below cover the eight core operations and the five
+agent-collaboration tools added for cross-agent workflows. Later
+sections document the agent-introspection helpers, the pending-trust
+operator tools (added with the v0.8.5 trust gate), and the
+capability-binding tools (added with the v0.8.5.6 trust-binding
+feature).
 
 ### Core tools
 

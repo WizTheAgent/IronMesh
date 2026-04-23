@@ -2360,7 +2360,30 @@ def cmd_setup(args):
     return 0
 
 
+def _ensure_utf8_stdio() -> None:
+    """Reconfigure stdout/stderr to UTF-8 if the inherited locale would
+    otherwise crash on the unicode characters in our help/log strings.
+
+    On Linux hosts where ``LANG=en_US`` (no encoding suffix) is set,
+    Python 3 defaults stdout to latin-1; an em-dash in argparse help
+    output then raises UnicodeEncodeError before the user sees anything.
+    Fix: set the streams to UTF-8 with ``errors='replace'`` so the CLI
+    is locale-agnostic.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if hasattr(stream, "reconfigure"):
+                cur = (getattr(stream, "encoding", "") or "").lower()
+                if not cur.startswith("utf"):
+                    stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            # Reconfiguration is best-effort; if the stream doesn't
+            # support it (some test runners wrap stdout), let it pass.
+            pass
+
+
 def main():
+    _ensure_utf8_stdio()
     args = parse_args()
     command = getattr(args, "command", None)
 
