@@ -146,7 +146,34 @@ full operator setup guide.
   relying on a bug; pass `toNodeId` explicitly when you need a
   different destination.
 
-## Known limitations (deferred to v0.8.5.10)
+## Stress + soak validation
+
+A live multi-node stress + soak pass on the production mesh
+(2× v0.9.0 nodes + 1× v0.8.5.8 node, plus a Reticulum/LoRa
+interface) drove seven phases:
+
+- **Burst (50 msgs single target)** — 9.3 msg/s wire-rate,
+  51/50 round-trips, 0 drops, audit chain intact (28k entries
+  verified in 0.43 s).
+- **Concurrent multi-target (direct + mesh relay)** —
+  `messages_relayed_total: 0 → 10`, mesh routing under load works,
+  20/20 round-trips.
+- **A2A concurrent JSON-RPC** — works with adequate `ttl_seconds`
+  (3/3 with 200 s ttl). Operator guidance added to
+  `A2A_INTEGRATION.md` for high-concurrency tuning.
+- **Cross-version interop** (v0.9.0 ↔ v0.8.5.8) — verified
+  implicitly during the multi-target test.
+- **Capability gossip convergence** — 3 remote nodes within the
+  first 60 s announce cycle after restart.
+- **5-minute soak** — RSS unchanged byte-for-byte
+  (52,560 KB before and after), 0 errors, 0 drops.
+
+Across all phases: `0 e2e_decrypt_failures`, `0 handshake_failures`,
+`0 pending_queue_dropped`, `0 pending_queue_evicted`. The fix
+above (`_flush_pending` counter parity) was the one bug that
+surfaced and is now in this release.
+
+## Known limitations (deferred to a later patch)
 
 - The OpenClaw channel plugin's connection is per-account (single
   daemon URL). Multi-account configurations are supported via the

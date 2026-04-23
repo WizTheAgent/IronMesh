@@ -83,6 +83,16 @@ end-to-end testing of the OpenClaw integration.
   mesh node were always delivered to the directly-connected daemon
   instead of being relayed. The daemon's existing routing table
   handles the relay; no protocol changes were required.
+- **`messages_sent_total` now counts the offline-queue flush path.**
+  When a peer that had queued offline messages comes back online,
+  `_flush_pending` drains the queue. Until v0.9.0 it bypassed both
+  per-peer (`messages_sent`, `bytes_sent_total`) and daemon-level
+  (`messages_sent_total`, `messages_delivered_total`) counters, so
+  Prometheus under-reported any traffic that took the
+  online → offline → online path. Surfaced during the v0.9.0
+  live-mesh stress run; the flush path now updates all four
+  counters in parity with the direct + routed send paths.
+  Regression test: `tests/test_bridge.py::TestFlushPendingCounters`.
 
 ### Changed
 

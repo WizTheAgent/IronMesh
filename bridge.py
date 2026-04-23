@@ -3685,6 +3685,7 @@ class BridgeDaemon:
                 return
 
             logger.info("Flushing %d pending messages to %s", len(pending), peer_id)
+            peer_state = self.peers.get(peer_id)
             for msg in pending:
                 frame = ew_protocol.Frame(
                     msg_type=msg["msg_type"],
@@ -3695,6 +3696,18 @@ class BridgeDaemon:
                 )
                 await self._send_frame(peer_id, frame)
                 await self._db.mark_delivered(peer_id, msg["msg_id"])
+                # v0.9.0: parity with direct + routed send paths — the
+                # flush path previously bypassed both per-peer and
+                # daemon-level counters, so messages_sent_total
+                # under-reported any traffic that went through the
+                # offline-queue path. Caught during the v0.9.0
+                # stress run on the live mesh.
+                payload_len = len(msg.get("payload") or b"")
+                if peer_state is not None:
+                    peer_state.messages_sent += 1
+                    peer_state.bytes_sent_total += payload_len
+                self.metrics.messages_sent += 1
+                self.metrics.messages_delivered += 1
             logger.info("All pending messages delivered to %s", peer_id)
         except Exception as e:
             logger.warning("Error flushing pending messages for %s: %s", peer_id, e)

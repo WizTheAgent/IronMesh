@@ -350,3 +350,81 @@ class TestCounterDriftOnAuditFailure:
                 f"{name}: counter drifted after emit failure"
             assert d._in_proc_counter_bumps.get(name, 0) == 0, \
                 f"{name}: reservation leaked after emit failure"
+
+
+class TestFlushPendingCounters:
+    """Flush of queued offline messages used to bypass both per-peer and
+    daemon-level send counters (`messages_sent_total`,
+    `messages_delivered_total`, `bytes_sent_total`). Caught during the
+    v0.9.0 stress run on the live mesh — the counter under-reported any
+    traffic that went through the offline-queue → flush path. v0.9.0
+    fix: parity with the direct + routed paths."""
+
+    def _daemon(self, tmp_path):
+        return BridgeDaemon(
+            name="flush-test",
+            passphrase="test-passphrase-12",
+            keys_path=str(tmp_path / "keys.json"),
+            db_path=str(tmp_path / "test.db"),
+        )
+
+    @pytest.mark.asyncio
+    async def test_flush_pending_increments_messages_sent_per_message(self, tmp_path):
+        d = self._daemon(tmp_path)
+        # Stub _send_frame so the flush path runs end-to-end without
+        # needing a live WS peer.
+        d._send_frame = AsyncMock(return_value=None)
+        # Stub the queue so we can hand back synthetic pending entries
+        # without touching SQLite. Three pending msgs of varying sizes.
+        d._db = MagicMock()
+        d._db.get_pending_for_peer = AsyncMock(return_value=[
+            {"msg_type": "MSG", "payload": b"A" * 10,  "msg_id": "id-1",
+             "source": "0" * 32, "priority": "NORMAL"},
+            {"msg_type": "MSG", "payload": b"B" * 50,  "msg_id": "id-2",
+             "source": "0" * 32, "priority": "NORMAL"},
+            {"msg_type": "MSG", "payload": b"C" * 100, "msg_id": "id-3",
+             "source": "0" * 32, "priority": "NORMAL"},
+        ])
+        d._db.mark_delivered = AsyncMock(return_value=None)
+
+        peer_id = "f" * 32
+        # Inject a peer state so the per-peer counters can move.
+        from ironmesh.protocol import PeerState as _PS
+        ps = _PS(node_id=peer_id)
+        ps.session_key = b"k" * 32
+        d.peers[peer_id] = ps
+
+        sent_pre = d.metrics.messages_sent
+        delivered_pre = d.metrics.messages_delivered
+        peer_sent_pre = d.peers[peer_id].messages_sent
+        peer_bytes_pre = d.peers[peer_id].bytes_sent_total
+
+        await d._flush_pending(peer_id)
+
+        # Daemon-level counters: +3 sent, +3 delivered.
+        assert d.metrics.messages_sent == sent_pre + 3
+        assert d.metrics.messages_delivered == delivered_pre + 3
+        # Per-peer counters: +3 sent, +160 bytes (10 + 50 + 100).
+        assert d.peers[peer_id].messages_sent == peer_sent_pre + 3
+        assert d.peers[peer_id].bytes_sent_total == peer_bytes_pre + 160
+        # All three were marked delivered in the queue.
+        assert d._db.mark_delivered.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_flush_pending_with_no_peer_state_still_increments_daemon_counters(self, tmp_path):
+        # When the peer state has been GC'd between queue-and-flush, the
+        # daemon-level counter still reflects the send so /metrics stays
+        # in sync. The per-peer increment is silently skipped.
+        d = self._daemon(tmp_path)
+        d._send_frame = AsyncMock(return_value=None)
+        d._db = MagicMock()
+        d._db.get_pending_for_peer = AsyncMock(return_value=[
+            {"msg_type": "MSG", "payload": b"x", "msg_id": "id-1",
+             "source": "0" * 32, "priority": "NORMAL"},
+        ])
+        d._db.mark_delivered = AsyncMock(return_value=None)
+
+        unknown_peer = "9" * 32
+        sent_pre = d.metrics.messages_sent
+        await d._flush_pending(unknown_peer)
+        assert d.metrics.messages_sent == sent_pre + 1
