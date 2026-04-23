@@ -195,7 +195,7 @@ MessageType in IronMesh v0.10+.
 | `ironmesh_list_peers` returns `[]` despite peers being online | the embedded daemon hasn't done discovery yet | wait 10–30 s after start, or add `--open-discovery` to `args` to broadcast on first launch |
 | `request_service` always times out | the peer isn't echoing back the `correlation_id` | confirm peer-side handler is parsing the JSON envelope and including the same `correlation_id` in its reply payload |
 | `Capability registry not available` | daemon was started before its own capability subsystem was wired in | restart the daemon; this is fixed in 0.8.3+ |
-| Tool call latency >5 s | the embedded daemon is racing to start mDNS in the same process | run `ironmesh run` separately (long-lived) and disable the embedded mode (TODO: future flag) |
+| Tool call latency >5 s | the embedded daemon is racing to start mDNS in the same process | run `ironmesh run` separately (long-lived); attach-to-existing-daemon mode is on the v0.9.1+ roadmap |
 
 ## Running alongside an existing IronMesh daemon
 
