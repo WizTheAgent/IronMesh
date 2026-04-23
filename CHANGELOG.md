@@ -5,7 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased] — v0.9.1 Reticulum integration sweep
+
+Multi-phase upgrade to the Reticulum transport adapter, bringing it in
+line with the RNS 1.1.x feature surface and laying the groundwork for
+deeper interop with the broader Reticulum ecosystem (Sideband, MeshChat,
+Nomadnet, LXMF).
+
+### Changed
+
+- **`rns` extra now requires `>=1.1.9`** (was `>=0.9.0`). Required for
+  ratchets, MTU autodiscovery, `Transport.await_path`, and the recent
+  bz2 decompression-bomb fix. The `lxmf` extra also bumps accordingly.
+
+### Added
+
+- **Per-packet ratchets on the IronMesh RNS destination.** Packets sent
+  to an IronMesh destination outside an established Link now get
+  forward secrecy via RNS's key-ratcheting system. Ratchet keys rotate
+  on a configurable interval (`--rns-ratchet-interval`, default 30 min)
+  and previous keys are retained briefly so in-flight packets still
+  decrypt across rotations (`--rns-retained-ratchets`, default 8).
+  Disable with `--rns-no-ratchets` if you must interoperate with very
+  old RNS peers; ratchets are signalled via announces and ignored by
+  peers that don't understand them, so leaving them on is generally
+  safe. New env vars: `IRONMESH_RNS_RATCHETS`,
+  `IRONMESH_RNS_RATCHET_INTERVAL`, `IRONMESH_RNS_RETAINED_RATCHETS`.
 
 ## [0.9.0] — OpenClaw, ACP, and A2A interop
 

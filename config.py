@@ -79,6 +79,15 @@ class IronMeshConfig:
     rns_configdir: Optional[str] = None
     rns_announce_interval: float = 300.0
 
+    # Reticulum ratchets — per-packet forward secrecy on Packets sent
+    # to this destination outside an established Link. The ratchet key
+    # is rotated on a timer and signalled via subsequent announces;
+    # peers automatically pick up the new key on next announce.
+    # Disable only if interoperating with very old RNS peers.
+    rns_ratchets_enabled: bool = True
+    rns_ratchet_interval: float = 1800.0
+    rns_retained_ratchets: int = 8
+
     # v0.8.5: pending-trust message gate. When True, MSG/REQ/RESP frames
     # from peers that haven't been promoted to "trusted" are queued
     # instead of delivered to clients. Operator promotes via the
@@ -142,6 +151,9 @@ class IronMeshConfig:
             "IRONMESH_PASSPHRASE_FILE": "passphrase_file",
             "IRONMESH_RNS_ENABLED": ("rns_enabled", lambda v: v.lower() in ("1", "true", "yes")),
             "IRONMESH_RNS_CONFIGDIR": "rns_configdir",
+            "IRONMESH_RNS_RATCHETS": ("rns_ratchets_enabled", lambda v: v.lower() in ("1", "true", "yes")),
+            "IRONMESH_RNS_RATCHET_INTERVAL": ("rns_ratchet_interval", float),
+            "IRONMESH_RNS_RETAINED_RATCHETS": ("rns_retained_ratchets", int),
             "IRONMESH_REQUIRE_MSG_PROMOTION": ("require_message_promotion",
                                                 lambda v: v.lower() in ("1", "true", "yes")),
             "IRONMESH_PENDING_QUEUE_CAP": ("pending_trust_queue_cap", int),

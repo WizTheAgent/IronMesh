@@ -225,12 +225,18 @@ class ReticulumTransport:
     """
 
     def __init__(self, daemon, announce_interval: float = 300.0,
-                 configdir: Optional[str] = None):
+                 configdir: Optional[str] = None, *,
+                 ratchets_enabled: bool = True,
+                 ratchet_interval: float = 1800.0,
+                 retained_ratchets: int = 8):
         if not _HAS_RNS:
             raise RuntimeError("rns package is not installed — install with: pip install rns")
         self._daemon = daemon
         self._announce_interval = announce_interval
         self._configdir = configdir
+        self._ratchets_enabled = ratchets_enabled
+        self._ratchet_interval = ratchet_interval
+        self._retained_ratchets = retained_ratchets
         self._reticulum = None
         self._identity = None
         self._destination = None
@@ -281,6 +287,25 @@ class ReticulumTransport:
             _ASPECT_BRIDGE,
         )
         self._destination.set_link_established_callback(self._on_incoming_link)
+
+        # Per-packet forward secrecy for Packets sent outside an established
+        # Link. Ratchet keys rotate on a timer and are advertised in the next
+        # announce; peers pick them up automatically. Older retained ratchets
+        # are kept so in-flight Packets encrypted under the prior key still
+        # decrypt cleanly after rotation.
+        if self._ratchets_enabled:
+            try:
+                self._destination.enable_ratchets(True)
+                if hasattr(self._destination, "set_ratchet_interval"):
+                    self._destination.set_ratchet_interval(self._ratchet_interval)
+                if hasattr(self._destination, "set_retained_ratchets"):
+                    self._destination.set_retained_ratchets(self._retained_ratchets)
+                logger.info(
+                    "Ratchets enabled on destination (interval=%.0fs, retained=%d)",
+                    self._ratchet_interval, self._retained_ratchets,
+                )
+            except Exception as e:
+                logger.warning("Failed to enable ratchets: %s", e)
 
         # Keep a strong reference so the destination is not garbage-collected.
         # Without this, Python may GC the Destination and RNS will never

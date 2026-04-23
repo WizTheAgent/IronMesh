@@ -95,6 +95,13 @@ def parse_args():
                            help="Seconds between RNS announces (default: 300)")
     run_parser.add_argument("--rns-connect", default=None,
                            help="Comma-separated RNS destination hashes to connect on startup")
+    run_parser.add_argument("--rns-no-ratchets", action="store_true",
+                           help="Disable per-packet ratchets on the RNS destination "
+                                "(default: ratchets on; only disable for old-RNS interop)")
+    run_parser.add_argument("--rns-ratchet-interval", type=float, default=1800.0,
+                           help="Seconds between ratchet key rotations (default: 1800)")
+    run_parser.add_argument("--rns-retained-ratchets", type=int, default=8,
+                           help="Number of past ratchet keys retained for in-flight packets (default: 8)")
     run_parser.add_argument("--lora-max-payload", type=int, default=128,
                            help="Max payload bytes for RNS/LoRa transport (default: 128, 0 to disable)")
     run_parser.add_argument("--rekey-interval", type=float, default=1800.0,
@@ -789,6 +796,9 @@ def cmd_run(args):
         rns_configdir=getattr(args, "rns_configdir", None),
         rns_announce_interval=getattr(args, "rns_announce_interval", 300.0),
         rns_connect=getattr(args, "rns_connect", None),
+        rns_ratchets_enabled=not getattr(args, "rns_no_ratchets", False),
+        rns_ratchet_interval=getattr(args, "rns_ratchet_interval", 1800.0),
+        rns_retained_ratchets=getattr(args, "rns_retained_ratchets", 8),
         # v0.5.2: QoS + rekey
         lora_max_payload=getattr(args, "lora_max_payload", 128),
         rekey_interval=getattr(args, "rekey_interval", 1800.0),

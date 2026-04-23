@@ -1309,6 +1309,9 @@ class BridgeDaemon:
                  rns_configdir: Optional[str] = None,
                  rns_announce_interval: float = 300.0,
                  rns_connect: Optional[str] = None,
+                 rns_ratchets_enabled: bool = True,
+                 rns_ratchet_interval: float = 1800.0,
+                 rns_retained_ratchets: int = 8,
                  # v0.5.2: QoS + rekey
                  lora_max_payload: int = 128,
                  rekey_interval: float = 1800.0,
@@ -1496,6 +1499,9 @@ class BridgeDaemon:
         self._rns_configdir = rns_configdir
         self._rns_announce_interval = rns_announce_interval
         self._rns_connect = rns_connect  # comma-separated dest hashes
+        self._rns_ratchets_enabled = rns_ratchets_enabled
+        self._rns_ratchet_interval = rns_ratchet_interval
+        self._rns_retained_ratchets = rns_retained_ratchets
         self._reticulum: Optional[object] = None  # ReticulumTransport instance
         self._known_rns_hashes: dict = {}  # peer_id -> rns_dest_hash_hex
         self._pending_pings: dict = {}  # peer_id -> monotonic send time (for RTT)
@@ -1740,6 +1746,9 @@ class BridgeDaemon:
                     daemon=self,
                     announce_interval=self._rns_announce_interval,
                     configdir=self._rns_configdir,
+                    ratchets_enabled=self._rns_ratchets_enabled,
+                    ratchet_interval=self._rns_ratchet_interval,
+                    retained_ratchets=self._rns_retained_ratchets,
                 )
                 self._reticulum.start(asyncio.get_event_loop())
                 # Connect to any startup destinations

@@ -35,7 +35,7 @@ dependencies = [
 
 [project.optional-dependencies]
 rns = [
-    "rns>=0.9.0",
+    "rns>=1.1.9",
 ]
 keychain = [
     # OS-native passphrase storage backend. Optional; the daemon
@@ -56,7 +56,7 @@ lxmf = [
     # examples/lxmf_gateway.py reference agent that bridges IronMesh
     # to Sideband / NomadNet phones via LXMF over LoRa or any other
     # rns transport. Pulls rns transitively.
-    "rns>=0.9.0",
+    "rns>=1.1.9",
     "lxmf>=0.5.5",
 ]
 dev = [
