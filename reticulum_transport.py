@@ -491,6 +491,25 @@ class RNSLinkAdapter:
 _APP_NAME = "ironmesh"
 _ASPECT_BRIDGE = "bridge"
 
+# Public RNS request paths exposed by IronMesh nodes. These are
+# documented as a stable interop surface — third-party RNS clients
+# (Sideband, Nomadnet, custom Python scripts using only the rns
+# package) can query them without any IronMesh dependency.
+#
+#   /im/info     → JSON: {name, version, node_id, capabilities, features}
+#                  ALLOW_ALL — public node identity card.
+#   /im/cap/list → JSON: {local: [...], remote: {node_id: [...]}}
+#                  ALLOW_ALL — full capability registry.
+#   /im/cap/find → JSON: [{node_id, capability}, ...]  query: {pattern: str}
+#                  ALLOW_ALL — pattern-matched capability lookup.
+#
+# Operator-gated request paths use ALLOW_LIST so only Identity hashes
+# in the trust store can call them. These are added in later phases
+# (Phase 8 admin RPC) to expose write/control operations.
+RPC_PATH_INFO = "/im/info"
+RPC_PATH_CAP_LIST = "/im/cap/list"
+RPC_PATH_CAP_FIND = "/im/cap/find"
+
 
 # ---------------------------------------------------------------------------
 # AnnounceHandler — auto-discovery of other IronMesh nodes on the RNS mesh
@@ -657,6 +676,13 @@ class ReticulumTransport:
             logger.warning("Failed to register announce handler: %s", e)
             self._announce_handler = None
 
+        # Public RPC request handlers — let any RNS client query the
+        # node's identity, capability registry, and capability search
+        # without speaking the IronMesh wire protocol. Reticulum's
+        # request_handler API does the encryption + identity gating;
+        # we just provide the response generators.
+        self._register_public_request_handlers()
+
         # Initial announce
         self._destination.announce(app_data=self._build_app_data())
 
@@ -672,6 +698,119 @@ class ReticulumTransport:
         # so the dashboard and any agent making routing decisions see
         # live signal quality, not just hop count.
         self._stats_task = loop.create_task(self._stats_loop())
+
+    # -- Public request handlers (capability RPC) --------------------------
+
+    def _register_public_request_handlers(self) -> None:
+        """Register the open RPC paths on this node's destination.
+
+        Best-effort: if RNS is too old to expose register_request_handler
+        in the form we expect, we log and move on rather than failing
+        startup. Without these handlers, third-party RNS clients can
+        still discover IronMesh nodes via announce; they just can't
+        query the capability registry over RNS.
+        """
+        if self._destination is None:
+            return
+        if not hasattr(self._destination, "register_request_handler"):
+            logger.debug("Destination has no register_request_handler — skipping RPC paths")
+            return
+        allow_all = getattr(self._destination, "ALLOW_ALL", None)
+        try:
+            self._destination.register_request_handler(
+                RPC_PATH_INFO,
+                response_generator=self._rpc_info,
+                allow=allow_all,
+            )
+            self._destination.register_request_handler(
+                RPC_PATH_CAP_LIST,
+                response_generator=self._rpc_cap_list,
+                allow=allow_all,
+            )
+            self._destination.register_request_handler(
+                RPC_PATH_CAP_FIND,
+                response_generator=self._rpc_cap_find,
+                allow=allow_all,
+            )
+            logger.info("Registered public RPC paths: %s, %s, %s",
+                        RPC_PATH_INFO, RPC_PATH_CAP_LIST, RPC_PATH_CAP_FIND)
+        except Exception as e:
+            logger.warning("Failed to register public RPC handlers: %s", e)
+
+    def _rpc_info(self, path, data, request_id, link_id, remote_identity, requested_at):
+        """Respond to /im/info — node identity card.
+
+        All response generators have the RNS-prescribed signature even
+        though most arguments are unused; that signature is what RNS
+        passes to a request handler.
+        """
+        try:
+            daemon = self._daemon
+            try:
+                from . import __version__ as ironmesh_version
+            except ImportError:
+                ironmesh_version = "unknown"
+            payload = {
+                "name": getattr(daemon, "name", "ironmesh") if daemon else "ironmesh",
+                "version": ironmesh_version,
+                "node_id": getattr(daemon, "node_id", "") if daemon else "",
+                "capabilities": list(getattr(getattr(daemon, "config", None),
+                                              "capabilities", []) or []),
+                "features": ["mesh", "resource"],
+            }
+            return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        except Exception:
+            logger.exception("/im/info handler failed")
+            return b"{}"
+
+    def _rpc_cap_list(self, path, data, request_id, link_id, remote_identity, requested_at):
+        """Respond to /im/cap/list — full capability registry."""
+        try:
+            registry = getattr(self._daemon, "_capabilities", None)
+            if registry is None:
+                return json.dumps({"local": [], "remote": {}}).encode("utf-8")
+            local = registry.local_capabilities()
+            remote: Dict[str, list] = {}
+            # _remote is the source of truth for known remote caps;
+            # access via attribute since there's no public iterator.
+            try:
+                for node_id, caps in getattr(registry, "_remote", {}).items():
+                    remote[node_id] = sorted(caps)
+            except Exception:
+                pass
+            payload = {"local": local, "remote": remote}
+            return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        except Exception:
+            logger.exception("/im/cap/list handler failed")
+            return b"{}"
+
+    def _rpc_cap_find(self, path, data, request_id, link_id, remote_identity, requested_at):
+        """Respond to /im/cap/find — pattern lookup. Query: {pattern: str}."""
+        try:
+            registry = getattr(self._daemon, "_capabilities", None)
+            if registry is None:
+                return json.dumps([]).encode("utf-8")
+            pattern = ""
+            if data:
+                try:
+                    if isinstance(data, bytes):
+                        query = json.loads(data.decode("utf-8"))
+                    else:
+                        query = data
+                    if isinstance(query, dict):
+                        pattern = str(query.get("pattern", ""))
+                    elif isinstance(query, str):
+                        pattern = query
+                except Exception:
+                    pattern = ""
+            if not pattern:
+                return json.dumps([]).encode("utf-8")
+            matches = registry.find(pattern)
+            payload = [{"node_id": nid, "capability": cap} for nid, cap in matches]
+            return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        except Exception:
+            logger.exception("/im/cap/find handler failed")
+            return b"[]"
 
     # -- App data construction ---------------------------------------------
 

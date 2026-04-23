@@ -20,6 +20,51 @@ Nomadnet, LXMF).
 
 ### Added
 
+- **Auto-discovery of IronMesh peers over RNS.** Every IronMesh node now
+  registers an `RNS.Transport` announce handler and emits a structured
+  announce app_data payload (`{n,v,i,c,f}`) carrying the agent name,
+  ironmesh version, node_id, capability list, and feature flags.
+  Nodes hearing each other's announces auto-populate a discovery map
+  — no operator-typed destination hashes required. Pre-v0.9.1 peers
+  emitting plain-name app_data still appear; the decoder falls back
+  cleanly. Schema is documented in `reticulum_transport.py`.
+- **Live RNS link metrics on `PeerState` and dashboard.** A 5 s poller
+  samples each active Link for MTU, MDU, expected bps, RSSI, SNR, Q,
+  age, and silence duration, writing them onto the peer record. The
+  dashboard JSON API surfaces them as `rns_link_mtu`, `rns_estimated_bps`,
+  `rns_rssi`, `rns_snr`, `rns_q`, etc. — usable by any HTTP/MCP
+  consumer. Phy stats are no-ops on non-radio links.
+- **Native link liveness for RNS peers.** `_heartbeat_loop` no longer
+  PINGs RNS peers every 30 s. Instead it consults `link.no_data_for()`
+  via the latest stats sample and tears down silent Links above a
+  configurable threshold. PINGs are still sent at a 5x cadence to
+  keep IronMesh-protocol state warm. Saves real bandwidth on LoRa.
+- **`Transport.await_path` for outbound link setup.** Replaces the
+  busy-poll-with-exponential-backoff loop in `connect_to_destination`
+  with the native RNS path-response signal. Path resolution wakes up
+  as soon as the announce arrives instead of at the next backoff tick.
+- **Early remote-identity capture.** `RNSLinkAdapter` installs
+  `set_remote_identified_callback` and synchronously reads
+  `get_remote_identity()` at construction so the remote's RNS Identity
+  hash is available the moment RNS confirms it. Foundation for an
+  optional handshake-skip in a later release.
+- **RNS Resource for large payloads.** Outbound frames larger than 32 KB
+  are auto-routed through `RNS.Resource(auto_compress=True)` instead of
+  being inlined as length-prefixed Buffer writes. Resource handles
+  chunking, sequencing, integrity, bz2 compression, and resume natively.
+  Hard cap of 64 MB per Resource prevents lockout. Inbound Resources
+  are accepted on every Link via `set_resource_concluded_callback` and
+  fed onto the same async queue the Buffer path uses, so the daemon's
+  message loop is unchanged. Routing is gated on the peer advertising
+  the `resource` feature; old peers see no behavioural change.
+- **Public RNS request handlers for capability RPC.** Three new paths
+  are registered on the IronMesh destination, queryable by any
+  RNS-speaking client without an ironmesh dependency:
+  `/im/info` (node card), `/im/cap/list` (full capability registry),
+  `/im/cap/find` (pattern-matched lookup, query `{pattern: str}`).
+  All ALLOW_ALL — they're a public discovery surface, not a write
+  surface. New `examples/rns_capability_client.py` demonstrates a
+  pure-RNS client speaking these paths.
 - **Per-packet ratchets on the IronMesh RNS destination.** Packets sent
   to an IronMesh destination outside an established Link now get
   forward secrecy via RNS's key-ratcheting system. Ratchet keys rotate

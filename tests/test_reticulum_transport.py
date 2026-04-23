@@ -7,6 +7,7 @@ needing actual RNS hardware or ``rnsd``.
 
 import asyncio
 import importlib
+import json
 import sys
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -588,6 +589,69 @@ class TestIronMeshAnnounceHandler:
         await asyncio.sleep(0.01)
         # Queue should be empty (failed transfer dropped)
         assert adapter._queue.empty()
+
+    def test_rpc_info_returns_node_card(self):
+        # Build a transport with a daemon that has known fields
+        daemon = MagicMock()
+        daemon.name = "rpc-node"
+        daemon.node_id = "abc123"
+        daemon.config = MagicMock()
+        daemon.config.capabilities = ["llm:chat", "tool:echo"]
+        transport = ReticulumTransport(daemon, announce_interval=60.0)
+        body = transport._rpc_info(None, b"", 0, 0, None, 0)
+        import json as _json
+        decoded = _json.loads(body.decode("utf-8"))
+        assert decoded["name"] == "rpc-node"
+        assert decoded["node_id"] == "abc123"
+        assert decoded["capabilities"] == ["llm:chat", "tool:echo"]
+        assert "resource" in decoded["features"]
+
+    def test_rpc_cap_list_returns_registry_view(self):
+        daemon = MagicMock()
+        registry = MagicMock()
+        registry.local_capabilities = MagicMock(return_value=["a", "b"])
+        registry._remote = {"node-x": {"cap1", "cap2"}, "node-y": {"cap3"}}
+        daemon._capabilities = registry
+        transport = ReticulumTransport(daemon, announce_interval=60.0)
+        body = transport._rpc_cap_list(None, b"", 0, 0, None, 0)
+        import json as _json
+        decoded = _json.loads(body.decode("utf-8"))
+        assert decoded["local"] == ["a", "b"]
+        assert sorted(decoded["remote"]["node-x"]) == ["cap1", "cap2"]
+        assert decoded["remote"]["node-y"] == ["cap3"]
+
+    def test_rpc_cap_find_pattern_query(self):
+        daemon = MagicMock()
+        registry = MagicMock()
+        registry.find = MagicMock(return_value=[("node-1", "llm:chat"),
+                                                  ("node-2", "llm:chat")])
+        daemon._capabilities = registry
+        transport = ReticulumTransport(daemon, announce_interval=60.0)
+        query = json.dumps({"pattern": "llm:*"}).encode("utf-8")
+        body = transport._rpc_cap_find(None, query, 0, 0, None, 0)
+        import json as _json
+        decoded = _json.loads(body.decode("utf-8"))
+        assert len(decoded) == 2
+        assert decoded[0]["node_id"] == "node-1"
+        assert decoded[0]["capability"] == "llm:chat"
+        registry.find.assert_called_once_with("llm:*")
+
+    def test_rpc_cap_find_empty_query_returns_empty(self):
+        daemon = MagicMock()
+        daemon._capabilities = MagicMock()
+        transport = ReticulumTransport(daemon, announce_interval=60.0)
+        body = transport._rpc_cap_find(None, b"", 0, 0, None, 0)
+        import json as _json
+        assert _json.loads(body.decode("utf-8")) == []
+
+    def test_rpc_cap_list_no_registry_returns_empty(self):
+        daemon = MagicMock()
+        daemon._capabilities = None
+        transport = ReticulumTransport(daemon, announce_interval=60.0)
+        body = transport._rpc_cap_list(None, b"", 0, 0, None, 0)
+        import json as _json
+        decoded = _json.loads(body.decode("utf-8"))
+        assert decoded == {"local": [], "remote": {}}
 
     @pytest.mark.asyncio
     async def test_handler_survives_bad_app_data(self):
