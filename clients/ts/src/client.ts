@@ -266,13 +266,22 @@ export class IronMeshClient {
     const msgType = opts.type ?? "MSG";
     this.state.sequence += 1n;
 
+    // Route via the daemon's mesh router if the caller supplied a
+    // distinct destination; otherwise the handshake peer is the
+    // implicit recipient. The daemon's CAPABILITY_ANNOUNCE-driven
+    // routing table handles the relay; we just have to set the
+    // `destination` field correctly in the encrypted envelope.
+    const destination =
+      opts.toNodeId && /^[0-9a-fA-F]{32}$/.test(opts.toNodeId)
+        ? opts.toNodeId.toLowerCase()
+        : this.state.hsResult.peerNodeId;
     const inner = {
       type: msgType,
       payload: Buffer.from(payloadBytes).toString("base64"),
       msg_id: msgId,
       source: this.state.hsResult.myNodeId,
       source_display: this.opts.name,
-      destination: this.state.hsResult.peerNodeId,
+      destination,
       // Date.now()/1000 gives ms-precision floats (e.g.
       // 1729203847.123). Python's time.time() can return higher
       // precision (μs). Both serialize identically through JSON, and

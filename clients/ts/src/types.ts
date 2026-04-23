@@ -37,6 +37,13 @@ export type Priority = "CRITICAL" | "HIGH" | "NORMAL" | "LOW";
 export interface SendMessageOpts {
   type?: string;
   priority?: Priority;
+  /**
+   * Destination node_id (32-hex). When provided, the message is
+   * routed via the daemon's mesh router to that peer rather than
+   * being delivered to the handshake peer. Falls back to the
+   * handshake peer when omitted.
+   */
+  toNodeId?: string;
 }
 
 export interface IncomingMessage {
