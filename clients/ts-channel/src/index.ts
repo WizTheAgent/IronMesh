@@ -1,4 +1,4 @@
-// Public entry point for @wiztheagent/openclaw-ironmesh-channel.
+// Public entry point for @wiztheagent/openclaw-ironmesh.
 
 export { ironMeshChannelPlugin } from "./plugin.js";
 export type {
@@ -33,7 +33,9 @@ export type {
   ChannelValidationError,
 } from "./config-schema.js";
 
-export { defineIronMeshChannelEntry } from "./entry.js";
-export type { IronMeshChannelEntryOptions } from "./entry.js";
+// Default-exported plugin definition consumed by OpenClaw at gateway
+// startup via the openclaw.extensions entry path. Re-exported for
+// programmatic consumers that want to inspect or wrap it.
+export { default as ironMeshPluginDefinition } from "./entry.js";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";

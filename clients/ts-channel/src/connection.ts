@@ -4,7 +4,10 @@
 // identities, so reusing the same client across all three adapters
 // keeps the wire view consistent.
 
-import { IronMeshClient } from "@wiztheagent/ironmesh-client";
+// Vendored at pack time by scripts/vendor-client.js. Path resolves to
+// ./vendor/ironmesh-client/dist/index.js from the package root, both
+// in dev (after `npm run prepack` populates vendor) and in published.
+import { IronMeshClient } from "../vendor/ironmesh-client/dist/index.js";
 import type { PeerMapper } from "./peer-mapper.js";
 import type { ChannelInboundMessage, IronMeshChannelAccount, PluginLogger } from "./types.js";
 
@@ -49,15 +52,15 @@ export class IronMeshConnection {
         });
       }
     });
-    this.client.on("disconnect", (reason) => {
+    this.client.on("disconnect", (reason: unknown) => {
       this.connected = false;
       const peerNodeId = this.client.peerNodeId;
       if (peerNodeId) this.peers.markOffline(peerNodeId);
       this.logger?.info(
-        `[ironmesh-channel] account=${account.accountId} disconnected: ${reason}`,
+        `[ironmesh-channel] account=${account.accountId} disconnected: ${String(reason)}`,
       );
     });
-    this.client.on("peerConnect", (info) => {
+    this.client.on("peerConnect", (info: { nodeId: string; agentName?: string }) => {
       this.peers.observe({
         nodeId: info.nodeId,
         agentName: info.agentName,
@@ -65,15 +68,17 @@ export class IronMeshConnection {
         observedAtMs: Date.now(),
       });
     });
-    this.client.on("peerDisconnect", (info) => {
+    this.client.on("peerDisconnect", (info: { nodeId: string }) => {
       this.peers.markOffline(info.nodeId);
     });
-    this.client.on("error", (err) => {
+    this.client.on("error", (err: { message?: string } | Error) => {
       this.logger?.warn(
-        `[ironmesh-channel] account=${account.accountId} error: ${err.message}`,
+        `[ironmesh-channel] account=${account.accountId} error: ${
+          err instanceof Error ? err.message : err.message ?? String(err)
+        }`,
       );
     });
-    this.client.on("message", (msg) => {
+    this.client.on("message", (msg: { msgType: string; payload: Uint8Array; fromNodeId: string; msgId?: string; timestamp: number }) => {
       // Translate IronMesh inbound MSG into OpenClaw ChannelInboundMessage.
       // Only "MSG" type is surfaced as a chat message; control frames are ignored.
       if (msg.msgType !== "MSG") return;

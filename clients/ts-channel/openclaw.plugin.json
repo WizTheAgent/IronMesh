@@ -1,0 +1,24 @@
+{
+  "id": "ironmesh",
+  "channels": ["ironmesh"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "WebSocket URL of the IronMesh daemon (ws://host:port)",
+        "default": "ws://127.0.0.1:8765"
+      },
+      "passphrase": {
+        "type": "string",
+        "description": "Mesh-wide shared passphrase, or path to a file containing it (prefix with '@')"
+      },
+      "name": {
+        "type": "string",
+        "description": "Agent name as advertised on the mesh",
+        "default": "openclaw"
+      }
+    }
+  }
+}

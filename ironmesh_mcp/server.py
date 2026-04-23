@@ -1453,7 +1453,35 @@ def main() -> int:
     p.add_argument("--passphrase-file", default=None)
     p.add_argument("--open-discovery", action="store_true")
     p.add_argument("--allow-plaintext-ws", action="store_true", default=True)
+    p.add_argument(
+        "--peer",
+        action="append",
+        default=None,
+        metavar="HOST:PORT",
+        help="Bootstrap peer to connect to on startup. Repeatable; or "
+             "comma-separate inside one flag. Use this when mDNS discovery "
+             "is unavailable (corporate LAN, Docker bridge, name conflicts).",
+    )
     args = p.parse_args()
+
+    # Flatten --peer values: support both repeated flags and comma-lists.
+    peer_hints: list[tuple[str, int]] = []
+    for spec in (args.peer or []):
+        for entry in str(spec).split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            if ":" not in entry:
+                print(f"ERROR: --peer expects host:port, got '{entry}'",
+                      file=sys.stderr)
+                return 2
+            host, port_s = entry.rsplit(":", 1)
+            try:
+                peer_hints.append((host, int(port_s)))
+            except ValueError:
+                print(f"ERROR: --peer port must be integer, got '{port_s}'",
+                      file=sys.stderr)
+                return 2
 
     passphrase = None
     if args.passphrase_file:
@@ -1487,6 +1515,30 @@ def main() -> int:
     threading.Thread(target=loop.run_forever, name="mcp-loop",
                      daemon=True).start()
     time.sleep(0.5)
+
+    # Manual peer bootstrap: dial each --peer hint after the daemon is
+    # listening. mDNS auto-discovery still runs in parallel; --peer is
+    # additive, useful when mDNS is blocked or a name slot is taken.
+    if peer_hints:
+        async def _dial_peer_hints():
+            for host, port in peer_hints:
+                try:
+                    ok = await daemon.connect_to_peer(host, port)
+                    if ok:
+                        log.info("manual peer bootstrap: %s:%d connected",
+                                 host, port)
+                    else:
+                        log.warning("manual peer bootstrap: %s:%d returned False",
+                                    host, port)
+                except Exception as e:
+                    log.warning("manual peer bootstrap: %s:%d failed: %s",
+                                host, port, e)
+        try:
+            asyncio.run_coroutine_threadsafe(
+                _dial_peer_hints(), loop
+            ).result(timeout=15)
+        except Exception as e:
+            log.warning("peer hint dial timed out or errored: %s", e)
 
     try:
         serve(daemon, loop)

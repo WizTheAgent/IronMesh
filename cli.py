@@ -294,6 +294,14 @@ def parse_args():
     av.add_argument("--path", default="~/.ironmesh/audit.log")
     av.add_argument("--archives", action="store_true",
                     help="Also verify rotated archives")
+    av.add_argument(
+        "--rotate-corrupt", action="store_true",
+        help="If tamper is detected, archive the corrupted log to "
+             "<path>.corrupted-<ISO timestamp> and let the daemon "
+             "start a fresh chain on next write. Recovery for the "
+             "operator-runbook case where two daemons collided on "
+             "the same audit path.",
+    )
     ae = audit_sub.add_parser("export", help="Export signed audit log bundle")
     ae.add_argument("--path", default="~/.ironmesh/audit.log")
     ae.add_argument("--out", required=True, help="Output JSON file")
@@ -1439,9 +1447,34 @@ def cmd_audit(args):
         if ok:
             print(f"OK — verified {checked} entries")
             return 0
-        else:
+        # Tamper detected. With --rotate-corrupt, archive the bad chain
+        # and start a fresh one so the daemon can resume writing without
+        # the read-only latch tripping. Without the flag, exit non-zero
+        # so operators can triage manually.
+        rotate = bool(getattr(args, "rotate_corrupt", False))
+        if not rotate:
             print(f"TAMPER DETECTED at entry {first_bad} (checked {checked})")
             return 1
+        # Rotate: rename the corrupted file aside, leave a sealing
+        # advisory in its place so a fresh chain begins on next write.
+        import time as _time
+        ts = _time.strftime("%Y-%m-%dT%H-%M-%S", _time.localtime())
+        archived = f"{path}.corrupted-{ts}"
+        try:
+            os.rename(path, archived)
+        except FileNotFoundError:
+            print(f"TAMPER DETECTED but log file vanished at {path}")
+            return 1
+        except OSError as e:
+            print(f"TAMPER DETECTED at entry {first_bad}; rotate failed: {e}")
+            return 1
+        print(
+            f"TAMPER DETECTED at entry {first_bad} (checked {checked})\n"
+            f"Corrupted log archived to: {archived}\n"
+            f"Fresh chain will start on next daemon write to: {path}\n"
+            f"Restart any daemons sharing this audit path."
+        )
+        return 0
 
     if sub == "export":
         from ironmesh import keys as ew_keys

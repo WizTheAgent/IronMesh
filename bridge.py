@@ -3195,14 +3195,23 @@ class BridgeDaemon:
                         caps = caps[:1024]
                     if origin != self.node_id:
                         delta = self._capabilities.learn_remote(origin, caps)
-                        if delta and self._audit:
+                        if delta:
+                            # Persist learned remote caps so a daemon
+                            # restart doesn't lose them. Wrapped in
+                            # try/except because announce-path latency
+                            # must not be coupled to disk health.
                             try:
-                                self._audit.log(EVENT_CAPABILITY_LEARNED, {
-                                    "origin": origin,
-                                    "capabilities": list(caps),
-                                })
+                                self._capabilities.save()
                             except Exception:
                                 pass
+                            if self._audit:
+                                try:
+                                    self._audit.log(EVENT_CAPABILITY_LEARNED, {
+                                        "origin": origin,
+                                        "capabilities": list(caps),
+                                    })
+                                except Exception:
+                                    pass
                         # v0.8.5.6: bind the observed capability set to the
                         # origin peer's pinned trust record. If it differs
                         # from the last-accepted baseline, demote the peer
@@ -4672,6 +4681,14 @@ class BridgeDaemon:
                                              pid, e)
             except Exception as e:
                 logger.debug("Capability announce loop error: %s", e)
+            # Defensive periodic persist: belt-and-braces alongside the
+            # save inside the inbound handler. Catches the case where
+            # learn_remote happened but save() raised silently.
+            try:
+                if self._capabilities is not None:
+                    self._capabilities.save()
+            except Exception:
+                pass
             await asyncio.sleep(
                 max(1.0, getattr(self.config, "capability_announce_interval", 60.0))
             )

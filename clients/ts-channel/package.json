@@ -1,6 +1,6 @@
 {
-  "name": "@wiztheagent/openclaw-ironmesh-channel",
-  "version": "0.1.0",
+  "name": "@wiztheagent/openclaw-ironmesh",
+  "version": "0.2.0",
   "description": "OpenClaw channel plugin that uses IronMesh as transport. Lets OpenClaw agents see other mesh peers as contacts and exchange messages over the encrypted local-first mesh.",
   "license": "MIT",
   "author": "WizTheAgent",
@@ -33,6 +33,8 @@
   },
   "files": [
     "dist",
+    "vendor",
+    "openclaw.plugin.json",
     "README.md",
     "LICENSE"
   ],
@@ -44,10 +46,12 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
-    "clean": "rimraf dist"
+    "clean": "rimraf dist",
+    "prepack": "node scripts/vendor-client.js"
   },
   "dependencies": {
-    "@wiztheagent/ironmesh-client": "file:../ts"
+    "tweetnacl": "^1.0.3",
+    "ws": "^8.18.0"
   },
   "peerDependencies": {
     "openclaw": ">=2026.3"
@@ -72,5 +76,23 @@
     "agent",
     "p2p",
     "decentralized"
-  ]
+  ],
+  "openclaw": {
+    "extensions": [
+      "./dist/entry.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.3"
+    },
+    "build": {
+      "openclawVersion": "2026.3.8"
+    },
+    "channel": {
+      "id": "ironmesh",
+      "label": "IronMesh",
+      "blurb": "Send and receive messages over the IronMesh peer-to-peer mesh. End-to-end encrypted, no cloud, your network only.",
+      "docsPath": "https://ironmesh.org/docs/openclaw",
+      "systemImage": "shield.fill"
+    }
+  }
 }

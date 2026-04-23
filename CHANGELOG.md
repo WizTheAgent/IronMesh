@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5.9] — Capability persistence + OpenClaw plugin compatibility
+
+Patch release on top of v0.8.5.8. No protocol or schema changes; every
+v0.8.x peer stays interoperable. Focus is on closing real-world bugs
+surfaced by end-to-end testing of the OpenClaw channel plugin against
+a live multi-node mesh.
+
+### Fixed
+
+- **Capability registry now persists learned remote capabilities.**
+  `bridge.py:_capability_announce_loop` and the inbound
+  `CAPABILITY_ANNOUNCE` handler both call
+  `CapabilityRegistry.save()` after updating remote-capability state.
+  Previously, `capabilities.json` was only written at startup (with an
+  empty `remote: {}` body) and on local-capability changes; remote caps
+  learned via gossip were held only in memory and lost on restart.
+- **`ironmesh-mcp` accepts manual peer bootstrap.** New
+  `--peer host:port[,host2:port2,…]` flag. When mDNS discovery is
+  unavailable (corporate LAN, Docker bridge, name conflicts with another
+  process holding the same mDNS slot), operators can pass explicit peer
+  hints. The embedded daemon connects to each on startup.
+- **`ironmesh audit verify --rotate-corrupt`.** New flag rotates a
+  corrupted audit log to `audit.log.corrupted-<ISO timestamp>` and
+  starts a fresh chain. Recovery for the operator-runbook case where
+  two daemons collided on the same audit path pre-v0.8.5.6.
+
+### Changed
+
+- **OpenClaw channel plugin (`@wiztheagent/openclaw-ironmesh`) v0.2.0**
+  (renamed from `@wiztheagent/openclaw-ironmesh-channel` to match
+  manifest id):
+  - Plugin entry now uses OpenClaw 2026.3.x's `register(api)` shape
+    (matches the bundled telegram channel reference). Forward-compatible
+    with the newer 2026.4+ `defineBundledChannelEntry` SDK shape via
+    runtime detection.
+  - Bundles its IronMesh WebSocket client, no peer/sibling
+    `file:` dependency required at install time.
+  - Added required `package.json:openclaw.{extensions,compat,build,
+    channel}` block + sibling `openclaw.plugin.json` manifest. Both are
+    required by OpenClaw 2026.3.x for `openclaw plugins install` to
+    succeed.
+  - `configSchema.required` no longer blocks `openclaw plugins
+    install` and `openclaw config set`. Validation runs at channel
+    activation instead.
+
 ## [0.8.5.8] — Counter correctness + observability polish
 
 Patch release on top of v0.8.5.7. No protocol or schema changes; every

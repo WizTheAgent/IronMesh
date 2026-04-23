@@ -1,92 +1,113 @@
-// Bundled entry point for OpenClaw to load this package as a channel
-// plugin without the operator writing any glue code.
+// OpenClaw plugin entry point.
 //
-// Usage from an OpenClaw plugin loader:
+// OpenClaw 2026.3.x loads channel plugins via a default-exported
+// definition object with a `register(api)` method. This file matches
+// that contract; it does NOT use the older `defineBundledChannelEntry`
+// helper, which doesn't exist in 2026.3.x.
 //
-//   import { defineIronMeshChannelEntry }
-//     from "@wiztheagent/openclaw-ironmesh-channel/entry";
+// The contract (from `openclaw/plugin-sdk/plugins/types`):
 //
-//   // top-level await (Node 18+ ESM) or inside an async function
-//   export default await defineIronMeshChannelEntry();
+//   export type OpenClawPluginDefinition = {
+//     id: string;
+//     name?: string;
+//     description?: string;
+//     configSchema?: OpenClawPluginConfigSchema;
+//     register?: (api: OpenClawPluginApi) => void | Promise<void>;
+//     activate?: (api: OpenClawPluginApi) => void | Promise<void>;
+//   };
+//   api.registerChannel(plugin)  — plugin can be a ChannelPlugin
 //
-// To override defaults (e.g. a non-standard config tree shape):
+// Two config shapes are supported. Single-account (the common case):
 //
-//   await defineIronMeshChannelEntry({
-//     listAccountIds: (cfg) => Object.keys(cfg?.myCustomChannelMap ?? {}),
-//     resolveAccount: (cfg, id) => cfg.myCustomChannelMap[id ?? "default"],
-//   });
+//   plugins.entries.ironmesh.config = { url, passphrase, name }
 //
-// The OpenClaw plugin SDK is a peer dependency — we dynamic-import its
-// `defineBundledChannelEntry` helper at call time. When OpenClaw isn't
-// installed (e.g. unit tests, library consumers), the call rejects
-// with a descriptive error so the operator sees the missing peer dep.
+// Multi-account (advanced):
+//
+//   channels.ironmesh.<accountId> = { url, passphrase, name }
+//
+// `api.pluginConfig` carries the first; `api.config` carries the
+// second. We accept either; if both are present, the plugin-level
+// single-account config wins (because that's the one operators set
+// via `openclaw config set plugins.entries.ironmesh.config.X`).
 
 import { ironMeshChannelPlugin } from "./plugin.js";
 import {
   listChannelAccountIds,
   resolveChannelAccount,
   ChannelConfigSchema,
+  type ChannelAccountConfig,
 } from "./config-schema.js";
-import type { IronMeshChannelPluginOptions } from "./plugin.js";
+
+type OpenClawPluginApi = {
+  pluginConfig?: Record<string, unknown>;
+  config?: unknown;
+  registerChannel: (registration: unknown) => void;
+  logger?: {
+    info: (msg: string) => void;
+    warn: (msg: string) => void;
+    error: (msg: string) => void;
+    debug?: (msg: string) => void;
+  };
+};
+
+const PLUGIN_ID = "ironmesh";
+const SINGLE_ACCOUNT_ID = "default";
 
 /**
- * Options accepted by ``defineIronMeshChannelEntry``. All fields are
- * optional — sensible defaults wire the package into the standard
- * ``channels.ironmesh.<accountId>`` config layout. Override
- * ``listAccountIds`` / ``resolveAccount`` if your OpenClaw config
- * tree puts the IronMesh section somewhere unusual.
+ * If the plugin-level config carries the single-account fields, build
+ * an OpenClaw-shaped config tree with a single `default` entry so the
+ * existing `resolveChannelAccount` / `listChannelAccountIds` helpers
+ * work without branching.
  */
-export interface IronMeshChannelEntryOptions
-  extends Partial<IronMeshChannelPluginOptions> {}
-
-/**
- * Build the bundled channel entry that OpenClaw expects. Returns
- * whatever ``defineBundledChannelEntry`` returns from the plugin SDK
- * (its exact shape is OpenClaw's; we don't re-declare it here).
- *
- * On a host without the ``openclaw`` package installed, this throws a
- * descriptive error so the operator sees the missing peer dep instead
- * of a confusing ``ERR_MODULE_NOT_FOUND``.
- */
-export async function defineIronMeshChannelEntry(
-  opts: IronMeshChannelEntryOptions = {},
-): Promise<unknown> {
-  let define: ((spec: unknown) => unknown) | undefined;
-  try {
-    // openclaw is an optional peer dep — install it in the host project.
-    // The dynamic specifier prevents tsc from requiring resolution at
-    // build time when the dep isn't present.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const sdk: any = await import(
-      /* @vite-ignore */ /* webpackIgnore: true */ "openclaw" as string
-    );
-    define = (sdk.defineBundledChannelEntry ??
-      sdk.default?.defineBundledChannelEntry) as
-      | ((spec: unknown) => unknown)
-      | undefined;
-  } catch (e) {
-    throw new Error(
-      "[ironmesh-channel] failed to load the openclaw plugin SDK — " +
-        "install `openclaw` as a peer dependency in the host project. " +
-        `(underlying: ${e instanceof Error ? e.message : String(e)})`,
-    );
+function buildBridgedCfg(api: OpenClawPluginApi): unknown {
+  const pc = api.pluginConfig;
+  if (
+    pc &&
+    typeof pc.url === "string" &&
+    typeof pc.passphrase === "string" &&
+    typeof pc.name === "string"
+  ) {
+    const account: ChannelAccountConfig = {
+      url: pc.url as string,
+      passphrase: pc.passphrase as string,
+      name: pc.name as string,
+    };
+    return {
+      channels: { [PLUGIN_ID]: { [SINGLE_ACCOUNT_ID]: account } },
+    };
   }
-  if (typeof define !== "function") {
-    throw new Error(
-      "[ironmesh-channel] openclaw is installed but does not export " +
-        "defineBundledChannelEntry — required minimum: openclaw >= 2026.3",
-    );
-  }
-
-  const plugin = ironMeshChannelPlugin({
-    listAccountIds: opts.listAccountIds ?? listChannelAccountIds,
-    resolveAccount: opts.resolveAccount ?? resolveChannelAccount,
-    logger: opts.logger,
-    stateDir: opts.stateDir,
-  });
-
-  return define({
-    plugin,
-    configSchema: ChannelConfigSchema,
-  });
+  return api.config ?? {};
 }
+
+const definition = {
+  id: PLUGIN_ID,
+  name: "IronMesh",
+  description:
+    "Send and receive messages over the IronMesh peer-to-peer mesh. " +
+    "End-to-end encrypted, no cloud, your network only.",
+  configSchema: ChannelConfigSchema,
+
+  register(api: OpenClawPluginApi) {
+    const log = api.logger ?? {
+      info: (m: string) => console.log(`[ironmesh-channel] ${m}`),
+      warn: (m: string) => console.warn(`[ironmesh-channel] ${m}`),
+      error: (m: string) => console.error(`[ironmesh-channel] ${m}`),
+    };
+    log.info(`registering channel plugin id=${PLUGIN_ID}`);
+
+    const plugin = ironMeshChannelPlugin({
+      // Wrap the resolvers so they always see a config tree the helpers
+      // understand, regardless of whether the operator configured
+      // single-account or multi-account.
+      listAccountIds: (_cfg) => listChannelAccountIds(buildBridgedCfg(api)),
+      resolveAccount: (_cfg, accountId) =>
+        resolveChannelAccount(buildBridgedCfg(api), accountId),
+      logger: log,
+    });
+
+    api.registerChannel(plugin);
+    log.info("channel registration complete");
+  },
+};
+
+export default definition;
