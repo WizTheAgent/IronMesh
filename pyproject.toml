@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ironmesh"
-version = "0.8.5.9"
+version = "0.9.0"
 description = "Local-first agent-to-agent mesh protocol with multi-hop routing, end-to-end encryption, and capability discovery"
 readme = "README.md"
 license = {text = "MIT"}
@@ -71,6 +71,8 @@ dev = [
 [project.scripts]
 ironmesh = "ironmesh.cli:main"
 ironmesh-mcp = "ironmesh_mcp.server:main"
+ironmesh-acp = "ironmesh_acp.server:main"
+ironmesh-a2a = "ironmesh_a2a.server:main"
 
 [project.urls]
 Homepage = "https://ironmesh.org"
@@ -84,12 +86,14 @@ Changelog = "https://github.com/WizTheAgent/IronMesh/blob/main/CHANGELOG.md"
 # adapters (LangChain / CrewAI / AutoGen) are physically excluded from the
 # wheel — discovered during the v0.8.3 pre-release verification sweep.
 # Downstream code does `from ironmesh.adapters.langchain_adapter import …`.
-packages = ["ironmesh", "ironmesh.adapters", "ironmesh_mcp"]
+packages = ["ironmesh", "ironmesh.adapters", "ironmesh_mcp", "ironmesh_acp", "ironmesh_a2a"]
 
 [tool.setuptools.package-dir]
 ironmesh = "."
 "ironmesh.adapters" = "adapters"
 ironmesh_mcp = "ironmesh_mcp"
+ironmesh_acp = "ironmesh_acp"
+ironmesh_a2a = "ironmesh_a2a"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

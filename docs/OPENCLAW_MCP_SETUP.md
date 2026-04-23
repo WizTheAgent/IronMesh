@@ -14,7 +14,7 @@ complementary; you can run both at the same time.
 ## Prerequisites
 
 - OpenClaw 2026.3 or later (`openclaw --version`)
-- IronMesh `>=0.8.5.9` installed (`pip install ironmesh` or `pipx install ironmesh`)
+- IronMesh `>=0.9.0` installed (`pip install ironmesh` or `pipx install ironmesh`)
 - The IronMesh mesh-wide passphrase available (in an env var or a file)
 
 The MCP server **spins up its own embedded `BridgeDaemon` in-process**
@@ -22,7 +22,7 @@ when launched. It joins the mesh as a peer like any other node. By
 default it discovers other peers via mDNS; in environments where mDNS
 is unavailable (restrictive networks, container bridges, name-slot
 conflicts), pass `--peer host:port[,host:port,…]` to bootstrap with
-explicit peer hints (added in v0.8.5.9). Don't bind the embedded
+explicit peer hints (added in v0.9.0). Don't bind the embedded
 daemon and a separate `ironmesh run` daemon to the same port on the
 same host — pick distinct ports.
 
@@ -107,7 +107,7 @@ The agent should call `ironmesh_discover_capabilities` with `pattern: "llm:*"`.
 
 ## Tool reference
 
-The `ironmesh` MCP server exposes 25 tools as of v0.8.5.9. The first
+The `ironmesh` MCP server exposes 25 tools as of v0.9.0. The first
 sections below cover the eight core operations and the five
 agent-collaboration tools added for cross-agent workflows. Later
 sections document the agent-introspection helpers, the pending-trust

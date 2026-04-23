@@ -7,12 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.5.9] — Capability persistence + OpenClaw plugin compatibility
+## [0.9.0] — OpenClaw, ACP, and A2A interop
 
-Patch release on top of v0.8.5.8. No protocol or schema changes; every
-v0.8.x peer stays interoperable. Focus is on closing real-world bugs
-surfaced by end-to-end testing of the OpenClaw channel plugin against
-a live multi-node mesh.
+Minor release on top of v0.8.5.8. No wire-protocol or schema changes
+to the IronMesh mesh itself; every v0.8.x peer stays interoperable.
+The v0.9.0 line opens up three new agent-interoperability surfaces —
+the OpenClaw channel plugin, an Agent Client Protocol (ACP) stdio
+adapter, and an Agent-to-Agent (A2A) HTTP gateway — alongside a set
+of capability-persistence and operator-tooling fixes surfaced by
+end-to-end testing of the OpenClaw integration.
+
+### Added
+
+- **`ironmesh-acp` — Agent Client Protocol stdio adapter.** New
+  `ironmesh_acp` package + console script. Speaks JSON-RPC 2.0 over
+  newline-delimited JSON on stdio (the wire format defined by
+  `acp-core-v1@0.3.0`). Implements the v1 required surface:
+  `initialize`, `session/new`, `session/prompt`, `session/cancel`,
+  plus `session/update` notifications. Each ACP session targets one
+  mesh peer (chosen via `meta.peer` on `session/new` or the
+  `--default-peer` CLI flag); `session/prompt` dispatches as an
+  encrypted MSG and the peer's reply is streamed back as an
+  `agent_message_chunk` content block followed by a terminal
+  `end_turn` update. Lets `acpx`, `codex`, `claude`, `droid`, and
+  any other ACP-compatible client prompt remote mesh peers as if
+  they were local agents. Bearer-token auth deferred — stdio
+  trust model assumes the spawning client owns the process.
+- **`ironmesh-a2a` — Agent-to-Agent HTTP gateway.** New
+  `ironmesh_a2a` package + console script. Exposes the local mesh
+  node as an A2A v0.3.0 peer with three HTTP endpoints:
+  `GET  /.well-known/agent-card.json` (public AgentCard with
+  protocol version, capabilities, skills, advertised security
+  scheme), `POST /a2a/jsonrpc` (JSON-RPC 2.0; method
+  `message/send`), and `POST /a2a/v1/inbox` (raw envelope dispatch
+  matching the third-party `openclaw-a2a-gateway` shape).
+  Bearer-token authentication via `--token` or
+  `IRONMESH_A2A_TOKEN`; pass `--no-token` for dev-only unauthenticated
+  mode. Anti-loop via `route_path` + `hop_count` (default max 8 hops).
+  HMAC-from-ECDH per-peer authentication is deferred to v0.9.1.
+- **Reply-routing fallback for non-correlation peers.** Both ACP and
+  A2A adapters first attempt to match replies by `correlation_id`
+  (the JSON envelope `{"correlation_id": "<uuid>", "body": "..."}`
+  convention used by `ironmesh_request_service`). When the peer
+  doesn't implement that convention (the bundled `llm_bridge.py`
+  example, community agents), the adapter falls back to delivering
+  the first inbound MSG from the target peer to the oldest pending
+  request. Documented as a known limitation for mixed-protocol
+  peers — correlation-aware peers always resolve precisely.
 
 ### Fixed
 

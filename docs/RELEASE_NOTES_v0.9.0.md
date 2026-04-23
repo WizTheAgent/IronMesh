@@ -1,13 +1,26 @@
-# IronMesh v0.8.5.9 — Capability persistence + OpenClaw plugin compatibility
+# IronMesh v0.9.0 — OpenClaw, ACP, and A2A interop
 
 **Released:** 2026-04-23
-**Type:** patch (no protocol or schema changes)
-**Compatibility:** every v0.8.x peer stays interoperable
+**Type:** minor (no IronMesh wire-protocol or schema changes; new
+optional integration surfaces)
+**Compatibility:** every v0.8.x peer stays interoperable on the mesh
 
-This release closes real-world bugs surfaced by end-to-end testing of
-the OpenClaw channel plugin against a live multi-node mesh, and
-hardens capability persistence so learned remote capabilities survive
-a daemon restart.
+The v0.9.0 line opens up three new agent-interoperability surfaces:
+
+1. **OpenClaw channel plugin** (`@wiztheagent/openclaw-ironmesh`) —
+   register IronMesh as a chat channel inside an OpenClaw gateway so
+   peers appear as contacts and exchange end-to-end encrypted messages.
+2. **Agent Client Protocol (ACP) stdio adapter** (`ironmesh-acp`) —
+   speak the JSON-RPC ACP protocol with any compatible client (acpx,
+   codex, claude, droid, …) and have it prompt remote mesh peers as
+   if they were local agents.
+3. **Agent-to-Agent (A2A) HTTP gateway** (`ironmesh-a2a`) — expose
+   each mesh node as an A2A peer with an `agent-card.json` and a
+   JSON-RPC inbox, so external A2A-aware services can address the
+   mesh natively.
+
+Plus the operator-tooling and capability-persistence fixes that
+surfaced during end-to-end testing of the OpenClaw integration.
 
 ## Highlights
 
@@ -92,15 +105,15 @@ Daemon-side telemetry:
 PyPI:
 
 ```bash
-pip install -U ironmesh==0.8.5.9
+pip install -U ironmesh==0.9.0
 # or, for the LoRa transport extra:
-pip install -U 'ironmesh[rns]==0.8.5.9'
+pip install -U 'ironmesh[rns]==0.9.0'
 ```
 
 Docker Hub:
 
 ```bash
-docker pull wiztheagent/ironmesh:0.8.5.9
+docker pull wiztheagent/ironmesh:0.9.0
 ```
 
 OpenClaw channel plugin (npm):

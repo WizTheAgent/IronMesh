@@ -28,7 +28,7 @@ The MCP bridge is best when mesh interactions are agent-initiated
 ## Prerequisites
 
 - OpenClaw `>=2026.3` (`openclaw --version`)
-- IronMesh `>=0.8.5.9` daemon running on this host and reachable on
+- IronMesh `>=0.9.0` daemon running on this host and reachable on
   its WebSocket port
 - IronMesh mesh-wide passphrase (≥12 characters) accessible by the
   OpenClaw process — typically `~/.ironmesh/passphrase`

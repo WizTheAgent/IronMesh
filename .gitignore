@@ -39,6 +39,7 @@ Thumbs.db
 temp.log
 temp2.log
 logs/
+*.lock
 
 # Keys (NEVER commit secrets)
 keys.json
