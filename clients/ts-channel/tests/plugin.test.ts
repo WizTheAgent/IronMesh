@@ -43,7 +43,7 @@ describe("plugin shape", () => {
     expect(plugin.capabilities.groups).toBe(false);
     expect(typeof plugin.lifecycle.start).toBe("function");
     expect(typeof plugin.lifecycle.stop).toBe("function");
-    expect(typeof plugin.outbound.send).toBe("function");
+    expect(typeof plugin.outbound.sendText).toBe("function");
     expect(typeof plugin.messaging.subscribe).toBe("function");
     expect(typeof plugin.status.describe).toBe("function");
     expect(typeof plugin.directory.self).toBe("function");
@@ -88,32 +88,40 @@ describe("connection caching", () => {
 });
 
 describe("outbound", () => {
-  it("returns ok+msgId on a successful send (mocked client)", async () => {
-    const { plugin, account } = buildPlugin();
+  it("returns {to, messageId} on a successful sendText (mocked client)", async () => {
+    const { plugin, account, opts } = buildPlugin();
     await plugin.__test__.loadState(account.accountId);
     const conn = plugin.__test__.getOrConnect(account);
     Object.defineProperty(conn, "isConnected", { value: () => true });
     vi.spyOn(conn.client, "sendMessage").mockResolvedValue({ msgId: "abc123" });
-    const result = await plugin.outbound.send({
-      account,
-      ctx: { accountId: account.accountId, to: "peer", text: "hi" },
+    // OpenClaw 2026.3.x calls outbound.attachedResults.sendText with cfg.
+    const cfg = { channels: { ironmesh: { default: { url: account.url, passphrase: account.passphrase, name: account.name } } } };
+    void opts; // resolveAccount is wired through opts already
+    const result = await plugin.outbound.sendText({
+      cfg,
+      accountId: account.accountId,
+      to: "peer-name",
+      text: "hi",
     });
-    expect(result.ok).toBe(true);
-    expect(result.msgId).toBe("abc123");
+    expect(result.messageId).toBe("abc123");
+    expect(result.to).toBe("peer-name");
   });
 
-  it("returns ok=false + error on send rejection", async () => {
+  it("propagates errors from sendMessage rejection", async () => {
     const { plugin, account } = buildPlugin();
     await plugin.__test__.loadState(account.accountId);
     const conn = plugin.__test__.getOrConnect(account);
     Object.defineProperty(conn, "isConnected", { value: () => true });
     vi.spyOn(conn.client, "sendMessage").mockRejectedValue(new Error("nope"));
-    const result = await plugin.outbound.send({
-      account,
-      ctx: { accountId: account.accountId, to: "peer", text: "hi" },
-    });
-    expect(result.ok).toBe(false);
-    expect(result.error).toBe("nope");
+    const cfg = { channels: { ironmesh: { default: { url: account.url, passphrase: account.passphrase, name: account.name } } } };
+    await expect(
+      plugin.outbound.sendText({
+        cfg,
+        accountId: account.accountId,
+        to: "peer",
+        text: "hi",
+      }),
+    ).rejects.toThrow("nope");
   });
 });
 

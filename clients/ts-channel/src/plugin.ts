@@ -16,8 +16,6 @@ import type {
   ChannelCapabilities,
   ChannelInboundMessage,
   ChannelMeta,
-  ChannelOutboundContext,
-  ChannelSendResult,
   IronMeshChannelAccount,
   PluginLogger,
 } from "./types.js";
@@ -210,43 +208,48 @@ export function ironMeshChannelPlugin(opts: IronMeshChannelPluginOptions) {
       },
     },
 
-    /** Outbound: send a single MSG to a peer. */
+    /** Outbound: OpenClaw 2026.3.x looks for `outbound.sendText` directly
+     *  on the channel plugin object (per
+     *  `loadOutboundAdapterFromRegistry((entry) => entry.plugin.outbound)`
+     *  + `if (!outbound?.sendText) return null` in deliver.js). The `to`
+     *  field has been normalized by `messaging.normalizeTarget` — it's
+     *  either a 32-hex node_id (lowercase) or an agent name. */
     outbound: {
-      async send(
-        params: { account: IronMeshChannelAccount; ctx: ChannelOutboundContext },
-      ): Promise<ChannelSendResult> {
-        const c = getOrConnect(params.account);
+      sendText: async (params: {
+        cfg: unknown;
+        accountId?: string | null;
+        to: string;
+        text: string;
+        threadId?: string | number | null;
+        replyToId?: string | number | null;
+      }): Promise<{ to: string; messageId: string }> => {
+        const account = opts.resolveAccount(params.cfg, params.accountId);
+        await getOrLoadState(account.accountId);
+        const c = getOrConnect(account);
         if (!c.isConnected()) {
-          try {
-            await c.start();
-          } catch (e) {
-            return {
-              ok: false,
-              error: `failed to connect: ${e instanceof Error ? e.message : String(e)}`,
-            };
-          }
+          await c.start();
         }
-        try {
-          // The IronMesh client's sendMessage signature is
-          // (payload, opts) — peer targeting is implicit (handshake peer
-          // in the alpha). For multi-peer routing we need the ironmesh-mesh
-          // MCP tools instead — see docs/OPENCLAW_CHANNEL_SETUP.md.
-          // For the alpha we ignore params.ctx.to and send to the
-          // handshake peer (single-peer-per-account model).
-          const { msgId } = await c.client.sendMessage(params.ctx.text, {
-            priority: params.ctx.priority,
-          });
-          return { ok: true, msgId };
-        } catch (e) {
-          return {
-            ok: false,
-            error: e instanceof Error ? e.message : String(e),
-          };
+        // The IronMesh client's sendMessage signature is
+        // (payload, opts) — peer targeting via opts.toNodeId or toName.
+        // The daemon routes via mesh if the target isn't a direct peer.
+        const sendOpts: Record<string, unknown> = {};
+        if (/^[0-9a-f]{32}$/i.test(params.to)) {
+          sendOpts.toNodeId = params.to.toLowerCase();
+        } else {
+          sendOpts.toName = params.to;
         }
+        const { msgId } = await c.client.sendMessage(params.text, sendOpts);
+        return { to: params.to, messageId: msgId };
       },
     },
 
-    /** Messaging: subscribe to inbound. */
+    /** Messaging: subscribe to inbound + target validation/normalization.
+     *
+     *  IronMesh accepts three target forms:
+     *    1. <32-hex node_id>            (preferred — stable across rename)
+     *    2. mesh:<32-hex node_id>       (explicit prefix)
+     *    3. <agent_name>                (resolved at send time, may be ambiguous)
+     */
     messaging: {
       subscribe(
         params: {
@@ -273,6 +276,39 @@ export function ironMeshChannelPlugin(opts: IronMeshChannelPluginOptions) {
             set.delete(params.onMessage);
           },
         };
+      },
+
+      /** Strip mesh: prefix and lowercase hex; pass through agent names. */
+      normalizeTarget: (raw: string): string => {
+        const t = raw.trim();
+        if (!t) return t;
+        const stripped = t.startsWith("mesh:") ? t.slice(5) : t;
+        // 32-hex node_id → lowercase canonical form
+        if (/^[0-9A-Fa-f]{32}$/.test(stripped)) return stripped.toLowerCase();
+        return stripped;
+      },
+
+      parseExplicitTarget: ({ raw }: { raw: string }) => {
+        const t = raw.trim();
+        const stripped = t.startsWith("mesh:") ? t.slice(5) : t;
+        const to = /^[0-9A-Fa-f]{32}$/.test(stripped)
+          ? stripped.toLowerCase()
+          : stripped;
+        return { to, chatType: "direct" as const };
+      },
+
+      inferTargetChatType: (_args: { to: string }) => "direct" as const,
+
+      targetResolver: {
+        looksLikeId: (raw: string): boolean => {
+          const t = raw.trim();
+          if (!t) return false;
+          const stripped = t.startsWith("mesh:") ? t.slice(5) : t;
+          // Accept 32-hex node_ids, or any non-empty agent-name token
+          // (the daemon ultimately validates against the live peer set).
+          return /^[0-9A-Fa-f]{32}$/.test(stripped) || /^[a-zA-Z0-9._-]+$/.test(stripped);
+        },
+        hint: "<node_id (32-hex)> or mesh:<node_id> or <agent_name>",
       },
     },
 
