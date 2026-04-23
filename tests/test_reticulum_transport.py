@@ -418,6 +418,51 @@ class TestIronMeshAnnounceHandler:
         daemon._on_rns_peer_announced.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_sample_link_stats_reads_available_metrics(self):
+        loop = asyncio.get_running_loop()
+        link = MagicMock()
+        link.status = _mock_rns.Link.ACTIVE
+        link.get_channel = MagicMock(return_value=MagicMock())
+        # Wire up the metrics the adapter probes. Some return values,
+        # some don't exist — both branches must be exercised.
+        link.get_mtu = MagicMock(return_value=508)
+        link.get_mdu = MagicMock(return_value=464)
+        link.get_expected_rate = MagicMock(return_value=3120.0)
+        link.get_rssi = MagicMock(return_value=-72.5)
+        link.get_snr = MagicMock(return_value=8.4)
+        link.get_q = MagicMock(return_value=92.0)
+        link.no_data_for = MagicMock(return_value=1.5)
+        link.inactive_for = MagicMock(return_value=2.0)
+        link.get_age = MagicMock(return_value=120.0)
+        # Drop one accessor entirely to confirm None-guard works
+        link.get_establishment_rate = None
+        adapter = RNSLinkAdapter(link, loop, dest_hash_hex="abc")
+        stats = adapter.sample_link_stats()
+        assert stats["mtu"] == 508
+        assert stats["mdu"] == 464
+        assert stats["expected_bps"] == 3120.0
+        assert stats["rssi"] == -72.5
+        assert stats["snr"] == 8.4
+        assert stats["q"] == 92.0
+        assert stats["no_data_for_s"] == 1.5
+        assert stats["age_s"] == 120.0
+        assert "establishment_bps" not in stats
+
+    @pytest.mark.asyncio
+    async def test_sample_link_stats_swallows_per_attr_errors(self):
+        loop = asyncio.get_running_loop()
+        link = MagicMock()
+        link.status = _mock_rns.Link.ACTIVE
+        link.get_channel = MagicMock(return_value=MagicMock())
+        link.get_mtu = MagicMock(return_value=500)
+        # A getter that raises shouldn't kill the whole sample
+        link.get_rssi = MagicMock(side_effect=RuntimeError("radio gone"))
+        adapter = RNSLinkAdapter(link, loop, dest_hash_hex="abc")
+        stats = adapter.sample_link_stats()
+        assert stats["mtu"] == 500
+        assert "rssi" not in stats
+
+    @pytest.mark.asyncio
     async def test_handler_survives_bad_app_data(self):
         loop = asyncio.get_running_loop()
         transport, daemon = self._make_transport_with_loop(loop)

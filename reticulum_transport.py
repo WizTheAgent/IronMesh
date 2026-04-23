@@ -147,6 +147,18 @@ class RNSLinkAdapter:
         self._closed = False
         self._recv_buf = b""
         self._buf_lock = threading.Lock()
+        # v0.9.1: peer node_id once the IronMesh handshake binds it,
+        # so the stats poller knows which PeerState to update.
+        self.peer_id: Optional[str] = None
+
+        # Enable physical-layer stats tracking on this link so the
+        # periodic poller can read RSSI/SNR/Q from radio interfaces.
+        # No-op on non-radio links; safe to always call.
+        if hasattr(link, "track_phy_stats"):
+            try:
+                link.track_phy_stats(True)
+            except Exception:
+                pass
 
         # Set up Channel + bidirectional Buffer.
         channel = link.get_channel()
@@ -161,6 +173,40 @@ class RNSLinkAdapter:
         )
 
         link.set_link_closed_callback(self._on_link_closed)
+
+    def sample_link_stats(self) -> Dict[str, Any]:
+        """Snapshot of the underlying RNS Link's live stats.
+
+        Called by ``ReticulumTransport``'s stats poller. All fields are
+        ``None`` if RNS doesn't expose them (older versions, mocks, or
+        non-radio interfaces). Never raises.
+        """
+        link = self._link
+        if link is None:
+            return {}
+        stats: Dict[str, Any] = {}
+        for attr, key in (
+            ("get_mtu", "mtu"),
+            ("get_mdu", "mdu"),
+            ("get_expected_rate", "expected_bps"),
+            ("get_rssi", "rssi"),
+            ("get_snr", "snr"),
+            ("get_q", "q"),
+            ("get_establishment_rate", "establishment_bps"),
+            ("get_age", "age_s"),
+            ("no_data_for", "no_data_for_s"),
+            ("inactive_for", "inactive_for_s"),
+        ):
+            getter = getattr(link, attr, None)
+            if getter is None:
+                continue
+            try:
+                value = getter()
+            except Exception:
+                continue
+            if value is not None:
+                stats[key] = value
+        return stats
 
     # -- RNS callbacks (called from RNS thread) ----------------------------
 
@@ -348,7 +394,8 @@ class ReticulumTransport:
                  configdir: Optional[str] = None, *,
                  ratchets_enabled: bool = True,
                  ratchet_interval: float = 1800.0,
-                 retained_ratchets: int = 8):
+                 retained_ratchets: int = 8,
+                 stats_poll_interval: float = 5.0):
         if not _HAS_RNS:
             raise RuntimeError("rns package is not installed — install with: pip install rns")
         self._daemon = daemon
@@ -357,6 +404,7 @@ class ReticulumTransport:
         self._ratchets_enabled = ratchets_enabled
         self._ratchet_interval = ratchet_interval
         self._retained_ratchets = retained_ratchets
+        self._stats_poll_interval = stats_poll_interval
         self._reticulum = None
         self._identity = None
         self._destination = None
@@ -366,6 +414,7 @@ class ReticulumTransport:
         # RNS thread (link callbacks) and asyncio (connect/shutdown).
         self._adapters_lock = threading.Lock()
         self._announce_task: Optional[asyncio.Task] = None
+        self._stats_task: Optional[asyncio.Task] = None
         self._shutdown = False
 
     @property
@@ -455,6 +504,11 @@ class ReticulumTransport:
 
         # Start periodic announce loop on asyncio
         self._announce_task = loop.create_task(self._announce_loop())
+        # Start periodic link-stats poller. Pushes per-Link metrics
+        # (MTU, expected rate, RSSI/SNR/Q) onto each peer's PeerState
+        # so the dashboard and any agent making routing decisions see
+        # live signal quality, not just hop count.
+        self._stats_task = loop.create_task(self._stats_loop())
 
     # -- App data construction ---------------------------------------------
 
@@ -639,6 +693,39 @@ class ReticulumTransport:
             except Exception as e:
                 logger.warning("RNS announce failed: %s", e)
 
+    async def _stats_loop(self) -> None:
+        """Sample live RNS Link stats for every active adapter, push to daemon.
+
+        Stats are best-effort — if the daemon hasn't bound a peer_id to
+        the adapter yet (handshake not complete), the sample is just
+        skipped. Fully tolerant of partial RNS API surfaces.
+        """
+        if self._stats_poll_interval <= 0:
+            return
+        push = getattr(self._daemon, "_on_rns_link_stats", None)
+        if push is None:
+            return
+        while not self._shutdown:
+            await asyncio.sleep(self._stats_poll_interval)
+            if self._shutdown:
+                break
+            with self._adapters_lock:
+                snapshot = list(self._active_adapters)
+            for adapter in snapshot:
+                peer_id = getattr(adapter, "peer_id", None)
+                if not peer_id:
+                    continue
+                try:
+                    stats = adapter.sample_link_stats()
+                except Exception:
+                    continue
+                if not stats:
+                    continue
+                try:
+                    push(peer_id, stats)
+                except Exception:
+                    logger.exception("daemon._on_rns_link_stats raised")
+
     # -- Shutdown ----------------------------------------------------------
 
     def shutdown(self) -> None:
@@ -646,6 +733,8 @@ class ReticulumTransport:
         self._shutdown = True
         if self._announce_task:
             self._announce_task.cancel()
+        if self._stats_task:
+            self._stats_task.cancel()
         if getattr(self, "_announce_handler", None) is not None:
             try:
                 RNS.Transport.deregister_announce_handler(self._announce_handler)

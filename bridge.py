@@ -2078,6 +2078,9 @@ class BridgeDaemon:
             # v0.5: track transport type for failover
             if RNSLinkAdapter is not None and isinstance(websocket, RNSLinkAdapter):
                 peer_state.transport_type = "rns"
+                # Bind peer_id onto the adapter so the RNS stats poller
+                # knows which PeerState to update for this Link.
+                websocket.peer_id = peer_id
                 rns_hash = getattr(websocket, '_dest_hash_hex', None)
                 if rns_hash and rns_hash != "unknown":
                     peer_state.rns_dest_hash = rns_hash
@@ -4075,6 +4078,32 @@ class BridgeDaemon:
         if peer_id:
             self._known_rns_hashes[peer_id] = dest_hash
         return peer_id
+
+    def _on_rns_link_stats(self, peer_id: str, stats: dict) -> None:
+        """Update PeerState with the latest RNS Link metrics.
+
+        Called from ReticulumTransport's stats poller (running on the
+        asyncio loop). Best-effort: we never raise — a missing peer or
+        stale state just means the next sample wins.
+        """
+        state = self.peers.get(peer_id)
+        if state is None:
+            return
+        if "mtu" in stats:
+            state.rns_link_mtu = stats["mtu"]
+        if "mdu" in stats:
+            state.rns_link_mdu = stats["mdu"]
+        if "expected_bps" in stats:
+            state.rns_estimated_bps = stats["expected_bps"]
+        if "rssi" in stats:
+            state.rns_rssi = stats["rssi"]
+        if "snr" in stats:
+            state.rns_snr = stats["snr"]
+        if "q" in stats:
+            state.rns_q = stats["q"]
+        # Derive an RTT estimate from age + no_data_for as a coarse fallback
+        # when RNS doesn't expose RTT directly. PacketReceipts (Phase 2)
+        # provide the authoritative value.
 
     async def _on_rns_peer_announced(self, dest_hash_hex: str,
                                      identity_hash_hex: Optional[str],
