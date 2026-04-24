@@ -43,6 +43,45 @@ Client                              Server
 - **Server proof:** `HMAC-SHA256(passphrase_utf8, reversed(nonce_bytes))`, hex-encoded. Provides mutual authentication — the client verifies the server also knows the passphrase.
 - **On failure:** Server sends `{"type":"PASSPHRASE_REJECTED"}` and closes.
 
+#### Stage 1 skip on identified RNS Links (v0.9.2+, optional)
+
+When all of the following hold, stage 1 is skipped entirely:
+
+1. The transport is an established `RNS.Link`.
+2. Both peers advertise the `hskip` feature in their RNS announces
+   (`f` field of the announce app_data).
+3. Both peers have opted in via `rns_skip_handshake = true` (CLI:
+   `--rns-skip-handshake`).
+4. The remote `RNS.Identity` has been bound to the Link (RNS provides
+   this on every Link establishment).
+
+When skipped, both sides substitute a fixed sentinel for the
+`server_nonce` in subsequent stage-2 signature canonicalization:
+
+```
+SKIP_BINDING_SENTINEL = SHA-256(b"ironmesh-handshake-skip-channel-binding-v1")
+                      = 32 bytes, deterministic
+```
+
+Both sides derive the same sentinel without exchanging anything; the
+HELLO signature is otherwise identical. Saves three round-trips on
+LoRa, where each is ~250 ms at 3.12 kbps.
+
+**Trade-off:** the IronMesh-layer channel binding no longer binds
+per-session (since the sentinel is constant). The underlying RNS
+Link provides per-session integrity via its own ephemeral key
+exchange, so the bind property is preserved at a lower layer. The
+IronMesh-layer passphrase is also unused on the skip path — Identity
+authentication via the Link replaces it. The passphrase remains the
+gate on every other transport.
+
+**Negotiation rule:** an `hskip`-aware peer MUST fall back to the
+full Stage 1 handshake when the remote's announce does not
+advertise `hskip`. The decision is taken at handshake start by
+checking the remote's last-seen announce; race conditions where
+the announce is in flight resolve by erring toward the full
+handshake.
+
 ### Stage 2: Identity Exchange (HELLO)
 
 ```
@@ -305,7 +344,39 @@ Each side compares `MAJOR.MINOR`:
 - Same MAJOR + MINOR < peer's: compatible at the lower version's feature set.
 - Different MAJOR: incompatible; disconnect.
 
-Known versions: `ironmesh/0.3`, `0.4`, `0.5`, `0.5.1`, `0.6`.
+Known versions: `ironmesh/0.3`, `0.4`, `0.5`, `0.5.1`, `0.6`, `0.7`, `0.8`.
+
+The `ironmesh/0.8` line is **wire format v5**, introduced in
+IronMesh v0.9.2. The wire format itself is unchanged from v4; v5
+captures the optional Stage 1 skip on identified RNS Links, which
+peers negotiate via the `hskip` feature flag in their RNS announces.
+A v5 peer interoperates fully with v4 peers — without the announce
+flag, the full Stage 1 handshake runs as before.
+
+### Announce app_data feature flags
+
+Peers running the Reticulum transport advertise a JSON app_data blob
+in their RNS announces. The compact key set:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `n` | string | Agent name (human-friendly) |
+| `v` | string | IronMesh version (e.g. `"0.9.2"`) |
+| `i` | string | IronMesh node_id (Ed25519 fingerprint) |
+| `c` | list | Capability strings (truncated if app_data > 256 bytes) |
+| `f` | list | Feature flags (see below) |
+
+Feature flag values currently defined:
+
+| Flag | Meaning |
+| --- | --- |
+| `mesh` | IronMesh distance-vector routing supported |
+| `resource` | Peer accepts large payloads via `RNS.Resource` (>32 KB auto-routed) |
+| `lxmf` | Peer hosts an LXMF gateway listener |
+| `hskip` | Peer agrees to skip Stage 1 handshake on identified RNS Links |
+
+Unknown flags are ignored — both sides MUST tolerate flags they
+don't recognise.
 
 ## 9. Implementing in Another Language
 
@@ -323,5 +394,32 @@ The Go reference client at `clients/go/` implements exactly this flow.
 ## 10. Test Vectors
 
 See `tests/test_conformance.py` and `tests/test_protocol.py` for
-serialization round-trip tests. A portable test-vector JSON file is
-planned for v0.9.
+serialization round-trip tests. Portable golden vectors for
+language-agnostic conformance live in `tests/conformance/` and are
+the basis of the v1.0 conformance test suite — any third-party
+implementation should pass them to claim spec compliance.
+
+## 11. Implementation Status by Version
+
+This table makes it explicit when each part of the spec became part
+of the contract. Anything labeled "v1.0+" is committed to under
+SemVer; anything labeled v0.9.x is allowed to break with a
+documented migration path until v1.0 ships.
+
+| Section | Stable since | Notes |
+| --- | --- | --- |
+| Stage 1–3 handshake | v0.3 | Wire-stable since the line started |
+| Binary frame format v4 | v0.4 | No breaking changes since |
+| HELLO Ed25519 signature | v0.5.1 | Identity binding to ephemeral keys |
+| TOFU pinning | v0.6 | Trust store with HMAC integrity |
+| Capability registry | v0.4 | Persisted with HMAC since v0.9.0 |
+| Pending-trust gate | v0.8.5 | Opt-in until v1.0 (default-deny under review) |
+| Reticulum transport | v0.5 | Auto-discovery via announce: v0.9.1 |
+| Per-packet ratchets on RNS | v0.9.1 | Forward secrecy outside Links |
+| `RNS.Resource` for >32 KB | v0.9.1 | Auto-routed when peer advertises `resource` |
+| Public RNS RPC paths | v0.9.1 | `/im/info`, `/im/cap/list`, `/im/cap/find`, `/im/admin/*` |
+| LXMF listener | v0.9.1 | Sideband / Nomadnet interop |
+| Stage 1 skip on RNS Links | v0.9.2 | Opt-in, requires both peers' `hskip` advertise |
+| Group destination broadcast | (deferred to v1.x) | Wire-protocol value not justified at current PING sizes |
+| Capability-aware routing | v0.9.2 | `Agent.send_to_capability()` |
+| External security audit | v1.0 | Audit results published with the release |
