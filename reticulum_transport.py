@@ -881,6 +881,11 @@ class ReticulumTransport:
         All response generators have the RNS-prescribed signature even
         though most arguments are unused; that signature is what RNS
         passes to a request handler.
+
+        Decodes the same announce app_data payload the daemon emits, so
+        /im/info reflects the actual advertised feature set (including
+        v0.9.2 `hskip`, optional `lxmf`, etc.) rather than a stale
+        hardcoded list. Live-test discovered v0.9.2.
         """
         try:
             daemon = self._daemon
@@ -888,13 +893,18 @@ class ReticulumTransport:
                 from . import __version__ as ironmesh_version
             except ImportError:
                 ironmesh_version = "unknown"
+            # Build the same app_data the announce emits, then decode
+            # it to extract the dynamic feature + capability lists.
+            try:
+                announce = decode_app_data(self._build_app_data()) or {}
+            except Exception:
+                announce = {}
             payload = {
                 "name": getattr(daemon, "name", "ironmesh") if daemon else "ironmesh",
                 "version": ironmesh_version,
                 "node_id": getattr(daemon, "node_id", "") if daemon else "",
-                "capabilities": list(getattr(getattr(daemon, "config", None),
-                                              "capabilities", []) or []),
-                "features": ["mesh", "resource"],
+                "capabilities": list(announce.get("c") or []),
+                "features": list(announce.get("f") or []),
             }
             return json.dumps(payload, separators=(",", ":")).encode("utf-8")
         except Exception:
