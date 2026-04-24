@@ -52,7 +52,7 @@ _rns, _lxmf = _make_mocks()
 sys.modules["RNS"] = _rns
 sys.modules["LXMF"] = _lxmf
 
-# Force reimport of the listener with our mocks in place
+# Force reimport of the listener with the mocks in place
 if "ironmesh.lxmf_listener" in sys.modules:
     del sys.modules["ironmesh.lxmf_listener"]
 
@@ -178,7 +178,7 @@ class TestLXMFListener:
     @pytest.mark.asyncio
     async def test_loop_prevention_drops_im_to_lxmf_prefix(self, tmp_path):
         # An inbound message that already carries the IM_TO_LXMF prefix
-        # is one we ourselves sent — the LXMF network is echoing it back.
+        # is one the code ourselves sent — the LXMF network is echoing it back.
         # Drop it rather than re-injecting a loop into IronMesh.
         loop = asyncio.get_running_loop()
         daemon = _make_daemon()

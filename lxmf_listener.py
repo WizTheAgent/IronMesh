@@ -126,7 +126,7 @@ class LXMFListener:
 
     @property
     def delivery_destination_hash(self) -> Optional[str]:
-        """Hex hash of our LXMF delivery identity, once started."""
+        """Hex hash of the LXMF delivery identity, once started."""
         if self._delivery_destination is None:
             return None
         return RNS.hexrep(self._delivery_destination.hash, delimit=False)
@@ -139,7 +139,7 @@ class LXMFListener:
         """Initialise RNS + LXMF, register identity, subscribe to MSG bus.
 
         Must run on the asyncio thread. Reuses an existing Reticulum
-        singleton if the IronMesh bridge already started one, so we
+        singleton if the IronMesh bridge already started one, so the listener does
         don't end up with two competing instances.
         """
         self._loop = loop
@@ -172,7 +172,7 @@ class LXMFListener:
             self.delivery_destination_hash, self._display_name,
         )
 
-        # Initial announce so other LXMF clients can see us
+        # Initial announce so other LXMF clients can see this destination
         try:
             self._delivery_destination.announce()
         except Exception as e:
@@ -388,7 +388,7 @@ class LXMFListener:
     # ------------------------------------------------------------------
 
     def _on_lxmf_message(self, message) -> None:
-        """RNS thread: an LXMessage arrived for our delivery identity."""
+        """RNS thread: an LXMessage arrived for this listener's delivery identity."""
         try:
             self.stats["lxmf_in"] += 1
             src_hash_hex = RNS.hexrep(message.source_hash, delimit=False).lower()
@@ -401,7 +401,7 @@ class LXMFListener:
             else:
                 content_str = str(content)
 
-            # Loop-prevention: ignore messages we ourselves injected.
+            # Loop-prevention: ignore messages this code injected.
             if content_str.startswith(PREFIX_IM_TO_LXMF):
                 self.stats["drops_loop"] += 1
                 return
@@ -448,7 +448,7 @@ class LXMFListener:
     # ------------------------------------------------------------------
 
     def _on_ironmesh_message(self, data) -> None:
-        """IronMesh bus: a MSG arrived from one of our peers."""
+        """IronMesh bus: a MSG arrived from one of the daemon's peers."""
         try:
             self.stats["im_in"] += 1
             peer_id = data.get("peer_id", "")
@@ -461,7 +461,7 @@ class LXMFListener:
 
             # Reverse-lookup: which LXMF destination is this IronMesh
             # peer mapped to? The map is the same one inbound_route uses,
-            # but we need it in the other direction.
+            # but the code need it in the other direction.
             lxmf_dest_hex = None
             for src_hex, im_peer in self.inbound_route.items():
                 if im_peer == peer_id:

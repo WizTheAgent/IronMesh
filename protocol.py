@@ -510,7 +510,7 @@ class Frame:
         flags = data[3]
         sequence = int.from_bytes(data[4:12], "big")
         # timestamp_ms and msg_id_hash are decoded inside encrypted payload;
-        # here we just skip those header bytes. Underscore-prefixed so ruff
+        # here the code just skip those header bytes. Underscore-prefixed so ruff
         # knows the read is intentional.
         _timestamp_ms = int.from_bytes(data[12:20], "big")
         _msg_id_hash = data[20:28]
@@ -774,7 +774,7 @@ class PeerState:
         self.bytes_received_total: int = 0   # application bytes received from peer
         # v0.7.2: peer-drop alerting
         self.offline_since: Optional[float] = None  # wall-clock when status went OFFLINE
-        self.long_drop_alerted: bool = False         # set after we emit PEER_DROPPED_LONG
+        self.long_drop_alerted: bool = False         # set after the code emit PEER_DROPPED_LONG
 
     def record_retry(self, reason: str = "unknown") -> None:
         """v0.7.2: increment retry counters for observability."""

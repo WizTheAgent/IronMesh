@@ -457,7 +457,7 @@ agent = Agent("alice", passphrase="...", reticulum=True, lxmf=True)
 agent.run(foreground=False)
 
 # Send to Bob — doesn't matter whether Bob is on the LAN, on the
-# LoRa segment, or an LXMF destination we've never connected to.
+# LoRa segment, or an LXMF destination the node has never connected to.
 result = await agent.send_to("bob", "hello")
 print(result)  # {"transport": "rns", "target": "node-bob", "tier": 2, ...}
 ```

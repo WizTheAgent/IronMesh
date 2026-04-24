@@ -70,7 +70,7 @@ def _make_mock_rns():
 _mock_rns = _make_mock_rns()
 sys.modules["RNS"] = _mock_rns
 
-# Force reimport to pick up our mock (handles case where module was
+# Force reimport to pick up the mock (handles case where module was
 # previously imported without RNS)
 if "ironmesh.reticulum_transport" in sys.modules:
     del sys.modules["ironmesh.reticulum_transport"]
@@ -78,7 +78,7 @@ if "ironmesh.reticulum_transport" in sys.modules:
 import ironmesh.reticulum_transport as rt_mod
 from ironmesh.reticulum_transport import RNSLinkAdapter, ReticulumTransport, _APP_NAME
 
-# Ensure the module sees our mock
+# Ensure the module sees the mock
 rt_mod.RNS = _mock_rns
 rt_mod._HAS_RNS = True
 
@@ -193,7 +193,7 @@ class TestRNSLinkAdapter:
     async def test_on_packet_enqueues(self, adapter):
         """_on_packet bridges from RNS thread to asyncio queue."""
         # Simulate what call_soon_threadsafe does — call put_nowait directly
-        # (in tests we're on the same thread)
+        # (in tests this is on the same thread)
         adapter._queue.put_nowait(b"rns-data")
         result = await adapter.recv()
         assert result == b"rns-data"
@@ -249,7 +249,7 @@ class TestReticulumTransport:
         transport = ReticulumTransport(daemon, announce_interval=60.0)
         loop = asyncio.new_event_loop()
         try:
-            # Reset singleton + mock so we exercise the fresh-init path
+            # Reset singleton + mock so the code exercise the fresh-init path
             # rather than the singleton-reuse branch added in audit fix #6.
             _mock_rns.Reticulum._Reticulum__instance = None
             _mock_rns.Reticulum.reset_mock()
@@ -477,7 +477,7 @@ class TestIronMeshAnnounceHandler:
 
     @pytest.mark.asyncio
     async def test_remote_identity_captured_on_construction(self):
-        # If the remote already identified before our callback was wired,
+        # If the remote already identified before the callback was wired,
         # the adapter pulls the identity hash off the link directly.
         loop = asyncio.get_running_loop()
         link = MagicMock()
@@ -752,7 +752,7 @@ class TestIronMeshAnnounceHandler:
     def test_admin_audit_caps_n_to_1000(self):
         daemon = MagicMock()
         audit = MagicMock()
-        # tail() returns whatever n is asked for; we record the call
+        # tail() returns whatever n is asked for; the code record the call
         audit.tail = MagicMock(return_value=[])
         daemon._audit = audit
         admin_hash_bytes = b"\xee" * 16

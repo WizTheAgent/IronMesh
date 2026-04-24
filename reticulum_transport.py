@@ -114,7 +114,7 @@ def decode_app_data(raw: bytes) -> Optional[Dict[str, Any]]:
     """Decode IronMesh announce app_data. Returns None on garbage.
 
     Old IronMesh nodes (pre-v0.9.1) emit raw agent name bytes — not JSON.
-    We treat any non-JSON payload as the legacy {n: <bytes>} form so
+    The code treat any non-JSON payload as the legacy {n: <bytes>} form so
     discovery still works during the version-skew window.
     """
     if not raw:
@@ -177,7 +177,7 @@ class RNSLinkAdapter:
         self.peer_id: Optional[str] = None
         # v0.9.1: per-peer feature awareness for transport selection.
         # Set by the daemon when it learns the peer's announce feature
-        # set (`resource`, `lxmf`, etc.). Defaults to False so we never
+        # set (`resource`, `lxmf`, etc.). Defaults to False so the code never
         # surprise an unknown peer with a Resource it can't accept.
         self.peer_supports_resource: bool = False
         self.resources_sent: int = 0
@@ -207,7 +207,7 @@ class RNSLinkAdapter:
 
         # Accept incoming RNS Resources for large-payload transfer.
         # ACCEPT_ALL is set in ReticulumTransport._on_incoming_link for
-        # server-side links; for client-side links we set it here too,
+        # server-side links; for client-side links the code sets it here too,
         # paired with a callback that pushes the completed Resource's
         # bytes onto the same _queue the Buffer path feeds. Receivers
         # pre-Phase-3 just won't have this callback installed and will
@@ -227,14 +227,14 @@ class RNSLinkAdapter:
         # Capture the remote's RNS Identity hash as soon as RNS confirms
         # it. Stored separately from any IronMesh-layer identity so
         # consumers can decide their own trust policy. The callback fires
-        # on the RNS thread so we just stash the hash — no async work.
+        # on the RNS thread so the callback just stashes the hash — no async work.
         self.remote_identity_hash: Optional[str] = None
         if hasattr(link, "set_remote_identified_callback"):
             try:
                 link.set_remote_identified_callback(self._on_remote_identified)
             except Exception:
                 pass
-        # If the remote already identified before we attached the callback
+        # If the remote already identified before the callback was attached the callback
         # (possible on a fast LAN handshake), populate from the link state.
         try:
             ri = link.get_remote_identity() if hasattr(link, "get_remote_identity") else None
@@ -249,7 +249,7 @@ class RNSLinkAdapter:
     def _on_remote_identified(self, link, identity) -> None:
         """RNS callback when the remote side calls ``link.identify()``.
 
-        Runs on the RNS transport thread. We just stash the identity
+        Runs on the RNS transport thread. The callback just stashes the identity
         hash — any IronMesh-side trust decisions happen later, on the
         asyncio loop, when the daemon's handshake code reads it.
         """
@@ -407,7 +407,7 @@ class RNSLinkAdapter:
         than reassembling chunks itself.
 
         Resource is only used when the peer advertised the `resource`
-        feature in its announce. Without that signal we fall back to
+        feature in its announce. Without that signal the code fall back to
         the Buffer path, which will reject anything over MAX_RNS_MSG.
         """
         if self._closed or self._link is None:
@@ -434,7 +434,7 @@ class RNSLinkAdapter:
     async def _send_via_resource(self, data: bytes) -> None:
         """Hand off a large payload to RNS Resource for transfer.
 
-        RNS handles chunking/compression/integrity; we just await the
+        RNS handles chunking/compression/integrity; the code just await the
         advertise call (synchronous in RNS) on the executor so the
         asyncio loop stays responsive. The receiver picks up the
         completed bytes via ``_on_resource_concluded``.
@@ -550,7 +550,7 @@ class _IronMeshAnnounceHandler:
     """RNS announce handler for the ironmesh/bridge aspect.
 
     RNS calls ``received_announce`` on its transport thread whenever an
-    announce matching ``aspect_filter`` is heard. We decode the IronMesh
+    announce matching ``aspect_filter`` is heard. The code decode the IronMesh
     app_data and forward it to the daemon on the asyncio loop.
     """
 
@@ -565,7 +565,7 @@ class _IronMeshAnnounceHandler:
         """Called by RNS when an ironmesh/bridge announce arrives.
 
         Signature accepts *args/**kwargs because newer RNS versions added
-        positional path-response arguments and we want to stay forward-
+        positional path-response arguments and the code want to stay forward-
         compatible without pinning to a single RNS minor version.
         """
         try:
@@ -653,13 +653,13 @@ class ReticulumTransport:
         Note: ``RNS.Reticulum()`` is a blocking constructor (connects to
         rnsd or starts a shared instance).  Ideally it would run in an
         executor, but RNS sets up threads internally that expect to exist
-        before Destinations are created, so we tolerate the brief block.
+        before Destinations are created, so the code tolerate the brief block.
         """
         self._loop = loop
         # RNS enforces a one-Reticulum-per-process singleton. If another
         # IronMesh daemon (or anything else) in this process already
         # initialised it, reuse the existing instance instead of trying
-        # to start a second one (which raises). Live-test discovered when
+        # to start a second one (which raises). Discovered during testing — when
         # multiple Agent SDK instances ran in the same Python process.
         existing = getattr(RNS.Reticulum, "_Reticulum__instance", None)
         if existing is not None:
@@ -731,7 +731,7 @@ class ReticulumTransport:
         if self._ratchets_enabled:
             # Use the per-daemon ratchets path resolved during identity
             # setup so two daemons sharing a configdir don't race on
-            # the same ratchet file. If we somehow reached here without
+            # the same ratchet file. If the code somehow reached here without
             # a resolved path (no configdir AND identity-setup failed
             # to derive a tag), fall back to a temp path that still
             # includes the daemon node_id — sharing a single
@@ -775,8 +775,8 @@ class ReticulumTransport:
         # dispatch incoming links to the callback.
         self._destination_ref = self._destination
 
-        # Register the announce handler so we auto-discover other IronMesh
-        # nodes on the RNS mesh — including ones we have no LAN connectivity
+        # Register the announce handler so the code auto-discover other IronMesh
+        # nodes on the RNS mesh — including ones the code have no LAN connectivity
         # to. Without this, IronMesh-over-RNS only finds peers the operator
         # types in by hex hash, which defeats the point of being on a mesh.
         try:
@@ -792,7 +792,7 @@ class ReticulumTransport:
         # node's identity, capability registry, and capability search
         # without speaking the IronMesh wire protocol. Reticulum's
         # request_handler API does the encryption + identity gating;
-        # we just provide the response generators.
+        # the code just provide the response generators.
         self._register_public_request_handlers()
 
         # Initial announce
@@ -817,7 +817,7 @@ class ReticulumTransport:
         """Register the open RPC paths on this node's destination.
 
         Best-effort: if RNS is too old to expose register_request_handler
-        in the form we expect, we log and move on rather than failing
+        in the form the code expects, the code log and move on rather than failing
         startup. Without these handlers, third-party RNS clients can
         still discover IronMesh nodes via announce; they just can't
         query the capability registry over RNS.
@@ -851,7 +851,7 @@ class ReticulumTransport:
             )
             # Admin paths are registered with ALLOW_ALL so RNS dispatches
             # the call; the handler then enforces the per-identity check.
-            # This lets us swap the allow-list at runtime without
+            # This allows the allow-list to swap at runtime without
             # re-registering — useful when promoting/demoting admins.
             self._destination.register_request_handler(
                 RPC_PATH_ADMIN_STATUS,
@@ -1066,7 +1066,7 @@ class ReticulumTransport:
         """Build the announce app_data payload from current daemon state.
 
         Defensive against partially-initialised or mock daemons: any
-        non-string field falls back to a sane default so we never feed
+        non-string field falls back to a sane default so the code never feed
         json.dumps an unserialisable object during startup.
         """
         daemon = self._daemon
@@ -1132,20 +1132,20 @@ class ReticulumTransport:
 
         This callback fires from the RNS transport thread, so all asyncio
         work must be bridged via ``call_soon_threadsafe``.  Any unhandled
-        exception here would be silently swallowed by RNS, so we wrap the
+        exception here would be silently swallowed by RNS, so the code wrap the
         entire body in try/except.
 
         About the 500 ms sleep: the inbound-handshake race below is real.
-        On the server side, RNS fires this callback the instant our Link
+        On the server side, RNS fires this callback the instant the Link
         becomes ACTIVE — but on the client side, the symmetric ACTIVE
         notification fires concurrently, and the client still has to
         construct its own RNSLinkAdapter (which wires up its Buffer
-        receive callback) before it can read anything we send. If we
-        immediately schedule `_handle_connection` and it starts writing
-        PASSPHRASE_CHALLENGE, that data lands on the client's Channel
+        receive callback) before it can read anything the daemon sends.
+        If `_handle_connection` is scheduled immediately and starts
+        writing PASSPHRASE_CHALLENGE, that data lands on the client's Channel
         before the client's Buffer reader is attached, and the
         handshake hangs waiting for a response that's permanently lost.
-        Live-test-discovered: dropping this sleep (a previous "audit
+        Discovered during live testing: dropping this sleep (a previous "audit
         fix") broke every inbound handshake on the RNS path. The right
         long-term fix is a Channel-level synchronisation primitive
         (handshake on Channel.is_ready_to_send) — until then, this
@@ -1168,7 +1168,7 @@ class ReticulumTransport:
                 self._active_adapters.append(adapter)
             # Brief pause to let the client side finish constructing
             # its RNSLinkAdapter (and thereby register the Buffer
-            # receive callback) before we start writing handshake bytes.
+            # receive callback) before the server starts writing handshake bytes.
             # See the docstring above for the full rationale.
             time.sleep(0.5)
             self._loop.call_soon_threadsafe(
@@ -1197,7 +1197,7 @@ class ReticulumTransport:
         # Resolve path. Prefer RNS's native await_path when present
         # (added in 1.1.x) so the loop blocks on the actual path-response
         # signal rather than busy-polling has_path() on a backoff timer.
-        # We still fall back to the polling path for older RNS — the
+        # The code still fall back to the polling path for older RNS — the
         # behaviour is otherwise identical, just chattier on slow links.
         if not RNS.Transport.has_path(dest_hash):
             RNS.Transport.request_path(dest_hash)
@@ -1219,7 +1219,7 @@ class ReticulumTransport:
                     pass
             if not RNS.Transport.has_path(dest_hash):
                 # Polling fallback for older RNS. Exponential backoff
-                # keeps us from hammering the network on long LoRa
+                # avoids hammering the network on long LoRa
                 # path resolutions.
                 start = time.monotonic()
                 attempt = 0

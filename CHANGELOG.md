@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and emit "loop closed" tracebacks during teardown. Daemon shutdown
   now stops the LXMF listener BEFORE the Reticulum transport.
 
-### Fixed (live-test discoveries)
+### Fixed (discoveries during testing)
 
 - **Per-packet ratchets were silently disabled.** `enable_ratchets()`
   expects a file path, not a boolean — the original `enable_ratchets(True)`
@@ -2038,7 +2038,7 @@ Per open-source-first guidance:
   - Subscribes to `MSG` on the bus.
   - For each prompt, calls the Ollama HTTP API (`/api/generate`).
   - Sends the response back to the original sender, prefixed with
-    `[LLM] ` so we don't loop on our own replies.
+    `[LLM] ` so this code does not loop on the local replies.
   - Configurable model, system prompt, timeout, max prompt size.
   - Error responses are prefixed with `[LLM-ERR] `.
   - Uses only stdlib `urllib.request` (no extra deps) + `asyncio.to_thread`.

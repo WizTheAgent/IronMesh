@@ -41,8 +41,9 @@ class FakePeerState:
 def _make_daemon():
     """Build a daemon stub with just the v0.9.1 unified-transport bits.
 
-    We bind the real methods from BridgeDaemon onto a bare object so we
-    test the actual code, not a mock — but skip the heavy daemon init.
+    Binds the real methods from BridgeDaemon onto a bare object to
+    exercise the actual code, not a mock — while skipping the heavy
+    daemon init.
     """
     from ironmesh.bridge import BridgeDaemon
     daemon = MagicMock()
@@ -226,7 +227,7 @@ class TestSendToNameTierChain:
     async def test_tier2_timeout_when_handshake_never_completes(self, monkeypatch):
         # If the auto-Link task never produces an online peer within
         # the poll deadline, send_to_name raises ValueError rather
-        # than hanging indefinitely. We shorten the deadline by
+        # than hanging indefinitely. The code shorten the deadline by
         # patching time.monotonic so the test stays fast.
         daemon = _make_daemon()
         daemon._rns_discovered = {

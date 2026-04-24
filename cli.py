@@ -1848,7 +1848,7 @@ def cmd_doctor(args):
         print(f"      INFO — bind failed ({e}); a daemon may already be running here")
 
     # 7. Audit log presence + chain integrity (light check).
-    # Derive the audit log path from --db-path so we look at the file
+    # Derive the audit log path from --db-path so the code look at the file
     # the target daemon actually writes to. Without this derivation,
     # doctor on a custom-db-path daemon would inspect ~/.ironmesh/audit.log
     # while the daemon writes to <db-dir>/audit.log — and report on a
@@ -2430,7 +2430,7 @@ def cmd_setup(args):
 
 def _ensure_utf8_stdio() -> None:
     """Reconfigure stdout/stderr to UTF-8 if the inherited locale would
-    otherwise crash on the unicode characters in our help/log strings.
+    otherwise crash on the unicode characters in the help/log strings.
 
     On Linux hosts where ``LANG=en_US`` (no encoding suffix) is set,
     Python 3 defaults stdout to latin-1; an em-dash in argparse help

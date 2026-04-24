@@ -183,7 +183,7 @@ async def ensure_agent_keys(keys_path: str, passphrase: Optional[str] = None) ->
             keys = ew_keys.load_keys(str(path), passphrase=passphrase)
             logger.info("Keys loaded from %s (fingerprint: %s)", path, keys.get_fingerprint())
 
-            # Auto-migrate: if key file is plaintext and we have a passphrase, re-encrypt
+            # Auto-migrate: if key file is plaintext and the code have a passphrase, re-encrypt
             if passphrase:
                 import json as _json
                 with open(str(path)) as _f:
@@ -1431,14 +1431,14 @@ class BridgeDaemon:
         # v0.8.5.7: audit-log counter sync state.
         # _audit_counter_offset — where the next scan picks up.
         # _audit_counter_inode — tracks file identity. If the live
-        #   audit log has a different inode than we last saw, rotation
+        #   audit log has a different inode than the code last saw, rotation
         #   happened (even if the live file is now LARGER than the
-        #   offset we stored from the old file). The
+        #   offset the code stored from the old file). The
         #   `current_size < offset` heuristic missed the case where
         #   post-rotation writes re-grew the live file past the
         #   pre-rotation offset before the next scan.
         # _in_proc_counter_bumps — events this daemon already bumped
-        #   in-process; decremented by the scanner so we don't
+        #   in-process; decremented by the scanner so this code does not
         #   double-count.
         # _counter_lock — protects both fields. The bump path can be
         #   called from mesh.py's worker thread (cross-transport replay
@@ -1533,7 +1533,7 @@ class BridgeDaemon:
         # dest_hash_hex -> {name, version, node_id, capabilities, features,
         #                   identity_hash, hops, first_seen, last_seen}
         # Auto-Link to these peers is a Phase 2/11 concern; Phase 1 just
-        # records what we hear so the dashboard and capability registry
+        # records what is heard so the dashboard and capability registry
         # see the same view as the WebSocket peers.
         self._rns_discovered: dict = {}
         self._pending_pings: dict = {}  # peer_id -> monotonic send time (for RTT)
@@ -1578,12 +1578,12 @@ class BridgeDaemon:
 
         # v0.8.5.6: silence the websockets-server "did not receive a valid
         # HTTP request" ERROR that fires every time a peer dials wss://
-        # against our plaintext-ws server (TLS-first fallback). The
+        # against the plaintext-ws server (TLS-first fallback). The
         # peer's second connection succeeds with ws:// and the IronMesh
         # handshake completes — these errors are cosmetic noise, paired
         # 1:1 with successful HELLOs in the log. Real WS handshake
         # failures still reach DEBUG and any unexpected error type still
-        # reaches ERROR, so we don't lose actionable signal.
+        # reaches ERROR, so this code does not lose actionable signal.
         class _SuppressTLSFallbackNoise(logging.Filter):
             def filter(self, record):
                 if record.levelno != logging.ERROR:
@@ -1958,7 +1958,7 @@ class BridgeDaemon:
             }))
 
             # --- STAGE 2: Ephemeral ECDH Key Exchange ---
-            # Generate our ephemeral X25519 keypair for this session
+            # Generate the ephemeral X25519 keypair for this session
             my_ephemeral_private, my_ephemeral_public = ew_keys.generate_ephemeral()
 
             raw = await asyncio.wait_for(websocket.recv(), timeout=30)
@@ -2036,11 +2036,11 @@ class BridgeDaemon:
             # Derive shared secret via ECDH
             session_key = ew_crypto.ecdh_exchange(my_ephemeral_private, peer_ephemeral_public)
 
-            # Destroy our ephemeral private key (forward secrecy)
+            # Destroy the ephemeral private key (forward secrecy)
             ew_crypto.secure_wipe(my_ephemeral_private)
             del my_ephemeral_private
 
-            # Send our HELLO, signed with Ed25519 + channel binding via server_nonce
+            # Send the HELLO, signed with Ed25519 + channel binding via server_nonce
             hello_payload = json.dumps({
                 "channel_binding": server_nonce.hex(),
                 "ephemeral_public": base64.b64encode(bytes(my_ephemeral_public)).decode(),
@@ -2217,7 +2217,7 @@ class BridgeDaemon:
                 except (json.JSONDecodeError, ValueError) as e:
                     # Audit M-13: expected parse/validation errors get a
                     # narrow warning. Unexpected exceptions fall through
-                    # to the broader handler below so we see tracebacks.
+                    # to the broader handler below so the code see tracebacks.
                     logger.warning("Malformed message from %s: %s", peer_id, e)
                 except nacl_exceptions.CryptoError as e:
                     logger.warning("Crypto error from %s: %s", peer_id, e)
@@ -2300,7 +2300,7 @@ class BridgeDaemon:
                         logger.debug("WS failover for %s failed: %s", peer_id, e)
         finally:
             # _reset_backoff clears the reconnect claim on success,
-            # but if we get here without success, clear explicitly.
+            # but if the code get here without success, clear explicitly.
             state_now = self.peers.get(peer_id)
             if not state_now or not state_now.is_online:
                 self._release_reconnect(peer_id)
@@ -2352,7 +2352,7 @@ class BridgeDaemon:
         logger.info("REKEY_REQUEST sent to %s (id=%s)", peer_id, rekey_id[:8])
 
     async def _handle_rekey_request(self, peer_id: str, payload, peer_state):
-        """Respond to REKEY_REQUEST: derive new session key, send our ephemeral."""
+        """Respond to REKEY_REQUEST: derive new session key, send the ephemeral."""
         try:
             data = json.loads(payload) if isinstance(payload, (bytes, str)) else {}
         except (json.JSONDecodeError, TypeError):
@@ -2823,7 +2823,7 @@ class BridgeDaemon:
         if status == "reverted":
             # Peer reverted to the accepted baseline while in
             # pending-cap-change. Trust store has already cleared the
-            # pending stash. We don't auto-promote (that's an operator
+            # pending stash. The code don't auto-promote (that's an operator
             # decision — they may want to investigate the flap) but we
             # DO surface the revert in the audit log.
             if self._audit:
@@ -2850,13 +2850,13 @@ class BridgeDaemon:
             return
         if status == "changed":
             # v0.8.5.6: both the stash and the demote must
-            # succeed before we fire PEER_CAP_SET_CHANGED. Pre-fix,
+            # succeed before the code fire PEER_CAP_SET_CHANGED. Pre-fix,
             # stash/demote failures were silently downgraded to
             # debug logs while the audit event still fired claiming
             # "trust_state_effective: pending-cap-change" — leaving
             # an operator following the audit trail to later find
             # that cap-promote returns "no pending capability change"
-            # because the stash never reached disk. Now we propagate
+            # because the stash never reached disk. Now the code propagate
             # failures and fire a distinct PEER_CAP_BINDING_PARTIAL
             # event so the audit trail stays truthful.
             ts = trust_store if trust_store is not None else self._open_trust_store()
@@ -2996,7 +2996,7 @@ class BridgeDaemon:
         """Check TOFU key pinning for a peer. Raises on mismatch (possible MITM).
 
         #12: This is called BEFORE the peer is added to self.peers/self.ws_clients,
-        so on mismatch we just raise — the caller never populates the dicts.
+        so on mismatch the code just raise — the caller never populates the dicts.
         """
         if not identity_public_b64:
             return
@@ -3303,7 +3303,7 @@ class BridgeDaemon:
                         # from the last-accepted baseline, demote the peer
                         # to pending-cap-change and emit an audit event.
                         # Only do this for peers that are already pinned
-                        # (i.e. we've completed TOFU with them) — otherwise
+                        # (i.e. this code has completed TOFU with them) — otherwise
                         # there's no trust record to bind against.
                         if isinstance(caps, list):
                             try:
@@ -3339,7 +3339,7 @@ class BridgeDaemon:
             return
 
         # v0.4: E2E unseal — if the destination is us and the frame carries
-        # an e2e_payload, decrypt it with our identity key. Replace
+        # an e2e_payload, decrypt it with this listener's identity key. Replace
         # frame.payload (and the local payload variable) with the plaintext
         # so subsequent handlers see the original message body.
         if frame.e2e_payload is not None and self._keypair is not None:
@@ -3365,7 +3365,7 @@ class BridgeDaemon:
 
         # v0.8.5: pending-trust message gate. Only user-payload frames are
         # gated — control frames (REKEY/HEARTBEAT/etc.) short-circuit
-        # earlier in this function. The originator we judge against is the
+        # earlier in this function. The originator the code judge against is the
         # frame source if present (so relayed messages from a pending peer
         # still get gated), otherwise the immediate peer.
         gate_action = await self._gate_inbound_msg(peer_id, frame)
@@ -3528,7 +3528,7 @@ class BridgeDaemon:
             except Exception:
                 pass
 
-        # v0.4: Build a routing-aware Frame. If we can look up the
+        # v0.4: Build a routing-aware Frame. If the code can look up the
         # destination's identity public key, e2e-seal the payload so relays
         # cannot read it.
         e2e_payload = None
@@ -3640,7 +3640,7 @@ class BridgeDaemon:
     def _lookup_dest_identity(self, node_id: str) -> Optional[bytes]:
         """Return the destination's Ed25519 identity public key, or None.
 
-        Checks the live peer registry first (for direct peers we've handshook
+        Checks the live peer registry first (for direct peers this code has handshook
         with), then falls back to the TOFU pinned peer table. Returns None for
         unknown destinations — caller must then fall back to per-hop crypto only.
         """
@@ -3648,7 +3648,7 @@ class BridgeDaemon:
         if peer is not None and getattr(peer, "identity_public", None):
             return peer.identity_public
         # TOFU pinned peers — keyed by agent name, value carries fingerprint
-        # which is the same identifier as node_id when we look up by name.
+        # which is the same identifier as node_id when the code look up by name.
         for name, info in self._pinned_peers.items():
             if info.get("fingerprint") == node_id:
                 pub = info.get("identity_public")
@@ -3710,10 +3710,10 @@ class BridgeDaemon:
 
         frame.sequence = peer_state.next_sequence()
 
-        # v0.4: Only attach an inner source signature when we are the original
+        # v0.4: Only attach an inner source signature when the code are the original
         # source. Relays must not re-sign — they preserve the source signature
         # set by the originator. encrypt_and_serialize is also a no-op when
-        # frame.source_signature is already set, but we make the intent
+        # frame.source_signature is already set, but the code make the intent
         # explicit here.
         source_signing_key = None
         if frame.source == self.node_id and frame.source_signature is None:
@@ -3735,7 +3735,7 @@ class BridgeDaemon:
                 peer_state.record_retry("bandwidth_throttled")
                 return
             # v0.6.1: 5-second send timeout prevents blocked sockets from
-            # hanging the heartbeat loop. On timeout we treat the peer as
+            # hanging the heartbeat loop. On timeout the code treat the peer as
             # disconnected and trigger cleanup.
             try:
                 await asyncio.wait_for(ws.send(raw), timeout=5.0)
@@ -3852,7 +3852,7 @@ class BridgeDaemon:
         # Stage 2: Ephemeral ECDH
         my_ephemeral_private, my_ephemeral_public = ew_keys.generate_ephemeral()
 
-        # Sign our HELLO with Ed25519 + channel binding via server_nonce
+        # Sign the HELLO with Ed25519 + channel binding via server_nonce
         my_ephemeral_b64 = base64.b64encode(bytes(my_ephemeral_public)).decode()
         my_identity_b64 = self._keypair.get_public_key_base64()
         hello_payload = json.dumps({
@@ -4295,14 +4295,14 @@ class BridgeDaemon:
         # Subtle correctness point: ``_connect_and_track_rns`` calls
         # ``_do_client_handshake`` which runs an indefinite message
         # loop AFTER the handshake — it only returns when the
-        # connection closes. We therefore can't await it directly
-        # here (live-test-discovered bug — `send_to_name` would never
+        # connection closes. The resolver therefore cannot await it directly
+        # here (discovered during testing bug — `send_to_name` would never
         # complete until the auto-Link tore down at idle timeout).
         #
         # Instead: kick the connect off as a background task, then
         # poll self.peers for the expected node_id to appear. When it
-        # does, the regular `send_message` path takes over and we
-        # return. The background task continues to own the message
+        # does, the regular `send_message` path takes over and the
+        # call returns. The background task continues to own the message
         # loop for inbound traffic, exactly like a normal connection.
         rns_entry = self._find_rns_discovered_by_name(name)
         if rns_entry and self._reticulum is not None:
@@ -4353,7 +4353,7 @@ class BridgeDaemon:
         """Update PeerState with the latest RNS Link metrics.
 
         Called from ReticulumTransport's stats poller (running on the
-        asyncio loop). Best-effort: we never raise — a missing peer or
+        asyncio loop). Best-effort: this code never raises — a missing peer or
         stale state just means the next sample wins.
         """
         state = self.peers.get(peer_id)
@@ -4445,7 +4445,7 @@ class BridgeDaemon:
         # callback that fires immediately on disconnect. Sending a full
         # IronMesh PING/PONG every heartbeat_interval over LoRa wastes
         # scarce bandwidth and provides no information the Link itself
-        # doesn't already give us. For RNS peers we use a longer cadence
+        # doesn't already expose. For RNS peers the code uses a longer cadence
         # (5x default) and short-circuit on no_data_for() exceeding the
         # silence threshold so dead Links surface in seconds, not minutes.
         rns_interval_multiplier = 5
@@ -4697,7 +4697,7 @@ class BridgeDaemon:
         if self._audit is None:
             return
         log_path = self._audit._path  # noqa: SLF001
-        # Start from current EOF — we count events emitted from this
+        # Start from current EOF — the code count events emitted from this
         # daemon-run forward. Historical events (pre-restart) show up
         # in the audit log but the counter starts at 0 on each restart,
         # matching every other counter in the Metrics dataclass.
@@ -4728,8 +4728,8 @@ class BridgeDaemon:
         Rotation detection is via inode comparison: when `audit.log` is
         renamed to `.1` during rotation, the new live file has a
         different st_ino. This catches the case where post-rotation
-        writes re-grow the live file past our stored offset before we
-        next scan (the naive size<offset check misses this — B24).
+        writes re-grow the live file past the stored offset before
+        the next scan (the naive size<offset check misses this).
         """
         try:
             st = os.stat(log_path)
@@ -4815,7 +4815,7 @@ class BridgeDaemon:
     async def _long_drop_watchdog(self):
         """v0.7.2: alert on peers offline beyond the configured threshold.
 
-        Emits EVENT_PEER_DROPPED_LONG exactly once per drop (we clear the
+        Emits EVENT_PEER_DROPPED_LONG exactly once per drop (the code clear the
         ``long_drop_alerted`` flag when the peer comes back online). Useful
         for ops dashboards / pagers — a peer silently dropping for hours is
         the most common mesh-reliability signal to escalate on.
@@ -4877,7 +4877,7 @@ class BridgeDaemon:
             logger.info("mDNS: blocking auto-connect to %s (default-deny, use --allowed-peers or --open-discovery)", agent_name)
             return
         addr = f"{info['ip']}:{info['port']}"
-        # If we've seen this peer before, log address changes.
+        # If this code has seen this peer before, log address changes.
         # Identity is verified via Ed25519 key pinning in _check_tofu()
         # during the handshake — mDNS address changes are safe to accept.
         pinned = self._pinned_peers.get(agent_name)
@@ -4901,7 +4901,7 @@ class BridgeDaemon:
         # Simultaneous-dial tie-breaker: prevents the online->offline flap
         # that occurs when both ends dial each other at the same tick.
         #
-        # v0.7.2: we use a SINGLE stable criterion (agent_name) — not a mix
+        # v0.7.2: the code uses a SINGLE stable criterion (agent_name) — not a mix
         # of name-before-handshake and node_id-after — because flipping
         # criteria mid-session caused the winner to swap once the peer_id
         # became known, reintroducing the flap. Names are symmetric (both
@@ -4983,7 +4983,7 @@ class BridgeDaemon:
                     continue
 
                 # v0.7.2: tie-breaker — if this peer has a smaller name
-                # than us, we wait for them to dial instead. Mirrors the
+                # than the local node, the call waits for them to dial instead. Mirrors the
                 # mDNS + discover loop rule so reconnects don't create
                 # simultaneous-dial races.
                 peer_name = getattr(state, "agent_name", None)
@@ -5061,9 +5061,9 @@ class BridgeDaemon:
 
         Each iteration sends one CAPABILITY_ANNOUNCE per known origin node:
         the local node's own capabilities, plus a re-broadcast of every
-        remote node we have learned about. Re-broadcast preserves the
+        remote node the code have learned about. Re-broadcast preserves the
         original ``origin`` field so receivers attribute capabilities to
-        the correct node, and we never send a node's announcement back to
+        the correct node, and the code never send a node's announcement back to
         itself. This is a simple gossip flood that converges within a few
         iterations on a multi-hop topology.
         """
@@ -5289,7 +5289,7 @@ class BridgeDaemon:
             ("capabilities_known", "ironmesh_capabilities_known", "gauge",
              "Total local + remote capabilities tracked"),
             ("capability_remote_nodes", "ironmesh_capability_remote_nodes",
-             "gauge", "Number of remote nodes whose capabilities we have learned"),
+             "gauge", "Number of remote nodes whose capabilities the code have learned"),
             # v0.5.2: delivery, RTT, QoS, rekey
             ("messages_delivered", "ironmesh_messages_delivered_total", "counter",
              "Messages delivered in real-time (direct or routed)"),
@@ -5942,7 +5942,7 @@ class BridgeDaemon:
         """Run a bounded AI-to-AI dialogue between two mesh peers.
 
         Sends the seed to peer_a as turn 0 via a CONV frame, then
-        shuttles each response to the other peer until we see an end
+        shuttles each response to the other peer until the code see an end
         frame, hit the turn cap, or time out.
         """
         import uuid as _uuid
@@ -6206,7 +6206,7 @@ class BridgeDaemon:
         # so its announce + telemetry loops cancel cleanly before the
         # underlying RNS instance disappears. Without this the loops
         # raise on the next iteration with confusing "loop closed"
-        # tracebacks during shutdown (live-test discovery).
+        # tracebacks during shutdown (discovery during testing).
         if self._lxmf:
             try:
                 self._lxmf.shutdown()
