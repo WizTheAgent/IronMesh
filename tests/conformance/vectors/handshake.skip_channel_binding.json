@@ -1,0 +1,8 @@
+{
+  "name": "handshake.skip_channel_binding",
+  "description": "The deterministic 32-byte sentinel used in lieu of a random server_nonce when both peers agree to skip Stage 1 on an identified RNS Link. Both implementations MUST derive the same value without exchanging it.",
+  "spec_section": "PROTOCOL_SPEC.md §2 Stage 1 skip on identified RNS Links",
+  "version": "ironmesh/0.8",
+  "input": "SHA-256(b\"ironmesh-handshake-skip-channel-binding-v1\")",
+  "expected_bytes_hex": "d56294e40f47c8c7a524ec8c0fd83711968de30b951414088b82014b131d79ef"
+}

@@ -1,0 +1,21 @@
+{
+  "name": "announce.app_data.with_features",
+  "description": "RNS announce app_data with features + capabilities populated.",
+  "spec_section": "PROTOCOL_SPEC.md §8 announce app_data",
+  "version": "ironmesh/0.8",
+  "input": {
+    "name": "alice",
+    "version": "0.9.2",
+    "node_id": "abc123",
+    "capabilities": ["llm:chat", "tool:echo"],
+    "features": ["mesh", "resource", "lxmf", "hskip"]
+  },
+  "expected_decoded": {
+    "n": "alice",
+    "v": "0.9.2",
+    "i": "abc123",
+    "c": ["llm:chat", "tool:echo"],
+    "f": ["mesh", "resource", "lxmf", "hskip"]
+  },
+  "round_trip_only": true
+}

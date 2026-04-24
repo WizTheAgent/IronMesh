@@ -1,0 +1,10 @@
+{
+  "name": "announce.app_data.legacy_plain_name",
+  "description": "Pre-v0.9.1 nodes emit raw bytes (the agent name) as app_data — not JSON. The decoder MUST treat this as the legacy {n: <name>} form rather than rejecting.",
+  "spec_section": "PROTOCOL_SPEC.md §8 announce app_data — backwards compatibility",
+  "version": "ironmesh/0.8",
+  "input_bytes_hex": "6f6c642d6e6f6465",
+  "expected_decoded": {
+    "n": "old-node"
+  }
+}
