@@ -1089,13 +1089,20 @@ class ReticulumTransport:
                     capabilities = [c for c in cfg_caps if isinstance(c, str)]
             except Exception:
                 pass
-        # Static feature set for v0.9.1; later phases extend this list.
-        # `mesh` = IronMesh distance-vector routing.
+        # Feature set advertised in the announce. Peers use this to gate
+        # which optional protocol paths to enable for each other.
+        # `mesh`     = IronMesh distance-vector routing.
         # `resource` = peer accepts large payloads via RNS Resource.
-        # `lxmf` = peer hosts an LXMF gateway listener.
+        # `lxmf`     = peer hosts an LXMF gateway listener.
+        # `hskip`    = peer agrees to skip the IronMesh stage-1 handshake
+        #              (passphrase challenge / verify) on identified RNS
+        #              Links. Both sides must advertise this before any
+        #              skip happens; the handshake is otherwise unchanged.
         features = ["mesh", "resource"]
         if getattr(daemon, "_lxmf_enabled", False):
             features.append("lxmf")
+        if getattr(daemon, "_rns_skip_handshake", False):
+            features.append("hskip")
         return encode_app_data(name, ironmesh_version, node_id,
                                 capabilities, features)
 

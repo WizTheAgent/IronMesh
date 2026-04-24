@@ -119,6 +119,12 @@ def parse_args():
                            help="Comma-separated RNS identity hashes (hex) permitted "
                                 "to call /im/admin/* RPC paths. Empty = admin RPC "
                                 "disabled. Override via IRONMESH_RNS_ADMIN_IDENTITIES env var.")
+    run_parser.add_argument("--rns-skip-handshake", action="store_true",
+                           help="Skip the IronMesh stage-1 handshake (passphrase "
+                                "challenge/verify) on RNS Links where both peers "
+                                "advertise the `hskip` feature. Saves three round-"
+                                "trips on LoRa. Identity authentication is provided "
+                                "by the RNS Link itself. Default: off.")
     # v0.9.1: LXMF interop (Sideband / Nomadnet)
     run_parser.add_argument("--lxmf", action="store_true",
                            help="Enable the LXMF delivery identity listener "
@@ -847,6 +853,7 @@ def cmd_run(args):
             getattr(args, "rns_admin_identities", None)
             or os.environ.get("IRONMESH_RNS_ADMIN_IDENTITIES")
         ),
+        rns_skip_handshake=getattr(args, "rns_skip_handshake", False),
         # v0.9.1: LXMF
         lxmf_enabled=getattr(args, "lxmf", False),
         lxmf_storage=getattr(args, "lxmf_storage", "~/.ironmesh/lxmf"),

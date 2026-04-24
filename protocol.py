@@ -910,6 +910,25 @@ class Handshake:
     def generate_server_nonce() -> bytes:
         return os.urandom(Handshake.SERVER_NONCE_LENGTH)
 
+    # v0.9.2: Fixed channel-binding sentinel used in lieu of a random
+    # server_nonce when both peers agree to skip stage 1 of the
+    # handshake on an identified RNS Link. The sentinel is signed into
+    # the HELLO the same way a real nonce would be, so signature
+    # verification logic downstream remains unchanged. The trade-off:
+    # the IronMesh-layer channel binding no longer binds per-session
+    # (since the sentinel is constant), but the underlying RNS Link
+    # provides per-session integrity via its own ephemeral key
+    # exchange. Operators opt in by enabling rns_skip_handshake on
+    # both ends + advertising the `hskip` feature in announces.
+    _SKIP_BINDING_SENTINEL = hashlib.sha256(
+        b"ironmesh-handshake-skip-channel-binding-v1"
+    ).digest()
+
+    @staticmethod
+    def skip_channel_binding() -> bytes:
+        """Return the fixed channel-binding sentinel used when stage 1 is skipped."""
+        return Handshake._SKIP_BINDING_SENTINEL
+
     @staticmethod
     def create_challenge_frame(passphrase: str, server_nonce: bytes, source: str = "client") -> Frame:
         proof = Handshake.compute_passphrase_proof(passphrase, server_nonce)

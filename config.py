@@ -88,6 +88,19 @@ class IronMeshConfig:
     rns_ratchet_interval: float = 1800.0
     rns_retained_ratchets: int = 8
 
+    # v0.9.2: optional handshake compression on RNS Links. When both
+    # peers advertise the `hskip` feature in their announces AND the
+    # transport is an established RNS Link, skip stage-1 (passphrase
+    # challenge / verify) and go directly to the HELLO + ephemeral
+    # ECDH exchange. Saves three round-trips on LoRa, where each is
+    # painful (~250 ms at 3.12 kbps for the smallest message). The
+    # RNS Link itself already provides mutual authentication via
+    # Identity, so the IronMesh-layer passphrase is redundant on
+    # identified Links. The passphrase remains the gate on every
+    # other transport. Default off so v0.9.2 installs fall back to
+    # the full handshake until operators opt in.
+    rns_skip_handshake: bool = False
+
     # v0.8.5: pending-trust message gate. When True, MSG/REQ/RESP frames
     # from peers that haven't been promoted to "trusted" are queued
     # instead of delivered to clients. Operator promotes via the

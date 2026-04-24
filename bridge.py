@@ -1313,6 +1313,7 @@ class BridgeDaemon:
                  rns_ratchet_interval: float = 1800.0,
                  rns_retained_ratchets: int = 8,
                  rns_admin_identities: Optional[list] = None,
+                 rns_skip_handshake: bool = False,
                  # v0.9.1: optional LXMF interop (Sideband / Nomadnet)
                  lxmf_enabled: bool = False,
                  lxmf_storage: str = "~/.ironmesh/lxmf",
@@ -1515,6 +1516,10 @@ class BridgeDaemon:
         # v0.9.1: Admin RPC allow-list — explicit RNS identity hashes
         # permitted to call /im/admin/* paths. Empty = admin RPC disabled.
         self._rns_admin_identities = list(rns_admin_identities or [])
+        # v0.9.2: opt in to handshake compression on identified RNS Links.
+        # Advertised in announce as the `hskip` feature. Both peers must
+        # advertise + transport must be RNS Link before the skip kicks in.
+        self._rns_skip_handshake = rns_skip_handshake
         # v0.9.1: LXMF listener config — when _lxmf_enabled is True
         # the announce app_data also advertises the `lxmf` feature so
         # peers know this node speaks Sideband / Nomadnet messages.
@@ -1910,52 +1915,68 @@ class BridgeDaemon:
                 return
 
             # --- STAGE 1: Passphrase Auth ---
-            server_nonce = ew_protocol.Handshake.generate_server_nonce()
+            #
+            # v0.9.2 (chunk A): on RNS Links where both peers advertised
+            # the `hskip` feature in their announces, the entire stage-1
+            # round trip is replaced by a fixed channel-binding sentinel.
+            # The RNS Link itself authenticates both ends via Identity,
+            # so the IronMesh-layer passphrase is redundant on identified
+            # Links. The fixed sentinel is signed into the HELLO payload
+            # the same way a random server_nonce would be, so signature-
+            # verification logic downstream is unchanged.
+            skip_stage1 = self._handshake_skip_eligible_server(websocket)
+            if skip_stage1:
+                server_nonce = ew_protocol.Handshake.skip_channel_binding()
+                logger.debug(
+                    "Handshake skip active — peer is RNS-identified and advertises hskip"
+                )
+            else:
+                server_nonce = ew_protocol.Handshake.generate_server_nonce()
 
-            await websocket.send(json.dumps({
-                "type": ew_protocol.MessageType.PASSPHRASE_CHALLENGE,
-                "from": self.node_id,
-                "nonce": server_nonce.hex(),
-                "protocol_version": PROTOCOL_VERSION,
-            }))
-
-            raw = await asyncio.wait_for(websocket.recv(), timeout=30)
-            msg = json.loads(raw)
-
-            if msg.get("type") != ew_protocol.MessageType.PASSPHRASE_CHALLENGE:
                 await websocket.send(json.dumps({
-                    "type": ew_protocol.MessageType.PASSPHRASE_REJECTED,
+                    "type": ew_protocol.MessageType.PASSPHRASE_CHALLENGE,
                     "from": self.node_id,
-                    "error": f"Expected PASSPHRASE_CHALLENGE, got {msg.get('type')}",
+                    "nonce": server_nonce.hex(),
+                    "protocol_version": PROTOCOL_VERSION,
                 }))
-                self.metrics.handshake_failures += 1
-                return
 
-            proof = msg.get("proof")
-            if not proof or not ew_protocol.Handshake.verify_passphrase_proof(
-                proof, self.passphrase, server_nonce
-            ):
-                await self._record_auth_failure(remote_ip)
+                raw = await asyncio.wait_for(websocket.recv(), timeout=30)
+                msg = json.loads(raw)
+
+                if msg.get("type") != ew_protocol.MessageType.PASSPHRASE_CHALLENGE:
+                    await websocket.send(json.dumps({
+                        "type": ew_protocol.MessageType.PASSPHRASE_REJECTED,
+                        "from": self.node_id,
+                        "error": f"Expected PASSPHRASE_CHALLENGE, got {msg.get('type')}",
+                    }))
+                    self.metrics.handshake_failures += 1
+                    return
+
+                proof = msg.get("proof")
+                if not proof or not ew_protocol.Handshake.verify_passphrase_proof(
+                    proof, self.passphrase, server_nonce
+                ):
+                    await self._record_auth_failure(remote_ip)
+                    await websocket.send(json.dumps({
+                        "type": ew_protocol.MessageType.PASSPHRASE_REJECTED,
+                        "from": self.node_id,
+                        "error": "Wrong passphrase",
+                    }))
+                    self.metrics.handshake_failures += 1
+                    logger.warning("Auth failed for incoming connection from %s — wrong passphrase", remote_ip)
+                    return
+
+                # Auth passed — mutual auth: server also proves it knows the passphrase
+                # Server computes proof over reversed nonce so it's different from client's proof
+                server_proof = ew_protocol.Handshake.compute_passphrase_proof(
+                    self.passphrase, server_nonce[::-1]  # reversed nonce for separation
+                )
                 await websocket.send(json.dumps({
-                    "type": ew_protocol.MessageType.PASSPHRASE_REJECTED,
+                    "type": ew_protocol.MessageType.PASSPHRASE_VERIFIED,
                     "from": self.node_id,
-                    "error": "Wrong passphrase",
+                    "status": "verified",
+                    "server_proof": server_proof,
                 }))
-                self.metrics.handshake_failures += 1
-                logger.warning("Auth failed for incoming connection from %s — wrong passphrase", remote_ip)
-                return
-
-            # Auth passed — mutual auth: server also proves it knows the passphrase
-            # Server computes proof over reversed nonce so it's different from client's proof
-            server_proof = ew_protocol.Handshake.compute_passphrase_proof(
-                self.passphrase, server_nonce[::-1]  # reversed nonce for separation
-            )
-            await websocket.send(json.dumps({
-                "type": ew_protocol.MessageType.PASSPHRASE_VERIFIED,
-                "from": self.node_id,
-                "status": "verified",
-                "server_proof": server_proof,
-            }))
 
             # --- STAGE 2: Ephemeral ECDH Key Exchange ---
             # Generate the ephemeral X25519 keypair for this session
@@ -3811,43 +3832,58 @@ class BridgeDaemon:
 
         Returns the peer_id on success, or None on failure.
         """
-        # Stage 1: Receive challenge
-        raw = await asyncio.wait_for(ws.recv(), timeout=30)
-        msg = json.loads(raw)
-
-        if msg.get("type") != ew_protocol.MessageType.PASSPHRASE_CHALLENGE:
-            logger.warning("Expected PASSPHRASE_CHALLENGE, got %s", msg.get("type"))
-            return None
-
-        server_nonce = bytes.fromhex(msg["nonce"])
-
-        # Send proof
-        proof = ew_protocol.Handshake.compute_passphrase_proof(
-            self.passphrase, server_nonce
-        )
-        await ws.send(json.dumps({
-            "type": ew_protocol.MessageType.PASSPHRASE_CHALLENGE,
-            "from": self.node_id,
-            "proof": proof,
-        }))
-
-        # Wait for verification + mutual auth
-        raw = await asyncio.wait_for(ws.recv(), timeout=30)
-        msg = json.loads(raw)
-        if msg.get("type") != ew_protocol.MessageType.PASSPHRASE_VERIFIED:
-            logger.warning("Auth rejected by %s", label)
-            return None
-
-        # Verify server also knows the passphrase (mutual auth)
-        server_proof = msg.get("server_proof")
-        if server_proof:
-            expected_server_proof = ew_protocol.Handshake.compute_passphrase_proof(
-                self.passphrase, server_nonce[::-1]
+        # v0.9.2 (chunk A): on RNS Links where both peers advertised the
+        # `hskip` feature, the entire stage-1 challenge / verify exchange
+        # is skipped. The fixed channel-binding sentinel takes the place
+        # of a real server_nonce in the HELLO signature canonicalization,
+        # so verification on the server side is unchanged. Mirror of the
+        # decision the server makes in `_handle_connection` — both ends
+        # must agree or the handshake will deadlock.
+        skip_stage1 = self._handshake_skip_eligible_client(ws)
+        if skip_stage1:
+            server_nonce = ew_protocol.Handshake.skip_channel_binding()
+            logger.debug(
+                "Handshake skip active for outbound %s — sending HELLO directly",
+                label,
             )
-            if not hmac.compare_digest(server_proof, expected_server_proof):
-                logger.warning("Mutual auth failed — server proof invalid at %s", label)
+        else:
+            # Stage 1: Receive challenge
+            raw = await asyncio.wait_for(ws.recv(), timeout=30)
+            msg = json.loads(raw)
+
+            if msg.get("type") != ew_protocol.MessageType.PASSPHRASE_CHALLENGE:
+                logger.warning("Expected PASSPHRASE_CHALLENGE, got %s", msg.get("type"))
                 return None
-            logger.debug("Mutual auth verified with %s", label)
+
+            server_nonce = bytes.fromhex(msg["nonce"])
+
+            # Send proof
+            proof = ew_protocol.Handshake.compute_passphrase_proof(
+                self.passphrase, server_nonce
+            )
+            await ws.send(json.dumps({
+                "type": ew_protocol.MessageType.PASSPHRASE_CHALLENGE,
+                "from": self.node_id,
+                "proof": proof,
+            }))
+
+            # Wait for verification + mutual auth
+            raw = await asyncio.wait_for(ws.recv(), timeout=30)
+            msg = json.loads(raw)
+            if msg.get("type") != ew_protocol.MessageType.PASSPHRASE_VERIFIED:
+                logger.warning("Auth rejected by %s", label)
+                return None
+
+            # Verify server also knows the passphrase (mutual auth)
+            server_proof = msg.get("server_proof")
+            if server_proof:
+                expected_server_proof = ew_protocol.Handshake.compute_passphrase_proof(
+                    self.passphrase, server_nonce[::-1]
+                )
+                if not hmac.compare_digest(server_proof, expected_server_proof):
+                    logger.warning("Mutual auth failed — server proof invalid at %s", label)
+                    return None
+                logger.debug("Mutual auth verified with %s", label)
 
         # Stage 2: Ephemeral ECDH
         my_ephemeral_private, my_ephemeral_public = ew_keys.generate_ephemeral()
@@ -4145,6 +4181,48 @@ class BridgeDaemon:
         if peer_id:
             self._known_rns_hashes[peer_id] = dest_hash
         return peer_id
+
+    # ------------------------------------------------------------------
+    # v0.9.2: handshake-skip eligibility (chunk A)
+    # ------------------------------------------------------------------
+    #
+    # Both server-side and client-side handshake paths consult these
+    # helpers to decide whether to take the shortened skip path. The
+    # decision must agree on both ends or the handshake will deadlock —
+    # the tie-breaker is the announce app_data: both peers must
+    # advertise the `hskip` feature, AND the local daemon must have
+    # opted in via rns_skip_handshake, AND the transport must be an
+    # RNS Link with a known remote Identity hash. Anything else falls
+    # back to the full handshake.
+
+    def _peer_advertises_hskip(self, identity_hash_hex: Optional[str]) -> bool:
+        """Did the peer with this RNS Identity hash advertise hskip?"""
+        if not identity_hash_hex:
+            return False
+        for entry in self._rns_discovered.values():
+            if entry.get("identity_hash") == identity_hash_hex:
+                return "hskip" in entry.get("features", [])
+        return False
+
+    def _handshake_skip_eligible_server(self, websocket) -> bool:
+        """Server-side check before sending the PASSPHRASE_CHALLENGE."""
+        if not getattr(self, "_rns_skip_handshake", False):
+            return False
+        if RNSLinkAdapter is None or not isinstance(websocket, RNSLinkAdapter):
+            return False
+        return self._peer_advertises_hskip(
+            getattr(websocket, "remote_identity_hash", None)
+        )
+
+    def _handshake_skip_eligible_client(self, websocket) -> bool:
+        """Client-side check before waiting for the PASSPHRASE_CHALLENGE."""
+        if not getattr(self, "_rns_skip_handshake", False):
+            return False
+        if RNSLinkAdapter is None or not isinstance(websocket, RNSLinkAdapter):
+            return False
+        return self._peer_advertises_hskip(
+            getattr(websocket, "remote_identity_hash", None)
+        )
 
     # ------------------------------------------------------------------
     # v0.9.1: unified transport selection — Agent SDK + OpenClaw + ACP/A2A
