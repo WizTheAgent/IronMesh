@@ -6202,6 +6202,17 @@ class BridgeDaemon:
         for state in self.peers.values():
             state.session_key = None
 
+        # v0.9.1: stop the LXMF listener BEFORE the Reticulum transport
+        # so its announce + telemetry loops cancel cleanly before the
+        # underlying RNS instance disappears. Without this the loops
+        # raise on the next iteration with confusing "loop closed"
+        # tracebacks during shutdown (live-test discovery).
+        if self._lxmf:
+            try:
+                self._lxmf.shutdown()
+            except Exception:
+                pass
+
         # v0.5: Reticulum transport shutdown
         if self._reticulum:
             try:

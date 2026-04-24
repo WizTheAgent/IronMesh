@@ -11,6 +11,7 @@ optional dependency.
 import asyncio
 import json
 import logging
+import os
 import struct
 import threading
 import time
@@ -655,7 +656,17 @@ class ReticulumTransport:
         before Destinations are created, so we tolerate the brief block.
         """
         self._loop = loop
-        self._reticulum = RNS.Reticulum(configdir=self._configdir)
+        # RNS enforces a one-Reticulum-per-process singleton. If another
+        # IronMesh daemon (or anything else) in this process already
+        # initialised it, reuse the existing instance instead of trying
+        # to start a second one (which raises). Live-test discovered when
+        # multiple Agent SDK instances ran in the same Python process.
+        existing = getattr(RNS.Reticulum, "_Reticulum__instance", None)
+        if existing is not None:
+            logger.info("Reusing existing RNS.Reticulum singleton in this process")
+            self._reticulum = existing
+        else:
+            self._reticulum = RNS.Reticulum(configdir=self._configdir)
 
         # Per-daemon persistent RNS identity. The previous single-file
         # location at <configdir>/ironmesh_identity collided when two
@@ -672,7 +683,6 @@ class ReticulumTransport:
         identity_path = None
         ratchets_path = None
         if self._configdir:
-            import os
             tag = None
             if self._daemon is not None:
                 tag = getattr(self._daemon, "node_id", None)
@@ -721,12 +731,22 @@ class ReticulumTransport:
         if self._ratchets_enabled:
             # Use the per-daemon ratchets path resolved during identity
             # setup so two daemons sharing a configdir don't race on
-            # the same ratchet file.
+            # the same ratchet file. If we somehow reached here without
+            # a resolved path (no configdir AND identity-setup failed
+            # to derive a tag), fall back to a temp path that still
+            # includes the daemon node_id — sharing a single
+            # `<tmp>/ironmesh_ratchets` between multiple daemons in the
+            # same process produces "Invalid ratchet file signature"
+            # corruption on every cycle (live-test discovered).
             ratchets_path = getattr(self, "_ratchets_path_resolved", None)
             if not ratchets_path:
-                import tempfile, os as _os
-                ratchets_path = _os.path.join(
-                    tempfile.gettempdir(), "ironmesh_ratchets",
+                import tempfile
+                tag = None
+                if self._daemon is not None:
+                    tag = getattr(self._daemon, "node_id", None)
+                short = str(tag)[:16] if tag else f"pid{os.getpid()}"
+                ratchets_path = os.path.join(
+                    tempfile.gettempdir(), f"ironmesh_{short}_ratchets",
                 )
             try:
                 ok = self._destination.enable_ratchets(ratchets_path)

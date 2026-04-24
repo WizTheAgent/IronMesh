@@ -249,6 +249,10 @@ class TestReticulumTransport:
         transport = ReticulumTransport(daemon, announce_interval=60.0)
         loop = asyncio.new_event_loop()
         try:
+            # Reset singleton + mock so we exercise the fresh-init path
+            # rather than the singleton-reuse branch added in audit fix #6.
+            _mock_rns.Reticulum._Reticulum__instance = None
+            _mock_rns.Reticulum.reset_mock()
             transport.start(loop)
             _mock_rns.Reticulum.assert_called()
             assert transport._loop is loop
@@ -257,6 +261,25 @@ class TestReticulumTransport:
         finally:
             transport.shutdown()
             loop.close()
+
+    def test_start_reuses_existing_singleton(self):
+        """If RNS.Reticulum is already initialised in this process, reuse it."""
+        daemon = self._make_daemon()
+        transport = ReticulumTransport(daemon, announce_interval=60.0)
+        loop = asyncio.new_event_loop()
+        try:
+            # Pretend the singleton is already populated
+            sentinel = MagicMock()
+            _mock_rns.Reticulum._Reticulum__instance = sentinel
+            _mock_rns.Reticulum.reset_mock()
+            transport.start(loop)
+            # The fresh constructor must NOT have been called this time
+            _mock_rns.Reticulum.assert_not_called()
+            assert transport._reticulum is sentinel
+        finally:
+            transport.shutdown()
+            loop.close()
+            _mock_rns.Reticulum._Reticulum__instance = None
 
     def test_shutdown_clears_adapters(self):
         daemon = self._make_daemon()

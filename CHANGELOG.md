@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v0.9.1 Reticulum integration sweep
 
+### Fixed (round-2 stress test discoveries)
+
+- **Multiple Agent SDK instances in one process raced on the RNS
+  singleton.** A second `ReticulumTransport.start()` would crash with
+  "Attempt to reinitialise Reticulum, when it was already running"
+  because RNS enforces one Reticulum instance per process. Now
+  detects the existing singleton via `RNS.Reticulum._Reticulum__instance`
+  and reuses it. Lets in-process tests, multi-Agent demos, and
+  embedded use cases work cleanly.
+- **Fallback ratchet path collided when no `_configdir` was passed.**
+  The fallback used a single `<tmp>/ironmesh_ratchets` location, so
+  multiple daemons in the same process (Agent SDK without
+  `--rns-configdir`) would all write to the same file and corrupt it
+  with "Invalid ratchet file signature" errors after the first cycle.
+  Fallback path now includes the daemon node_id (or process PID as a
+  last-resort tag).
+- **LXMF listener never shut down with the daemon.** Its periodic
+  announce + telemetry asyncio tasks would race with daemon shutdown
+  and emit "loop closed" tracebacks during teardown. Daemon shutdown
+  now stops the LXMF listener BEFORE the Reticulum transport.
+
 ### Fixed (live-test discoveries)
 
 - **Per-packet ratchets were silently disabled.** `enable_ratchets()`
