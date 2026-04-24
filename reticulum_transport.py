@@ -79,10 +79,16 @@ def encode_app_data(name: str, version: str, node_id: str,
     caps = list(capabilities) if capabilities else []
     feats = list(features) if features else []
     while True:
+        # Only include the key when the list is non-empty — avoids
+        # `"c":[]` overhead on LoRa after trimming (L1 audit fix).
         if caps:
             payload["c"] = caps
+        else:
+            payload.pop("c", None)
         if feats:
             payload["f"] = feats
+        else:
+            payload.pop("f", None)
         encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         if len(encoded) <= APP_DATA_MAX_BYTES:
             return encoded
@@ -93,7 +99,13 @@ def encode_app_data(name: str, version: str, node_id: str,
         if feats:
             feats.pop()
             continue
-        # Nothing left to trim — return what we have and let RNS reject
+        # Nothing left to trim — warn and let RNS reject on the wire (L4 fix)
+        logger.warning(
+            "announce app_data exceeds %d bytes with base fields only "
+            "(name=%r version=%r node_id=%r, encoded=%d bytes); "
+            "announce will likely be rejected — shorten node_id or name",
+            APP_DATA_MAX_BYTES, name, version, node_id, len(encoded),
+        )
         return encoded
 
 
@@ -742,7 +754,12 @@ class ReticulumTransport:
         if not hasattr(self._destination, "register_request_handler"):
             logger.debug("Destination has no register_request_handler — skipping RPC paths")
             return
-        allow_all = getattr(self._destination, "ALLOW_ALL", None)
+        # ALLOW_ALL is a class-level constant on RNS.Destination — read
+        # from the class rather than the instance for intent clarity
+        # (L3 audit fix). Falls back to None on older RNS versions;
+        # register_request_handler tolerates None as "ALLOW_ALL" per
+        # its documented default.
+        allow_all = getattr(RNS.Destination, "ALLOW_ALL", None)
         try:
             self._destination.register_request_handler(
                 RPC_PATH_INFO,
@@ -1046,27 +1063,27 @@ class ReticulumTransport:
         entire body in try/except.
         """
         try:
-            logger.info("Incoming RNS link from %s",
-                        RNS.prettyhexrep(link.get_remote_identity().hash)
-                        if link.get_remote_identity() else "unknown")
-            link.set_resource_strategy(RNS.Link.ACCEPT_ALL)
-            remote = "unknown"
+            # Read the remote identity once to avoid a TOCTOU window
+            # where the identity could race between the log line and
+            # the adapter setup (M4 audit fix).
+            ri = None
             try:
                 ri = link.get_remote_identity()
-                if ri:
-                    remote = RNS.prettyhexrep(ri.hash)
             except Exception:
                 pass
+            remote = RNS.prettyhexrep(ri.hash) if ri is not None else "unknown"
+            logger.info("Incoming RNS link from %s", remote)
             adapter = RNSLinkAdapter(link, self._loop, dest_hash_hex=remote,
                                      is_server=True)
             with self._adapters_lock:
                 self._active_adapters.append(adapter)
-            # Brief pause to let the remote side set up its Buffer.
-            # The Channel/Buffer API is more resilient than raw Packets,
-            # but a small window helps with LoRa's high latency.
-            time.sleep(0.5)
-            # Schedule the daemon's connection handler on the asyncio loop.
-            # Capture adapter in default-arg to avoid late-binding issues.
+            # Schedule the daemon's connection handler on the asyncio
+            # loop immediately. The prior 500ms sleep here blocked the
+            # RNS transport thread and serialised concurrent inbound
+            # links (M3 audit fix). The Buffer reliability layer
+            # already handles startup races on its own, and the async
+            # handshake can cope with the 100ms settle it needs by
+            # awaiting on its own side without blocking the RNS thread.
             self._loop.call_soon_threadsafe(
                 lambda a=adapter: asyncio.ensure_future(
                     self._daemon._handle_connection(a)
@@ -1184,6 +1201,10 @@ class ReticulumTransport:
         Stats are best-effort — if the daemon hasn't bound a peer_id to
         the adapter yet (handshake not complete), the sample is just
         skipped. Fully tolerant of partial RNS API surfaces.
+
+        Also prunes closed adapters from ``_active_adapters`` so the
+        list doesn't grow unboundedly on a long-running node with many
+        connect/disconnect cycles (M1 audit fix).
         """
         if self._stats_poll_interval <= 0:
             return
@@ -1194,8 +1215,18 @@ class ReticulumTransport:
             await asyncio.sleep(self._stats_poll_interval)
             if self._shutdown:
                 break
+            # Snapshot + prune closed adapters in one locked pass
             with self._adapters_lock:
-                snapshot = list(self._active_adapters)
+                alive = []
+                for adapter in self._active_adapters:
+                    if getattr(adapter, "_closed", False):
+                        continue
+                    alive.append(adapter)
+                dropped = len(self._active_adapters) - len(alive)
+                self._active_adapters = alive
+                snapshot = list(alive)
+            if dropped:
+                logger.debug("Pruned %d closed RNS adapter(s) from active list", dropped)
             for adapter in snapshot:
                 peer_id = getattr(adapter, "peer_id", None)
                 if not peer_id:
