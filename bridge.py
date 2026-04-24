@@ -4290,22 +4290,50 @@ class BridgeDaemon:
             return {"transport": transport, "target": node_id,
                     "msg_id": msg_id, "tier": 1}
 
-        # Tier 2: RNS-discovered, not yet connected → auto-Link
+        # Tier 2: RNS-discovered, not yet connected → auto-Link.
+        #
+        # Subtle correctness point: ``_connect_and_track_rns`` calls
+        # ``_do_client_handshake`` which runs an indefinite message
+        # loop AFTER the handshake — it only returns when the
+        # connection closes. We therefore can't await it directly
+        # here (live-test-discovered bug — `send_to_name` would never
+        # complete until the auto-Link tore down at idle timeout).
+        #
+        # Instead: kick the connect off as a background task, then
+        # poll self.peers for the expected node_id to appear. When it
+        # does, the regular `send_message` path takes over and we
+        # return. The background task continues to own the message
+        # loop for inbound traffic, exactly like a normal connection.
         rns_entry = self._find_rns_discovered_by_name(name)
         if rns_entry and self._reticulum is not None:
             dest_hash = rns_entry.get("dest_hash")
-            if dest_hash:
+            expected_node_id = rns_entry.get("node_id")
+            if dest_hash and expected_node_id:
                 logger.info(
                     "send_to_name: auto-establishing RNS Link to %s for first send",
                     name,
                 )
-                peer_id = await self._connect_and_track_rns(dest_hash)
-                if peer_id:
-                    msg_id = await self.send_message(
-                        peer_id, msg_type, payload_bytes, priority,
-                    )
-                    return {"transport": "rns", "target": peer_id,
-                            "msg_id": msg_id, "tier": 2}
+                if expected_node_id not in self.peers or not self.peers[expected_node_id].is_online:
+                    asyncio.ensure_future(self._connect_and_track_rns(dest_hash))
+                # Poll for the peer to come online. Connect time is
+                # path resolution (often instant on LAN, up to ~10 s
+                # on LoRa) plus the IronMesh handshake (~1 s on LAN,
+                # several seconds on LoRa). 30 s gives a generous
+                # ceiling without making the SDK feel hung.
+                deadline = time.monotonic() + 30.0
+                while time.monotonic() < deadline:
+                    state = self.peers.get(expected_node_id)
+                    if state is not None and state.is_online and state.session_key:
+                        msg_id = await self.send_message(
+                            expected_node_id, msg_type, payload_bytes, priority,
+                        )
+                        return {"transport": "rns", "target": expected_node_id,
+                                "msg_id": msg_id, "tier": 2}
+                    await asyncio.sleep(0.2)
+                logger.warning(
+                    "send_to_name: timed out waiting for %s (node=%s) to come online via RNS",
+                    name, expected_node_id,
+                )
 
         # Tier 3: LXMF — if name is a destination hash and LXMF is up
         if self._lxmf is not None and self._looks_like_lxmf_hash(name):

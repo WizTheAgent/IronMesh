@@ -176,7 +176,11 @@ class TestSendToNameTierChain:
         assert sent_payload == "hello unicode ✓".encode("utf-8")
 
     @pytest.mark.asyncio
-    async def test_tier2_auto_link_for_announce_only_peer(self):
+    async def test_tier2_auto_link_for_announce_only_peer(self, monkeypatch):
+        # The real send_to_name spawns the connect as a background task
+        # and polls self.peers for the peer to come online — accommodates
+        # _do_client_handshake's permanent message loop. Simulate that by
+        # mutating self.peers from the connect task's body.
         daemon = _make_daemon()
         daemon._rns_discovered = {
             "hash-b": {
@@ -186,8 +190,17 @@ class TestSendToNameTierChain:
                 "hops": 4,
             }
         }
-        daemon._reticulum = MagicMock()  # transport active
-        daemon._connect_and_track_rns = AsyncMock(return_value="node-bob")
+        daemon._reticulum = MagicMock()
+        async def _fake_connect(dest_hash):
+            # Simulate the handshake completing by populating self.peers
+            await asyncio.sleep(0.05)
+            daemon.peers["node-bob"] = FakePeerState(
+                is_online=True, agent_name="bob", transport_type="rns",
+            )
+            # Emulate session_key being set (real handshake assigns this)
+            daemon.peers["node-bob"].session_key = b"x" * 32
+            return "node-bob"
+        daemon._connect_and_track_rns = AsyncMock(side_effect=_fake_connect)
         result = await daemon.send_to_name("bob", b"hello bob")
         assert result["tier"] == 2
         assert result["transport"] == "rns"
@@ -210,18 +223,31 @@ class TestSendToNameTierChain:
         daemon._connect_and_track_rns.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_tier2_link_failure_falls_through(self):
+    async def test_tier2_timeout_when_handshake_never_completes(self, monkeypatch):
+        # If the auto-Link task never produces an online peer within
+        # the poll deadline, send_to_name raises ValueError rather
+        # than hanging indefinitely. We shorten the deadline by
+        # patching time.monotonic so the test stays fast.
         daemon = _make_daemon()
         daemon._rns_discovered = {
             "hash-d": {"dest_hash": "hash-d", "name": "dave",
                        "node_id": "node-dave"}
         }
         daemon._reticulum = MagicMock()
-        # Auto-Link fails (returns None)
-        daemon._connect_and_track_rns = AsyncMock(return_value=None)
+        # Connect task that never populates peers
+        async def _stuck_connect(dest_hash):
+            await asyncio.sleep(60)
+            return None
+        daemon._connect_and_track_rns = AsyncMock(side_effect=_stuck_connect)
+        # Patch the time used in the poll loop to a fixed clock that
+        # marches forward fast.
+        from ironmesh import bridge as bridge_mod
+        real_monotonic = bridge_mod.time.monotonic
+        clock = [real_monotonic()]
+        def _fast(): clock[0] += 5.0; return clock[0]
+        monkeypatch.setattr(bridge_mod.time, "monotonic", _fast)
         with pytest.raises(ValueError):
             await daemon.send_to_name("dave", b"x")
-        # send_message must not have been called
         daemon.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio

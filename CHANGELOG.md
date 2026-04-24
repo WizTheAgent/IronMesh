@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v0.9.1 Reticulum integration sweep
 
+### Fixed (live-test discoveries)
+
+- **Per-packet ratchets were silently disabled.** `enable_ratchets()`
+  expects a file path, not a boolean — the original `enable_ratchets(True)`
+  call passed `True` as the path argument, RNS coerced it to fd 1, and
+  the destination ran without forward-secret per-packet protection
+  even though startup logged "ratchets enabled". Now passes a real
+  per-daemon path under the Reticulum config directory.
+- **Two daemons sharing a Reticulum config directory got the same
+  destination hash.** The persistent RNS identity was loaded from a
+  single `<configdir>/ironmesh_identity` file, so any two IronMesh
+  daemons on the same host (parallel-deploy testing, multi-tenant
+  hosts) produced indistinguishable destinations and raced on the
+  ratchet store. Identity (and ratchet) filenames are now keyed by
+  the IronMesh node_id so each daemon gets its own.
+- **Inbound RNS handshakes hung when a "throughput optimisation"
+  removed a 500 ms settle.** The settle existed so the client side
+  could wire up its Buffer receive callback before the server
+  started writing the passphrase challenge. Removing it dropped the
+  challenge, the client waited for it forever, and every inbound
+  handshake on the RNS path stalled. Restored the settle with a
+  thorough docstring on why it has to stay.
+- **`Agent.send_to(name)` tier-2 path (auto-Link an
+  announce-discovered peer) hung indefinitely.** The internal
+  `_do_client_handshake` runs an indefinite per-connection message
+  loop after the handshake completes — it only returns when the
+  connection closes. The send_to resolver was awaiting that
+  function and so never proceeded to the actual `send_message`
+  call. Fixed by spawning the connect as a background task and
+  polling `self.peers` for the expected node_id to come online,
+  with a 30 s deadline.
+
+
+
 Multi-phase upgrade to the Reticulum transport adapter, bringing it in
 line with the RNS 1.1.x feature surface and laying the groundwork for
 deeper interop with the broader Reticulum ecosystem (Sideband, MeshChat,

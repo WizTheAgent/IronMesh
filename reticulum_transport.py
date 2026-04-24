@@ -657,17 +657,46 @@ class ReticulumTransport:
         self._loop = loop
         self._reticulum = RNS.Reticulum(configdir=self._configdir)
 
-        # Use a persistent identity so the destination hash is stable
+        # Per-daemon persistent RNS identity. The previous single-file
+        # location at <configdir>/ironmesh_identity collided when two
+        # IronMesh daemons shared a Reticulum configdir on the same host
+        # (parallel-deploy test scenario, multi-tenant hosts) — both
+        # would load the same identity and ratchet store, producing
+        # indistinguishable destinations and a write-race on the ratchet
+        # file. Live-test-discovered bug.
+        #
+        # Fix: derive the identity filename from the IronMesh daemon's
+        # node_id when available, so two daemons get two distinct files.
+        # Falls back to the legacy filename only when no daemon node_id
+        # is reachable (defensive — shouldn't happen in practice).
         identity_path = None
+        ratchets_path = None
         if self._configdir:
             import os
-            identity_path = os.path.join(self._configdir, "ironmesh_identity")
+            tag = None
+            if self._daemon is not None:
+                tag = getattr(self._daemon, "node_id", None)
+            if tag:
+                # First 16 hex chars are plenty unique for a filename
+                short = str(tag)[:16]
+                identity_path = os.path.join(
+                    self._configdir, f"ironmesh_{short}_identity",
+                )
+                ratchets_path = os.path.join(
+                    self._configdir, f"ironmesh_{short}_ratchets",
+                )
+            else:
+                identity_path = os.path.join(self._configdir, "ironmesh_identity")
+                ratchets_path = os.path.join(self._configdir, "ironmesh_ratchets")
         if identity_path and RNS.Identity.from_file(identity_path):
             self._identity = RNS.Identity.from_file(identity_path)
         else:
             self._identity = RNS.Identity()
             if identity_path:
                 self._identity.to_file(identity_path)
+        # Stash the resolved ratchets path so the enable_ratchets call
+        # below uses the per-daemon location too.
+        self._ratchets_path_resolved = ratchets_path
 
         self._destination = RNS.Destination(
             self._identity,
@@ -683,17 +712,41 @@ class ReticulumTransport:
         # announce; peers pick them up automatically. Older retained ratchets
         # are kept so in-flight Packets encrypted under the prior key still
         # decrypt cleanly after rotation.
+        #
+        # RNS's enable_ratchets() takes a *path* to a file where rotating
+        # keys are persisted, NOT a boolean. Passing True silently fails
+        # (open(True, "rb") opens fd 1 / stdout) and the destination ends
+        # up unprotected. Live-test-discovered bug — was wrong since the
+        # initial Phase 0 commit.
         if self._ratchets_enabled:
-            try:
-                self._destination.enable_ratchets(True)
-                if hasattr(self._destination, "set_ratchet_interval"):
-                    self._destination.set_ratchet_interval(self._ratchet_interval)
-                if hasattr(self._destination, "set_retained_ratchets"):
-                    self._destination.set_retained_ratchets(self._retained_ratchets)
-                logger.info(
-                    "Ratchets enabled on destination (interval=%.0fs, retained=%d)",
-                    self._ratchet_interval, self._retained_ratchets,
+            # Use the per-daemon ratchets path resolved during identity
+            # setup so two daemons sharing a configdir don't race on
+            # the same ratchet file.
+            ratchets_path = getattr(self, "_ratchets_path_resolved", None)
+            if not ratchets_path:
+                import tempfile, os as _os
+                ratchets_path = _os.path.join(
+                    tempfile.gettempdir(), "ironmesh_ratchets",
                 )
+            try:
+                ok = self._destination.enable_ratchets(ratchets_path)
+                if ok is False:
+                    logger.warning(
+                        "Ratchets enable returned False (path=%s) — "
+                        "destination running without per-packet forward secrecy",
+                        ratchets_path,
+                    )
+                else:
+                    if hasattr(self._destination, "set_ratchet_interval"):
+                        self._destination.set_ratchet_interval(self._ratchet_interval)
+                    if hasattr(self._destination, "set_retained_ratchets"):
+                        self._destination.set_retained_ratchets(self._retained_ratchets)
+                    logger.info(
+                        "Ratchets enabled on destination "
+                        "(path=%s interval=%.0fs retained=%d)",
+                        ratchets_path, self._ratchet_interval,
+                        self._retained_ratchets,
+                    )
             except Exception as e:
                 logger.warning("Failed to enable ratchets: %s", e)
 
@@ -1061,6 +1114,22 @@ class ReticulumTransport:
         work must be bridged via ``call_soon_threadsafe``.  Any unhandled
         exception here would be silently swallowed by RNS, so we wrap the
         entire body in try/except.
+
+        About the 500 ms sleep: the inbound-handshake race below is real.
+        On the server side, RNS fires this callback the instant our Link
+        becomes ACTIVE — but on the client side, the symmetric ACTIVE
+        notification fires concurrently, and the client still has to
+        construct its own RNSLinkAdapter (which wires up its Buffer
+        receive callback) before it can read anything we send. If we
+        immediately schedule `_handle_connection` and it starts writing
+        PASSPHRASE_CHALLENGE, that data lands on the client's Channel
+        before the client's Buffer reader is attached, and the
+        handshake hangs waiting for a response that's permanently lost.
+        Live-test-discovered: dropping this sleep (a previous "audit
+        fix") broke every inbound handshake on the RNS path. The right
+        long-term fix is a Channel-level synchronisation primitive
+        (handshake on Channel.is_ready_to_send) — until then, this
+        modest delay is the working compromise.
         """
         try:
             # Read the remote identity once to avoid a TOCTOU window
@@ -1077,13 +1146,11 @@ class ReticulumTransport:
                                      is_server=True)
             with self._adapters_lock:
                 self._active_adapters.append(adapter)
-            # Schedule the daemon's connection handler on the asyncio
-            # loop immediately. The prior 500ms sleep here blocked the
-            # RNS transport thread and serialised concurrent inbound
-            # links (M3 audit fix). The Buffer reliability layer
-            # already handles startup races on its own, and the async
-            # handshake can cope with the 100ms settle it needs by
-            # awaiting on its own side without blocking the RNS thread.
+            # Brief pause to let the client side finish constructing
+            # its RNSLinkAdapter (and thereby register the Buffer
+            # receive callback) before we start writing handshake bytes.
+            # See the docstring above for the full rationale.
+            time.sleep(0.5)
             self._loop.call_soon_threadsafe(
                 lambda a=adapter: asyncio.ensure_future(
                     self._daemon._handle_connection(a)
