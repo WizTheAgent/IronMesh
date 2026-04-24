@@ -1,0 +1,158 @@
+# IronMesh Prometheus alert rules pack
+#
+# Drop into your Prometheus rule_files. The rules cover the common-case
+# operator concerns surfaced by v0.9.x metrics:
+#
+#   - stuck handshakes
+#   - audit-chain tamper
+#   - mesh-route convergence failure
+#   - Resource transfer stalls
+#   - peer drop alerting
+#   - capability registry growth (anomaly detection for cap leaks)
+#
+# Tune the `for:` durations to match your network's normal cadence.
+# All rules are conservative; expect to relax thresholds for high-
+# churn environments.
+
+groups:
+  - name: ironmesh.handshake
+    interval: 30s
+    rules:
+      - alert: IronMeshHandshakeFailureSpike
+        expr: rate(ironmesh_handshake_failures_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} is rejecting handshakes faster than 0.1/s"
+          description: |
+            Sustained handshake rejection rate suggests one of:
+            wrong-passphrase peers retrying, wire-protocol incompatibility,
+            or a passphrase rotation that didn't propagate.
+            Inspect `ironmesh audit tail | grep AUTH_FAILURE` on the affected node.
+
+      - alert: IronMeshHandshakeStalled
+        expr: |
+          ironmesh_connections_total - ironmesh_handshake_successes_total
+          - ironmesh_handshake_failures_total > 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} has 5+ in-flight handshakes that haven't completed"
+          description: |
+            More than 5 handshakes have started but neither succeeded nor
+            failed. Check for blocked async loop, dead RNS Links, or a
+            peer that opened a connection then went silent before
+            sending PASSPHRASE_CHALLENGE response.
+
+  - name: ironmesh.audit
+    interval: 60s
+    rules:
+      - alert: IronMeshAuditChainTamper
+        expr: ironmesh_audit_tamper_detected_total > 0
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }} audit chain tamper detected"
+          description: |
+            HMAC chain verification failed on the audit log. Either two
+            daemons collided on the same audit-path, or the file was
+            modified externally. Run `ironmesh audit verify --path
+            <audit.log>` to inspect, and `--rotate-corrupt` to recover.
+
+  - name: ironmesh.mesh
+    interval: 30s
+    rules:
+      - alert: IronMeshMeshRouteUnreachable
+        expr: rate(ironmesh_route_unreachable_total[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mesh routing on {{ $labels.instance }} is producing >0.5 ROUTE_UNREACHABLE/s"
+          description: |
+            Convergence may be broken. Check that distance-vector
+            announces are flowing — `ironmesh audit tail | grep ROUTE_ANNOUNCE`
+            on each peer should show recent activity.
+
+      - alert: IronMeshPeerDroppedLong
+        expr: ironmesh_peer_long_drops_total > 0
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Peer dropped from {{ $labels.instance }} for >5 minutes"
+          description: |
+            A peer that was previously online has been offline for
+            longer than the long-drop threshold. Investigate via
+            `/api/state` for the dropped peer's last-seen and
+            transport_type.
+
+  - name: ironmesh.rns
+    interval: 30s
+    rules:
+      - alert: IronMeshRnsResourceStall
+        expr: |
+          increase(ironmesh_rns_resource_starts_total[10m])
+          - increase(ironmesh_rns_resource_completes_total[10m]) > 3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} has 3+ RNS Resources started without completing in 10 min"
+          description: |
+            Long-stalled large-payload transfers. Either the receiving
+            peer dropped mid-transfer, or radio conditions degraded.
+            Surface via `/im/admin/peers` and inspect `rns_estimated_bps`
+            for the affected peer.
+
+      - alert: IronMeshHandshakeSkipFailure
+        expr: |
+          rate(ironmesh_handshake_skip_attempts_total[5m]) > 0
+          and rate(ironmesh_handshake_skip_failures_total[5m]) /
+              rate(ironmesh_handshake_skip_attempts_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Handshake-skip success rate on {{ $labels.instance }} dropped below 90%"
+          description: |
+            Stage-1 skip is failing more than 10% of the time it's
+            attempted. Likely a peer-side rns_skip_handshake config
+            mismatch or a stale `hskip` advertise from a peer that
+            no longer supports it. Inspect logs for the failing peer
+            and consider disabling rns_skip_handshake on this node.
+
+  - name: ironmesh.capability
+    interval: 60s
+    rules:
+      - alert: IronMeshCapabilityRegistryGrowth
+        expr: |
+          (ironmesh_capability_registry_size
+           - ironmesh_capability_registry_size offset 1h) > 50
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $labels.instance }} capability registry grew by 50+ entries in the last hour"
+          description: |
+            Possible cap-set churn from a peer flapping its capabilities.
+            Investigate via `ironmesh_discover_capabilities` MCP tool or
+            `/im/cap/list` over RNS RPC.
+
+  - name: ironmesh.lxmf
+    interval: 60s
+    rules:
+      - alert: IronMeshLxmfBacklog
+        expr: ironmesh_lxmf_drops_unmapped_total > 100
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $labels.instance }} dropped 100+ unmapped LXMF inbound messages"
+          description: |
+            A flood of LXMF messages from senders not in the
+            `inbound_route` map. Either configure a `--lxmf-default-peer`
+            catch-all or add the prolific senders to the route map.

@@ -1930,6 +1930,11 @@ class BridgeDaemon:
                 logger.debug(
                     "Handshake skip active — peer is RNS-identified and advertises hskip"
                 )
+                _otel_span_event(
+                    "handshake.skip.activated",
+                    getattr(websocket, "remote_identity_hash", "unknown"),
+                    {"side": "server", "transport": "rns"},
+                )
             else:
                 server_nonce = ew_protocol.Handshake.generate_server_nonce()
 
@@ -3846,6 +3851,11 @@ class BridgeDaemon:
                 "Handshake skip active for outbound %s — sending HELLO directly",
                 label,
             )
+            _otel_span_event(
+                "handshake.skip.activated",
+                getattr(ws, "remote_identity_hash", "unknown"),
+                {"side": "client", "transport": "rns", "label": label},
+            )
         else:
             # Stage 1: Receive challenge
             raw = await asyncio.wait_for(ws.recv(), timeout=30)
@@ -4343,6 +4353,22 @@ class BridgeDaemon:
     async def send_to_name(self, name: str, payload,
                             msg_type: str = "MSG",
                             priority: str = "NORMAL") -> dict:
+        with _otel_span(
+            "ironmesh.send_to_name",
+            **{
+                "ironmesh.peer.name": name,
+                "ironmesh.message.type": msg_type,
+                "ironmesh.message.priority": priority,
+                "ironmesh.message.size_bytes": (
+                    len(payload) if isinstance(payload, (bytes, bytearray)) else len(str(payload))
+                ),
+            },
+        ):
+            return await self._send_to_name_impl(name, payload, msg_type, priority)
+
+    async def _send_to_name_impl(self, name: str, payload,
+                                  msg_type: str = "MSG",
+                                  priority: str = "NORMAL") -> dict:
         """Unified send: pick the best available transport for ``name``.
 
         Tier order: existing online peer → auto-Link an RNS-discovered
@@ -4481,6 +4507,23 @@ class BridgeDaemon:
                                   msg_type: str = "MSG",
                                   priority: str = "NORMAL",
                                   strategy: str = "first") -> dict:
+        with _otel_span(
+            "ironmesh.send_to_capability",
+            **{
+                "ironmesh.cap.pattern": pattern,
+                "ironmesh.cap.strategy": strategy,
+                "ironmesh.message.type": msg_type,
+                "ironmesh.message.priority": priority,
+            },
+        ):
+            return await self._send_to_capability_impl(
+                pattern, payload, msg_type, priority, strategy,
+            )
+
+    async def _send_to_capability_impl(self, pattern: str, payload,
+                                         msg_type: str = "MSG",
+                                         priority: str = "NORMAL",
+                                         strategy: str = "first") -> dict:
         """Send to any peer advertising a capability matching ``pattern``.
 
         ``pattern`` is an fnmatch-style glob (e.g. ``"llm:*"``,

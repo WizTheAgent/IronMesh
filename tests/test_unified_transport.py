@@ -64,6 +64,10 @@ def _make_daemon():
     daemon._looks_like_lxmf_hash = BridgeDaemon._looks_like_lxmf_hash
     daemon.unified_peers = BridgeDaemon.unified_peers.__get__(daemon)
     daemon.send_to_name = BridgeDaemon.send_to_name.__get__(daemon)
+    # The wrapper method delegates to _send_to_name_impl through the
+    # OTel-span context manager — bind that too so tests don't need
+    # to know about the indirection.
+    daemon._send_to_name_impl = BridgeDaemon._send_to_name_impl.__get__(daemon)
     return daemon
 
 

@@ -36,6 +36,11 @@ def _make_daemon(*, my_node="node-self"):
     daemon.send_to_capability = (
         BridgeDaemon.send_to_capability.__get__(daemon)
     )
+    # Same wrapper / impl split as send_to_name — bind the impl too
+    # so the OTel span wrapper can delegate.
+    daemon._send_to_capability_impl = (
+        BridgeDaemon._send_to_capability_impl.__get__(daemon)
+    )
     return daemon
 
 

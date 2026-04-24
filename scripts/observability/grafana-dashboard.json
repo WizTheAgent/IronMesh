@@ -1,0 +1,147 @@
+{
+  "$schema": "https://grafana.com/schemas/dashboard/v8.json",
+  "title": "IronMesh — Operator Dashboard",
+  "uid": "ironmesh-ops",
+  "tags": ["ironmesh", "mesh", "p2p"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "type": "query",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(ironmesh_handshake_successes_total, instance)",
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Online peer count",
+      "type": "stat",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "targets": [
+        {"expr": "ironmesh_peer_count{instance=\"$instance\"}",
+         "legendFormat": "{{instance}}"}
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Handshake success / failure rate (per minute)",
+      "type": "timeseries",
+      "gridPos": {"x": 6, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "rate(ironmesh_handshake_successes_total{instance=\"$instance\"}[5m]) * 60",
+         "legendFormat": "success/min"},
+        {"expr": "rate(ironmesh_handshake_failures_total{instance=\"$instance\"}[5m]) * 60",
+         "legendFormat": "failure/min"}
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Audit chain tamper events (cumulative)",
+      "type": "stat",
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+      "targets": [
+        {"expr": "ironmesh_audit_tamper_detected_total{instance=\"$instance\"}"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": null, "color": "green"},
+              {"value": 1, "color": "red"}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Message throughput (bytes / sec, sent vs received)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "rate(ironmesh_bytes_sent_total{instance=\"$instance\"}[5m])",
+         "legendFormat": "tx"},
+        {"expr": "rate(ironmesh_bytes_received_total{instance=\"$instance\"}[5m])",
+         "legendFormat": "rx"}
+      ]
+    },
+    {
+      "id": 5,
+      "title": "RNS Link round-trip time (median, p95)",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "histogram_quantile(0.5, rate(ironmesh_rns_link_rtt_ms_bucket{instance=\"$instance\"}[5m]))",
+         "legendFormat": "p50"},
+        {"expr": "histogram_quantile(0.95, rate(ironmesh_rns_link_rtt_ms_bucket{instance=\"$instance\"}[5m]))",
+         "legendFormat": "p95"}
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Mesh routes (table size + ROUTE_UNREACHABLE rate)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "ironmesh_mesh_routes_count{instance=\"$instance\"}",
+         "legendFormat": "routes"},
+        {"expr": "rate(ironmesh_route_unreachable_total{instance=\"$instance\"}[5m])",
+         "legendFormat": "unreachable/s"}
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Capability registry depth",
+      "type": "stat",
+      "gridPos": {"x": 12, "y": 16, "w": 6, "h": 4},
+      "targets": [
+        {"expr": "ironmesh_capability_registry_size{instance=\"$instance\"}"}
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Handshake skip activations (when both peers advertise hskip)",
+      "type": "timeseries",
+      "gridPos": {"x": 18, "y": 16, "w": 6, "h": 8},
+      "targets": [
+        {"expr": "rate(ironmesh_handshake_skip_attempts_total{instance=\"$instance\"}[5m])",
+         "legendFormat": "skip attempts/s"}
+      ]
+    },
+    {
+      "id": 9,
+      "title": "LXMF inbox / outbox / drops",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 24, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "rate(ironmesh_lxmf_in_total{instance=\"$instance\"}[5m])",
+         "legendFormat": "lxmf in/s"},
+        {"expr": "rate(ironmesh_lxmf_out_total{instance=\"$instance\"}[5m])",
+         "legendFormat": "lxmf out/s"},
+        {"expr": "rate(ironmesh_lxmf_drops_unmapped_total{instance=\"$instance\"}[5m])",
+         "legendFormat": "drops unmapped/s"}
+      ]
+    },
+    {
+      "id": 10,
+      "title": "RNS Resource transfers (start vs complete)",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 24, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "rate(ironmesh_rns_resource_starts_total{instance=\"$instance\"}[5m])",
+         "legendFormat": "starts/s"},
+        {"expr": "rate(ironmesh_rns_resource_completes_total{instance=\"$instance\"}[5m])",
+         "legendFormat": "completes/s"}
+      ]
+    }
+  ]
+}
