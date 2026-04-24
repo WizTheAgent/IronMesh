@@ -1,0 +1,92 @@
+# mkdocs-material scaffold for docs.ironmesh.org
+#
+# Build:
+#   pip install mkdocs-material
+#   mkdocs build
+# Serve locally:
+#   mkdocs serve
+#
+# This scaffold is the v0.9.2 starting point for the v1.0 docs site
+# migration. Content stays in docs/*.md (the existing operator
+# guides) plus new tutorial / recipe / API-reference pages added in
+# follow-up commits.
+
+site_name: IronMesh
+site_url: https://docs.ironmesh.org
+site_description: >-
+  Local-first agent-to-agent mesh protocol. Multi-hop routing,
+  end-to-end encryption, capability discovery, LoRa transport.
+repo_url: https://github.com/WizTheAgent/IronMesh
+repo_name: WizTheAgent/IronMesh
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+
+nav:
+  - Home: index.md
+  - Quickstart: QUICKSTART.md
+  - Operator guide:
+      - Getting started: GETTING_STARTED.md
+      - Configuration: CONFIGURATION.md
+      - Operator runbook: OPERATOR_RUNBOOK.md
+      - Trust runbook: OPERATOR_TRUST_RUNBOOK.md
+  - Transport:
+      - Reticulum (LoRa / RNS): RETICULUM.md
+      - Mesh routing: MESH.md
+      - LoRa validation: LORA_VALIDATION.md
+      - NAT traversal: NAT_TRAVERSAL.md
+  - Integration:
+      - Capabilities: CAPABILITIES.md
+      - OpenClaw channel: OPENCLAW_CHANNEL_SETUP.md
+      - OpenClaw MCP: OPENCLAW_MCP_SETUP.md
+      - ACP integration: ACP_INTEGRATION.md
+      - A2A integration: A2A_INTEGRATION.md
+  - Specification:
+      - Protocol spec: PROTOCOL_SPEC.md
+      - Threat model: THREAT_MODEL.md
+      - Roadmap to 1.0: ROADMAP_TO_1.0.md
+  - Performance:
+      - Benchmarks: BENCHMARKS.md
+      - Observability: OBSERVABILITY.md
+      - Dashboard: DASHBOARD.md
