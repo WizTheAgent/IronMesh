@@ -24,6 +24,10 @@ For cryptographic primitives and the wire-level detail, see
 | A8 | Message metadata (source, dest, msg_id, timestamp) | Low-Medium | Visible to relays in mesh |
 | A9 | Peer identities (Ed25519 public key fingerprints) | Low — public-but-privacy-relevant | Exchanged during handshake only |
 | A10 | RNS (Reticulum) destination hash | Low — public | mDNS + announces |
+| A11 | RNS Identity private key + ratchet keys (v0.9.1+) | High | `~/.reticulum/ironmesh_<short>_identity` + `_ratchets` |
+| A12 | LXMF delivery identity (v0.9.1+) | High | `~/.ironmesh/lxmf/identity` |
+| A13 | Pending-trust message queue (v0.8.5+) | Medium — integrity | SQLite `pending_trust_messages` |
+| A14 | RNS admin RPC allow-list (v0.9.1+) | Medium — integrity | `--rns-admin-identities` CLI / env var |
 
 ---
 
@@ -114,6 +118,40 @@ For cryptographic primitives and the wire-level detail, see
 |--------|-----------|
 | **I** — Public knowledge of RNS destination | Accepted — RNS requires destinations to be addressable. Destination hash does not reveal identity key |
 
+### A11 — RNS Identity + ratchet keys (v0.9.1+)
+
+| Threat | Mitigation |
+|--------|-----------|
+| **S** — Theft of RNS Identity file | OS file permissions (0600); per-daemon paths so multi-tenant hosts can't cross-read; no IronMesh-managed encryption (RNS handles its own at-rest crypto) |
+| **T** — Tamper with ratchet store | RNS validates the ratchet file signature; tamper triggers RNS-level KeyError surfaced as a startup warning |
+| **I** — Memory scrape of ratchet keys | Ratchets rotate on a configurable interval (default 30 min); compromise of one window doesn't decrypt others; RESIDUAL: per-window window is in RAM during use |
+| **D** — Force ratchet rotation | Rotation is local + interval-bounded; no remote-triggered rotation |
+| **E** — Use RNS Identity to impersonate IronMesh node_id | RNS Identity hash and IronMesh node_id are separate keyspaces; the announce app_data binds them together via signature, but compromise of one does not auto-compromise the other |
+
+### A12 — LXMF delivery identity (v0.9.1+)
+
+| Threat | Mitigation |
+|--------|-----------|
+| **S** — Theft of LXMF identity file | OS file permissions; LXMF identity is separate from IronMesh identity, so loss does not compromise the IronMesh trust store |
+| **I** — LXMF announces broadcast destination | Accepted — LXMF requires public addressability for store-and-forward propagation |
+| **D** — LXMF flood from untrusted senders | `inbound_route` allowlist + `default_inbound_peer` catch-all; unmapped traffic is dropped, never forwarded |
+
+### A13 — Pending-trust message queue
+
+| Threat | Mitigation |
+|--------|-----------|
+| **D** — Fill the queue from a malicious peer | Per-peer cap (`pending_trust_queue_cap`, default 100); oldest evicted on overflow; per-peer audit-log rate limit prevents log flood |
+| **I** — Read queued payloads | SQLite encrypted with SecretBox; database file 0600 |
+| **R** — Operator denies queueing | Audit log records every `MSG_GATED_QUEUE` event with source identity hash |
+
+### A14 — RNS admin RPC allow-list (v0.9.1+)
+
+| Threat | Mitigation |
+|--------|-----------|
+| **E** — Unauthorized admin call | Per-call identity check against the configured allow-list (CLI / env var); empty list = admin RPC disabled by default |
+| **T** — Allow-list tampering | Allow-list is loaded from CLI / env at startup; runtime mutation requires daemon restart, leaving an audit trail |
+| **R** — Operator denies granting access | Each granted identity hash is logged at startup |
+
 ---
 
 ## 3. Cross-asset Attacks
@@ -126,6 +164,11 @@ For cryptographic primitives and the wire-level detail, see
 | **mDNS spoofing** | Default-deny auto-connect; allowlist (`--allowed-peers`) or `--open-discovery`; v0.6 `idhash` lets receivers filter before handshake |
 | **Downgrade to older protocol** | v0.6 `--min-protocol-version` rejects peers below threshold |
 | **Resource exhaustion via handshake storm** | Per-IP rate limit + 3-failure-5-min ban + v0.6 jittered exponential backoff on outbound reconnects |
+| **RNS announce spoofing (v0.9.1+)** | RNS announces are signed by the announcing Identity; receivers verify via RNS's own validation. Announce-driven discovery records the identity hash, but a Link must still complete (mutual Identity auth) before any IronMesh trust is granted |
+| **Capability advertisement forgery** | Capability advertisements ride the encrypted IronMesh wire layer (signed envelopes). Local capability registry is HMAC-protected; remote-cap learning requires an authenticated peer. v0.9.0 cap-binding pins `SHA-256(sorted-caps)` alongside the identity in the trust store — peer reconnecting with changed caps demotes to `pending-cap-change` |
+| **Cross-mesh federation forwards** | Federation gateway enforces per-edge allow/deny policy; every cross-mesh forward is audit-logged. Out-of-scope: no anonymity for a sender across federation boundaries |
+| **Resource transfer >32KB on RNS (v0.9.1+)** | Hard cap of 64 MB per `RNS.Resource` prevents lockout; integrity verified by RNS at the Resource layer; receiver accepts only when peer advertised the `resource` feature in announces |
+| **Handshake-skip downgrade attack (v0.9.2+)** | The skip is opt-in on both ends + advertised in the RNS announce. A passive attacker cannot cause the skip to fire (both peers must independently advertise); a MITM cannot inject `hskip` because the announce is signed by the announcing RNS Identity. Worst case: a peer claiming `hskip` it doesn't actually support produces a handshake stall, not a security regression |
 
 ---
 
@@ -153,11 +196,89 @@ IronMesh does not defend against:
 
 ---
 
-## 6. Change Log
+## 6. Trust Boundaries
 
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Operator-controlled host                                   │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │  IronMesh daemon process                            │    │
+│  │  ┌─────────────────────────────────────────────┐    │    │
+│  │  │  In-memory secrets (session keys,           │    │    │
+│  │  │  ephemeral X25519 priv keys, passphrase)    │    │    │
+│  │  └─────────────────────────────────────────────┘    │    │
+│  │  ┌─────────────────────────────────────────────┐    │    │
+│  │  │  Disk: keys.json (Argon2id+SecretBox),      │    │    │
+│  │  │        trust.json (HMAC), audit.log         │    │    │
+│  │  │        (HMAC chain), data.db (SecretBox)    │    │    │
+│  │  └─────────────────────────────────────────────┘    │    │
+│  └─────────────────────────────────────────────────────┘    │
+│                       │                                     │
+│  ╔════════════════════╪═════════════════════════════════╗   │
+│  ║  Local network (LAN)                                 ║   │
+│  ║                    │                                 ║   │
+│  ║  ┌─────────────────┴───────────────────────────┐     ║   │
+│  ║  │  WebSocket transport (default-deny mDNS;    │     ║   │
+│  ║  │  every connection requires passphrase auth) │     ║   │
+│  ║  └─────────────────────────────────────────────┘     ║   │
+│  ╚══════════════════════════════════════════════════════╝   │
+│                       │                                     │
+│  ╔════════════════════╪═════════════════════════════════╗   │
+│  ║  Reticulum mesh (LAN + LoRa + I2P + WAN)             ║   │
+│  ║                    │                                 ║   │
+│  ║  ┌─────────────────┴───────────────────────────┐     ║   │
+│  ║  │  RNS Link (forward-secret AEAD by RNS) →     │     ║   │
+│  ║  │  IronMesh frame (SecretBox + Ed25519 sig)    │     ║   │
+│  ║  │  Optional: handshake skip on identified     │     ║   │
+│  ║  │  Links (passphrase replaced by Identity     │     ║   │
+│  ║  │  authentication at the RNS Link layer)      │     ║   │
+│  ║  └─────────────────────────────────────────────┘     ║   │
+│  ╚══════════════════════════════════════════════════════╝   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+The double-line boundary marks the trust transition: anything inside
+the operator's host is trusted by the IronMesh threat model; anything
+outside is hostile by default. Each network layer adds its own
+crypto so a break in one layer doesn't compromise the others — RNS
+Link encryption is independent of IronMesh-layer SecretBox, which is
+independent of E2E SealedBox for relay traffic.
+
+---
+
+## 7. Change Log
+
+- **v0.9.2**: Handshake skip on identified RNS Links (opt-in, both peers advertise `hskip`); capability-aware routing (`send_to_capability`); A11–A14 added; cross-asset attack table extended for RNS-specific threats.
+- **v0.9.1**: Reticulum integration sweep — auto-discovery via announces, per-packet ratchets, RNS Resource auto-routing, public capability RPC paths, identity-gated admin RPC, LXMF interop. Added A11–A14 assets.
+- **v0.9.0**: OpenClaw / ACP / A2A interop surfaces; capability registry persistence; cross-transport replay detection; cap-set-binding TOFU extension.
+- **v0.8.5**: Pending-trust message gate (A13).
 - **v0.6.0**: Added signed revocation broadcast, version rejection, mDNS idhash, jittered backoff, backup/restore, audit export, frame parser fuzzing.
 - **v0.5.2**: Session key rotation, RTT metrics, LoRa QoS, test harness.
 - **v0.5.1**: Transport failover (WS ↔ RNS), TOFU address pinning fix, RNS Buffer rewrite.
 - **v0.5.0**: Reticulum (LoRa) transport.
 - **v0.4.0**: Mesh routing, E2E SealedBox, capability discovery, audit log rotation.
 - **v0.3.0**: Binary wire format, mandatory encryption + signatures, rate limiting.
+
+---
+
+## 8. External-Audit Pre-Pack
+
+For external security reviewers consuming this document:
+
+- This file (`THREAT_MODEL.md`) is the model.
+- `SECURITY.md` is the cryptographic primitive justifications +
+  vulnerability disclosure policy.
+- `PROTOCOL_SPEC.md` is the wire-level specification + the
+  per-feature stable-since table (§11).
+- `tests/conformance/` contains golden vectors covering every
+  message type and state transition.
+- The per-release live-stress test reports are operator-internal —
+  out-of-scope for external reviewers but available on request.
+- The repo's `git log` is the change history; every fix to a
+  security-relevant code path carries a commit message describing
+  the bug class and reproduction.
+
+A v1.0 release commits to this document remaining accurate. Any
+material change to the trust model or any new asset added between
+v1.0 and the next major version will surface here with a dated
+change-log entry.
