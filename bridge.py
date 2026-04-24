@@ -4427,6 +4427,131 @@ class BridgeDaemon:
             f"LXMF={'available' if self._lxmf else 'disabled'}."
         )
 
+    # ------------------------------------------------------------------
+    # v0.9.2 chunk E: capability-aware routing
+    # ------------------------------------------------------------------
+    #
+    # `send_to_capability(pattern, payload)` resolves a capability glob
+    # to one (or many) qualifying peers and dispatches via the same
+    # transport-selection layer that backs `send_to_name`. Three
+    # strategies are supported:
+    #
+    #   first   — pick the first matching peer (lowest measured RTT
+    #             among online peers, falling back to enumeration order
+    #             for offline-but-discovered)
+    #   random  — pick a random match (load distribution)
+    #   all     — fan-out to every match in parallel; return list of
+    #             per-target results
+    #
+    # The local node is NEVER picked even when it satisfies the
+    # capability — agents calling this always want a remote peer.
+
+    def _capability_candidates(self, pattern: str) -> list:
+        """Return [(node_id, capability)] of remote peers matching the pattern."""
+        if self._capabilities is None:
+            return []
+        candidates = []
+        for node_id, cap in self._capabilities.find(pattern):
+            if node_id == self.node_id:
+                continue  # never route to self
+            candidates.append((node_id, cap))
+        return candidates
+
+    def _rank_candidates(self, candidates: list, strategy: str) -> list:
+        """Order candidates by the chosen strategy. Returns the ordered list."""
+        if not candidates:
+            return []
+        if strategy == "random":
+            import random as _random
+            ordered = list(candidates)
+            _random.shuffle(ordered)
+            return ordered
+        if strategy == "all":
+            return list(candidates)
+        # 'first' — prefer online peers with the lowest measured RTT
+        def _key(entry):
+            node_id, _cap = entry
+            state = self.peers.get(node_id)
+            online = state is not None and state.is_online
+            rtt = (state.latency_ms if online and state.latency_ms is not None else float("inf"))
+            return (0 if online else 1, rtt)
+        return sorted(candidates, key=_key)
+
+    async def send_to_capability(self, pattern: str, payload,
+                                  msg_type: str = "MSG",
+                                  priority: str = "NORMAL",
+                                  strategy: str = "first") -> dict:
+        """Send to any peer advertising a capability matching ``pattern``.
+
+        ``pattern`` is an fnmatch-style glob (e.g. ``"llm:*"``,
+        ``"tool:filesystem"``). The strategy controls fan-out:
+
+          * ``"first"`` — pick the best-ranked match (default). Returns
+            the same descriptor shape as :meth:`send_to_name` plus a
+            ``capability`` field naming the matched cap.
+          * ``"random"`` — pick a random match. Same return shape.
+          * ``"all"`` — dispatch to every match in parallel. Returns
+            ``{"transport": "fanout", "results": [<per-target descriptors>],
+              "capability": pattern}``.
+
+        Raises ``ValueError`` if no peer advertises a matching
+        capability (or all matches fail when strategy=all).
+        """
+        candidates = self._capability_candidates(pattern)
+        if not candidates:
+            raise ValueError(
+                f"No peer advertises a capability matching {pattern!r}"
+            )
+        ordered = self._rank_candidates(candidates, strategy)
+
+        if strategy == "all":
+            results = []
+            for node_id, cap in ordered:
+                state = self.peers.get(node_id)
+                name = getattr(state, "agent_name", None) if state else None
+                target = name or node_id
+                try:
+                    res = await self.send_to_name(target, payload,
+                                                   msg_type=msg_type,
+                                                   priority=priority)
+                    res["capability"] = cap
+                    results.append(res)
+                except Exception as e:
+                    results.append({"target": target, "capability": cap,
+                                    "error": f"{type(e).__name__}: {e}"})
+            success = sum(1 for r in results if "error" not in r)
+            if success == 0:
+                raise ValueError(
+                    f"All {len(results)} candidates for {pattern!r} failed"
+                )
+            return {"transport": "fanout", "results": results,
+                    "capability": pattern, "success": success,
+                    "total": len(results)}
+
+        # 'first' or 'random' — try ordered, returning on first success
+        last_err = None
+        for node_id, cap in ordered:
+            state = self.peers.get(node_id)
+            name = getattr(state, "agent_name", None) if state else None
+            target = name or node_id
+            try:
+                res = await self.send_to_name(target, payload,
+                                               msg_type=msg_type,
+                                               priority=priority)
+                res["capability"] = cap
+                res["strategy"] = strategy
+                return res
+            except Exception as e:
+                last_err = e
+                logger.debug(
+                    "send_to_capability(%r) target %s failed: %s — trying next",
+                    pattern, target, e,
+                )
+        raise ValueError(
+            f"No reachable peer for capability {pattern!r} "
+            f"(tried {len(ordered)} candidates; last error: {last_err})"
+        )
+
     def _on_rns_link_stats(self, peer_id: str, stats: dict) -> None:
         """Update PeerState with the latest RNS Link metrics.
 

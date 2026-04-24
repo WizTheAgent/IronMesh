@@ -212,6 +212,65 @@ class Agent:
         )
         return fut.result(timeout=timeout)
 
+    async def send_to_capability(
+        self,
+        pattern: str,
+        message: Union[str, bytes],
+        *,
+        msg_type: str = "MSG",
+        priority: str = "NORMAL",
+        strategy: str = "first",
+    ) -> Dict[str, Any]:
+        """Send to any peer whose capabilities match a glob pattern.
+
+        Resolves ``pattern`` (e.g. ``"llm:*"``, ``"tool:filesystem"``)
+        against the capability registry, then dispatches via the same
+        unified-transport selection as :meth:`send_to`. The local node
+        is never picked even when it satisfies the capability.
+
+        Strategies:
+
+        * ``"first"`` (default) — pick the best-ranked match; online
+          peers with the lowest measured RTT come first, falling back
+          to enumeration order. Tries the next match if the first
+          fails.
+        * ``"random"`` — pick a random match. Useful for load
+          distribution across capability-equivalent peers.
+        * ``"all"`` — fan out to every match in parallel. Returns a
+          ``"transport": "fanout"`` descriptor with per-target results.
+
+        Raises ``ValueError`` if no peer advertises the capability or
+        every reachable candidate fails.
+        """
+        if self._loop is None:
+            raise RuntimeError("Agent not running. Call run() first.")
+        payload = message.encode("utf-8") if isinstance(message, str) else message
+        return await self.daemon.send_to_capability(
+            pattern, payload, msg_type=msg_type,
+            priority=priority, strategy=strategy,
+        )
+
+    def send_to_capability_sync(
+        self,
+        pattern: str,
+        message: Union[str, bytes],
+        *,
+        msg_type: str = "MSG",
+        priority: str = "NORMAL",
+        strategy: str = "first",
+        timeout: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Blocking variant of :meth:`send_to_capability`."""
+        if self._loop is None:
+            raise RuntimeError("Agent not running. Call run() first.")
+        payload = message.encode("utf-8") if isinstance(message, str) else message
+        fut = asyncio.run_coroutine_threadsafe(
+            self.daemon.send_to_capability(pattern, payload, msg_type=msg_type,
+                                             priority=priority, strategy=strategy),
+            self._loop,
+        )
+        return fut.result(timeout=timeout)
+
     def reply(
         self,
         peer_id: str,
