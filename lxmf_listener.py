@@ -76,7 +76,9 @@ class LXMFListener:
                  default_inbound_peer: Optional[str] = None,
                  propagation_node: bool = False,
                  propagation_storage_path: str = "~/.ironmesh/lxmf/propagation",
-                 announce_interval: float = 600.0):
+                 announce_interval: float = 600.0,
+                 telemetry_target: Optional[str] = None,
+                 telemetry_interval: float = 300.0):
         if not _HAS_LXMF:
             raise RuntimeError(
                 "lxmf package is not installed — install with: pip install ironmesh[lxmf]"
@@ -88,12 +90,23 @@ class LXMFListener:
         self._propagation_node = propagation_node
         self._propagation_storage_path = os.path.expanduser(propagation_storage_path)
         self._announce_interval = announce_interval
+        # Optional telemetry target — a destination hash to receive
+        # periodic metrics summaries as LXMessages. Format is plain
+        # human-readable text so any LXMF client (Sideband, Nomadnet,
+        # custom) can render it without special handling. Sideband-
+        # specific telemetry-field encoding is a follow-up.
+        self._telemetry_target = (
+            telemetry_target.strip().lower().replace(":", "").replace(" ", "")
+            if telemetry_target else None
+        )
+        self._telemetry_interval = telemetry_interval
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._reticulum = None
         self._router: Optional["LXMF.LXMRouter"] = None
         self._delivery_destination = None
         self._announce_task: Optional[asyncio.Task] = None
+        self._telemetry_task: Optional[asyncio.Task] = None
         self._shutdown = False
 
         # Stats surfaced on the dashboard
@@ -196,6 +209,12 @@ class LXMFListener:
             logger.exception("Failed to subscribe to MSG bus")
 
         self._announce_task = loop.create_task(self._announce_loop())
+        if self._telemetry_target:
+            self._telemetry_task = loop.create_task(self._telemetry_loop())
+            logger.info(
+                "LXMF telemetry publishing every %.0fs to %s",
+                self._telemetry_interval, self._telemetry_target[:16],
+            )
 
     async def _announce_loop(self) -> None:
         """Re-announce the LXMF identity on a longer cadence than IronMesh."""
@@ -214,6 +233,83 @@ class LXMFListener:
         self._shutdown = True
         if self._announce_task:
             self._announce_task.cancel()
+        if self._telemetry_task:
+            self._telemetry_task.cancel()
+
+    # ------------------------------------------------------------------
+    # Telemetry — periodic metrics summary as an LXMessage
+    # ------------------------------------------------------------------
+
+    def build_telemetry_text(self) -> str:
+        """Build the text body of a telemetry message.
+
+        Plain human-readable so any LXMF client can render it without
+        a custom decoder. Includes a machine-readable header line
+        (`# IRONMESH-TELEMETRY v1`) so future automated consumers can
+        recognise and parse the format.
+        """
+        daemon = self._daemon
+        now = time.time()
+        # Be defensive about every daemon attribute — this telemetry path
+        # must never raise. A partially-initialised or mock daemon should
+        # still produce valid output, even if some fields come out as 0.
+        started_raw = getattr(daemon, "_started_at", now) if daemon else now
+        started = started_raw if isinstance(started_raw, (int, float)) else now
+        metrics = getattr(daemon, "metrics", None) if daemon else None
+        peers_raw = getattr(daemon, "peers", {}) if daemon else {}
+        peers = peers_raw if isinstance(peers_raw, dict) else {}
+        rns_disc_raw = getattr(daemon, "_rns_discovered", {}) if daemon else {}
+        rns_disc = rns_disc_raw if isinstance(rns_disc_raw, dict) else {}
+        online_peers = sum(
+            1 for s in peers.values() if getattr(s, "is_online", False)
+        )
+        lines = [
+            "# IRONMESH-TELEMETRY v1",
+            f"name: {getattr(daemon, 'name', 'ironmesh') if daemon else 'ironmesh'}",
+            f"node_id: {getattr(daemon, 'node_id', '') if daemon else ''}",
+            f"uptime_s: {now - started:.0f}",
+            f"peers_total: {len(peers)}",
+            f"peers_online: {online_peers}",
+            f"rns_discovered: {len(rns_disc)}",
+        ]
+        def _metric(name: str) -> int:
+            if metrics is None:
+                return 0
+            val = getattr(metrics, name, 0)
+            return val if isinstance(val, (int, float)) else 0
+        if metrics is not None:
+            lines.extend([
+                f"messages_sent: {_metric('messages_sent'):.0f}",
+                f"messages_received: {_metric('messages_received'):.0f}",
+                f"bytes_sent: {_metric('bytes_sent'):.0f}",
+                f"bytes_received: {_metric('bytes_received'):.0f}",
+                f"handshake_successes: {_metric('handshake_successes'):.0f}",
+            ])
+        lines.extend([
+            f"lxmf_in: {self.stats['lxmf_in']}",
+            f"lxmf_out: {self.stats['lxmf_out']}",
+        ])
+        return "\n".join(lines) + "\n"
+
+    async def _telemetry_loop(self) -> None:
+        """Periodically publish a metrics summary to the configured target."""
+        # First publish: short delay so any startup churn settles.
+        await asyncio.sleep(min(30.0, self._telemetry_interval))
+        while not self._shutdown:
+            try:
+                text = self.build_telemetry_text()
+                ok = await self.send_lxmf_to(
+                    self._telemetry_target, text,
+                    title="IronMesh Telemetry",
+                )
+                if not ok:
+                    logger.debug("Telemetry publish to %s failed",
+                                 self._telemetry_target[:16])
+            except Exception:
+                logger.exception("telemetry loop error")
+            await asyncio.sleep(self._telemetry_interval)
+            if self._shutdown:
+                break
 
     # ------------------------------------------------------------------
     # Outbound: IronMesh code calling out to an LXMF destination

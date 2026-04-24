@@ -167,6 +167,43 @@ The LXMF listener:
 Tune the storage path with `--lxmf-storage` and the display name shown
 to other Reticulum users with `--lxmf-display-name`.
 
+### Telemetry publishing
+
+With `--lxmf-telemetry-target <dest_hash>` set, the listener sends a
+plain-text metrics summary to the given LXMF destination at a
+configurable interval (default 5 minutes). The format is intentionally
+simple:
+
+```
+# IRONMESH-TELEMETRY v1
+name: alice
+node_id: 611979d276ae2c4d77eac2b826a17975
+uptime_s: 3601
+peers_total: 4
+peers_online: 3
+rns_discovered: 7
+messages_sent: 1240
+messages_received: 1815
+bytes_sent: 342188
+bytes_received: 411903
+handshake_successes: 12
+lxmf_in: 3
+lxmf_out: 3
+```
+
+Any LXMF client renders this as a regular text message — Sideband
+shows it in the thread, Nomadnet treats it as a standard LXMessage.
+Future releases may add Sideband-specific telemetry-field encoding
+for native graph / map rendering; the plain-text format above remains
+supported as the lowest-common-denominator contract.
+
+Fleet monitoring pattern: run one always-on LXMF client that listens
+at a known destination; every IronMesh node in the fleet targets
+that destination with `--lxmf-telemetry-target`. The receiver sees a
+time-series of metrics summaries flow in via regular Reticulum
+transport — no HTTP endpoints exposed, no central service, no
+account system.
+
 ### Propagation node mode
 
 LXMF supports propagation nodes — store-and-forward infrastructure that

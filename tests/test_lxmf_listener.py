@@ -269,6 +269,74 @@ class TestLXMFListener:
         finally:
             listener.shutdown()
 
+    def test_build_telemetry_text_includes_core_fields(self):
+        # Build a fully-populated daemon and check the telemetry body.
+        daemon = _make_daemon()
+        daemon.name = "telemetry-node"
+        daemon.node_id = "abcdef123456"
+        daemon._started_at = 1000.0
+        online_peer = MagicMock()
+        online_peer.is_online = True
+        offline_peer = MagicMock()
+        offline_peer.is_online = False
+        daemon.peers = {"p1": online_peer, "p2": offline_peer}
+        daemon._rns_discovered = {"h1": {}, "h2": {}, "h3": {}}
+        metrics = MagicMock()
+        metrics.messages_sent = 100
+        metrics.messages_received = 200
+        metrics.bytes_sent = 50000
+        metrics.bytes_received = 80000
+        metrics.handshake_successes = 5
+        daemon.metrics = metrics
+        listener = _make_listener(daemon=daemon)
+        text = listener.build_telemetry_text()
+        assert text.startswith("# IRONMESH-TELEMETRY v1\n")
+        assert "name: telemetry-node" in text
+        assert "node_id: abcdef123456" in text
+        assert "peers_total: 2" in text
+        assert "peers_online: 1" in text
+        assert "rns_discovered: 3" in text
+        assert "messages_sent: 100" in text
+        assert "bytes_received: 80000" in text
+        assert "handshake_successes: 5" in text
+
+    def test_build_telemetry_handles_missing_metrics(self):
+        # If the daemon has no metrics object, telemetry still renders.
+        daemon = _make_daemon()
+        daemon.name = "bare"
+        daemon.node_id = "x"
+        daemon.peers = {}
+        daemon._rns_discovered = {}
+        daemon.metrics = None
+        listener = _make_listener(daemon=daemon)
+        text = listener.build_telemetry_text()
+        assert "name: bare" in text
+        assert "peers_total: 0" in text
+        # Metrics block absent but stats block still present
+        assert "lxmf_in:" in text
+
+    def test_telemetry_target_normalisation(self):
+        # Colons, spaces, casing — all normalised to lowercase hex.
+        listener = _make_listener(
+            telemetry_target="AA:BB:CC:DD " * 4,
+        )
+        assert listener._telemetry_target == "aabbccdd" * 4
+
+    def test_telemetry_disabled_when_target_not_set(self, tmp_path):
+        listener = _make_listener(
+            storage_path=str(tmp_path),
+            telemetry_target=None,
+        )
+        assert listener._telemetry_target is None
+        # start() should NOT schedule the telemetry loop
+        loop = asyncio.new_event_loop()
+        try:
+            listener.start(loop)
+            assert listener._telemetry_task is None
+        finally:
+            listener.shutdown()
+            loop.close()
+
     @pytest.mark.asyncio
     async def test_delivery_destination_hash_property(self, tmp_path):
         loop = asyncio.get_running_loop()

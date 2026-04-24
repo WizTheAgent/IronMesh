@@ -1320,6 +1320,8 @@ class BridgeDaemon:
                  lxmf_default_peer: Optional[str] = None,
                  lxmf_propagation_node: bool = False,
                  lxmf_propagation_storage: str = "~/.ironmesh/lxmf/propagation",
+                 lxmf_telemetry_target: Optional[str] = None,
+                 lxmf_telemetry_interval: float = 300.0,
                  # v0.5.2: QoS + rekey
                  lora_max_payload: int = 128,
                  rekey_interval: float = 1800.0,
@@ -1522,6 +1524,8 @@ class BridgeDaemon:
         self._lxmf_default_peer = lxmf_default_peer
         self._lxmf_propagation_node = lxmf_propagation_node
         self._lxmf_propagation_storage = lxmf_propagation_storage
+        self._lxmf_telemetry_target = lxmf_telemetry_target
+        self._lxmf_telemetry_interval = lxmf_telemetry_interval
         self._lxmf: Optional[object] = None  # LXMFListener instance once started
         self._reticulum: Optional[object] = None  # ReticulumTransport instance
         self._known_rns_hashes: dict = {}  # peer_id -> rns_dest_hash_hex
@@ -1812,6 +1816,8 @@ class BridgeDaemon:
                         default_inbound_peer=self._lxmf_default_peer,
                         propagation_node=self._lxmf_propagation_node,
                         propagation_storage_path=self._lxmf_propagation_storage,
+                        telemetry_target=self._lxmf_telemetry_target,
+                        telemetry_interval=self._lxmf_telemetry_interval,
                     )
                     self._lxmf.start(asyncio.get_event_loop())
             except Exception as e:

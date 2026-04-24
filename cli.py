@@ -139,6 +139,13 @@ def parse_args():
     run_parser.add_argument("--lxmf-propagation-storage", default="~/.ironmesh/lxmf/propagation",
                            help="Storage path for the propagation node "
                                 "(default: ~/.ironmesh/lxmf/propagation)")
+    run_parser.add_argument("--lxmf-telemetry-target", default=None,
+                           help="LXMF destination hash to receive periodic "
+                                "metrics summaries as LXMessages. Any LXMF "
+                                "client (Sideband, Nomadnet) can render the "
+                                "plain-text body. Leave unset to disable.")
+    run_parser.add_argument("--lxmf-telemetry-interval", type=float, default=300.0,
+                           help="Seconds between telemetry publishes (default: 300)")
     run_parser.add_argument("--lora-max-payload", type=int, default=128,
                            help="Max payload bytes for RNS/LoRa transport (default: 128, 0 to disable)")
     run_parser.add_argument("--rekey-interval", type=float, default=1800.0,
@@ -848,6 +855,8 @@ def cmd_run(args):
         lxmf_propagation_node=getattr(args, "lxmf_propagation_node", False),
         lxmf_propagation_storage=getattr(args, "lxmf_propagation_storage",
                                            "~/.ironmesh/lxmf/propagation"),
+        lxmf_telemetry_target=getattr(args, "lxmf_telemetry_target", None),
+        lxmf_telemetry_interval=getattr(args, "lxmf_telemetry_interval", 300.0),
         # v0.5.2: QoS + rekey
         lora_max_payload=getattr(args, "lora_max_payload", 128),
         rekey_interval=getattr(args, "rekey_interval", 1800.0),

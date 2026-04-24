@@ -68,6 +68,15 @@ Nomadnet, LXMF).
   flags: `--lxmf`, `--lxmf-storage`, `--lxmf-display-name`,
   `--lxmf-default-peer`. Requires the `lxmf` extra
   (`pip install ironmesh[lxmf]`).
+- **LXMF telemetry publishing (`--lxmf-telemetry-target`).** When a
+  target destination hash is configured, the listener sends a
+  periodic plain-text metrics summary (uptime, peer counts, message
+  rates, byte totals, handshake successes, LXMF stats) as an
+  LXMessage to that destination. Format is the lowest-common-
+  denominator `# IRONMESH-TELEMETRY v1` text block — any LXMF client
+  renders it without special handling. Tunable cadence via
+  `--lxmf-telemetry-interval` (default 300 s). Fleet monitoring
+  without HTTP endpoints, central services, or account systems.
 - **LXMF propagation node mode (`--lxmf-propagation-node`).** Opt-in
   store-and-forward infrastructure for offline LXMF peers. Recommended
   only on always-on hosts with persistent storage. Storage path
