@@ -29,17 +29,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import threading
 import time
-from typing import Callable, Dict, Optional
+from typing import Dict, Optional
 
 logger = logging.getLogger("ironmesh.lxmf")
 
 # Lazy imports — keep the module importable for tests / type-check
 # even when the lxmf extra isn't installed.
 try:
-    import RNS  # type: ignore
     import LXMF  # type: ignore
+    import RNS  # type: ignore
     _HAS_LXMF = True
 except ImportError:
     RNS = None  # type: ignore
@@ -139,8 +138,8 @@ class LXMFListener:
         """Initialise RNS + LXMF, register identity, subscribe to MSG bus.
 
         Must run on the asyncio thread. Reuses an existing Reticulum
-        singleton if the IronMesh bridge already started one, so the listener does
-        don't end up with two competing instances.
+        singleton if the IronMesh bridge already started one, so the
+        listener does not end up with two competing instances.
         """
         self._loop = loop
 

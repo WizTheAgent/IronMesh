@@ -18,7 +18,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import nacl.exceptions as nacl_exceptions
 import websockets
@@ -1802,7 +1802,7 @@ class BridgeDaemon:
         # was not also passed).
         if self._lxmf_enabled:
             try:
-                from .lxmf_listener import LXMFListener, _HAS_LXMF
+                from .lxmf_listener import _HAS_LXMF, LXMFListener
                 if not _HAS_LXMF:
                     logger.warning(
                         "--lxmf flag set but lxmf package not installed. "
