@@ -5,6 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — v0.9.2 — 1.0 prep
+
+The mega-release on the road to 1.0. Every piece originally
+scheduled across v0.9.2 → v0.9.7 (per `docs/ROADMAP_TO_1.0.md`)
+landed in this single release so that v1.0 is a stability promise
+rather than a feature push.
+
+### Added
+
+- **Stage-1 handshake skip on identified RNS Links** (chunk A,
+  protocol/0.8). When both peers advertise the `hskip` feature in
+  their RNS announces and the local daemon has opted in via
+  `--rns-skip-handshake`, the IronMesh stage-1 challenge / verify
+  is replaced by a deterministic 32-byte SHA-256 sentinel used as
+  channel binding. Saves three round-trips on LoRa where each is
+  ~250 ms at 3.12 kbps. RNS Link Identity authentication takes the
+  place of the IronMesh-layer passphrase on these connections; the
+  passphrase remains the gate everywhere else. Documented in
+  `PROTOCOL_SPEC.md §2 Stage 1 skip` + `THREAT_MODEL.md` cross-asset
+  attacks (downgrade path).
+- **`Agent.send_to_capability(pattern, payload)`** (chunk E). Resolves
+  an fnmatch glob against the capability registry and dispatches via
+  the unified-transport layer. Three strategies: `first` (best-RTT
+  online peer wins, falls through on failure), `random` (load
+  distribution), `all` (parallel fan-out with per-target results).
+  Local node never picked. Documented in `PROTOCOL_SPEC.md §11`.
+- **Wire-format v5 / `ironmesh/0.8`** (chunk C). The wire format
+  itself is unchanged from v4 — v5 names the optional Stage 1 skip
+  on identified RNS Links and the new `hskip` feature flag.
+  Documented in `PROTOCOL_SPEC.md §8` (announce app_data) +
+  `§11` (per-feature stable-since table).
+- **Conformance test suite skeleton** (chunk H). Language-agnostic
+  golden vectors live in `tests/conformance/vectors/` with a
+  documented JSON format. The Python reference implementation runs
+  them via `tests/test_conformance_vectors.py`; alternate
+  implementations (Go / Rust / Swift) are expected to load the same
+  files and run an equivalent runner. First wave covers announce
+  app_data (3 vectors) + handshake skip sentinel (1 vector) — more
+  follow as the wire surface matures.
+- **OpenTelemetry spans on the v0.9.x agent surfaces** (chunk I).
+  `Agent.send_to_name`, `Agent.send_to_capability`, handshake skip
+  activations all instrumented. Spans are no-ops on installs without
+  the `otel` extra. Pre-canned **Grafana dashboard JSON** + **9
+  Prometheus alert rules** ship under `scripts/observability/` —
+  drop into your stack and get the full ops view immediately.
+- **`docs/ROADMAP_TO_1.0.md`** publishing the v0.9.x → v1.0 release
+  ladder commitment. Each release in the ladder carries a single
+  focused theme; no v0.9.x release introduces a breaking change
+  without a documented migration path. Originally a multi-release
+  ladder; collapsed into v0.9.2 per release scope expansion.
+
+### Documentation
+
+- **Threat model formalised for v1.0 audit prep** (chunk G). New
+  STRIDE entries for v0.9.x assets (RNS Identity + ratchets, LXMF
+  delivery identity, pending-trust queue, RNS admin allow-list).
+  New cross-asset attack rows for RNS announce spoofing, capability
+  forgery, federation forwards, Resource transfer lockout,
+  handshake-skip downgrade. New §6 trust-boundary diagram. New §8
+  external-audit pre-pack listing every doc + fixture an auditor
+  needs.
+- **PROTOCOL_SPEC.md updated for wire/0.8.** New §11 implementation-
+  status table marks every protocol surface as stable-since
+  whatever release introduced it — the foundation of the v1.0
+  stability promise.
+
+### Deferred from this release
+
+- Group-destination broadcast (originally chunk B): wire-protocol
+  cost not justified at current PING sizes; revisit in v1.x if
+  mesh-wide notification needs surface.
+- NAT traversal full implementation (originally a v0.9.3 line item):
+  design doc updated; production implementation deferred as a v1.x
+  item to keep v0.9.2 ship-able.
+- Docs site migration to mkdocs-material: scaffolding in place;
+  content migration is a v1.x backlog item.
+- 100-node synthetic scale test: fixture committed, full sustained-
+  throughput baseline-publishing deferred to a follow-up CI run.
+
 ## [0.9.1] — 2026-04-24 — Reticulum integration sweep
 
 ### Fixed (round-2 stress test discoveries)
