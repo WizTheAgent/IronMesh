@@ -20,6 +20,23 @@ Nomadnet, LXMF).
 
 ### Added
 
+- **Unified transport selection via `Agent.send_to()`.** A single call
+  that picks the best available transport for a named peer:
+  WebSocket / RNS Link for existing online peers, auto-established
+  RNS Link for announce-discovered peers, LXMF for 32-byte
+  destination hashes when the `--lxmf` listener is running. Returns
+  a descriptor naming the transport and tier used
+  (`{"transport": "rns", "target": "node-bob", "tier": 2, ...}`).
+  The OpenClaw channel, ACP stdio adapter, and A2A HTTP gateway all
+  call this internally — adding a future transport is a one-site
+  change in the daemon rather than a per-adapter rewrite.
+- **`Agent.unified_peers` — merged view across all transports.**
+  Every known peer with a `reachable_via` list naming the
+  transports that can reach them right now (`"websocket"`, `"rns"`,
+  `"rns_announce"`). Includes live metrics (`estimated_rtt_ms`,
+  `estimated_bps`, `rns_hops`) so AI agents can make scheduling
+  decisions (send now / queue / skip) with a single dict lookup.
+  Replaces the WS-only `Agent.peer_by_name` heuristic.
 - **Auto-discovery of IronMesh peers over RNS.** Every IronMesh node now
   registers an `RNS.Transport` announce handler and emits a structured
   announce app_data payload (`{n,v,i,c,f}`) carrying the agent name,

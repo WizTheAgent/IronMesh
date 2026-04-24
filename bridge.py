@@ -4146,6 +4146,181 @@ class BridgeDaemon:
             self._known_rns_hashes[peer_id] = dest_hash
         return peer_id
 
+    # ------------------------------------------------------------------
+    # v0.9.1: unified transport selection — Agent SDK + OpenClaw + ACP/A2A
+    # ------------------------------------------------------------------
+    #
+    # The daemon already has three transport options for outbound:
+    #   * WebSocket (always-on)
+    #   * RNS Link  (when --reticulum)
+    #   * LXMF      (when --lxmf)
+    #
+    # Callers historically had to know which transport a given peer was
+    # reachable on and address them by node_id. The unified API below
+    # collapses all three into a single "send to alice" call:
+    #
+    #   1. If an IronMesh peer named "alice" is currently online, send
+    #      via whatever transport the existing session uses (WS or RNS).
+    #   2. Else if an "alice" announce was heard over RNS but no Link
+    #      has been established yet, auto-establish the Link and send.
+    #   3. Else if "alice" looks like an LXMF destination hash and the
+    #      LXMF listener is running, send via LXMF.
+    #   4. Else raise ValueError — no reachable transport.
+    #
+    # All four agent-facing surfaces (Agent SDK, OpenClaw channel,
+    # ironmesh-acp, ironmesh-a2a) end up calling this single resolver,
+    # so adding a transport in the future (e.g. Yggdrasil) is a one-
+    # site change rather than a per-adapter rewrite.
+
+    def _find_online_peer_by_name(self, name: str) -> Optional[str]:
+        """Return the node_id of an online peer with the given agent name."""
+        if not name:
+            return None
+        for pid, state in self.peers.items():
+            if not state.is_online:
+                continue
+            if getattr(state, "agent_name", None) == name:
+                return pid
+        return None
+
+    def _find_rns_discovered_by_name(self, name: str) -> Optional[dict]:
+        """Return the RNS announce-discovered entry for an agent name."""
+        if not name:
+            return None
+        for entry in self._rns_discovered.values():
+            if entry.get("name") == name:
+                return entry
+        return None
+
+    @staticmethod
+    def _looks_like_lxmf_hash(value: str) -> bool:
+        """Heuristic: 32-byte (64-hex-char) destination hashes look like LXMF."""
+        if not isinstance(value, str):
+            return False
+        clean = value.strip().replace(":", "").replace(" ", "")
+        if len(clean) != 32 and len(clean) != 64:
+            return False
+        try:
+            int(clean, 16)
+            return True
+        except ValueError:
+            return False
+
+    def unified_peers(self) -> list:
+        """Merged view of every reachable peer across all transports.
+
+        Returns one entry per peer with a ``reachable_via`` list naming
+        the transports that can reach them right now. The same peer may
+        appear via multiple transports (e.g. discovered via RNS announce
+        AND currently connected via WebSocket). The Agent SDK exposes
+        this as the canonical peer list.
+        """
+        out: Dict[str, Dict[str, Any]] = {}
+
+        # Online peers via WS or RNS Link
+        for pid, state in self.peers.items():
+            if not state.is_online:
+                continue
+            name = getattr(state, "agent_name", None)
+            entry = out.setdefault(pid, {
+                "node_id": pid, "name": name, "reachable_via": [],
+                "transport": getattr(state, "transport_type", None),
+                "rns_dest_hash": getattr(state, "rns_dest_hash", None),
+                "estimated_rtt_ms": (
+                    getattr(state, "rns_estimated_rtt_ms", None)
+                    or state.latency_ms
+                ),
+                "estimated_bps": getattr(state, "rns_estimated_bps", None),
+                "rns_hops": getattr(state, "rns_hops", None),
+            })
+            entry["reachable_via"].append(state.transport_type)
+
+        # RNS-discovered peers not yet connected
+        for entry in self._rns_discovered.values():
+            node_id = entry.get("node_id")
+            name = entry.get("name")
+            if not node_id:
+                continue
+            existing = out.get(node_id)
+            if existing is not None:
+                if "rns_announce" not in existing["reachable_via"]:
+                    existing["reachable_via"].append("rns_announce")
+                # Backfill announce-only metadata onto the connected entry
+                existing.setdefault("rns_dest_hash", entry.get("dest_hash"))
+                existing.setdefault("rns_hops", entry.get("hops"))
+                continue
+            out[node_id] = {
+                "node_id": node_id,
+                "name": name,
+                "reachable_via": ["rns_announce"],
+                "transport": None,
+                "rns_dest_hash": entry.get("dest_hash"),
+                "rns_hops": entry.get("hops"),
+                "estimated_rtt_ms": None,
+                "estimated_bps": None,
+            }
+
+        return list(out.values())
+
+    async def send_to_name(self, name: str, payload,
+                            msg_type: str = "MSG",
+                            priority: str = "NORMAL") -> dict:
+        """Unified send: pick the best available transport for ``name``.
+
+        Tier order: existing online peer → auto-Link an RNS-discovered
+        peer → LXMF if ``name`` is a destination hash. Returns a small
+        dict describing which transport was used so callers can log /
+        retry intelligently.
+
+        Raises ``ValueError`` if no transport can reach the name.
+        """
+        if isinstance(payload, str):
+            payload_bytes = payload.encode("utf-8")
+        else:
+            payload_bytes = payload
+
+        # Tier 1: existing online peer (WS or RNS Link)
+        node_id = self._find_online_peer_by_name(name)
+        if node_id:
+            msg_id = await self.send_message(node_id, msg_type,
+                                              payload_bytes, priority)
+            transport = getattr(
+                self.peers[node_id], "transport_type", "websocket",
+            )
+            return {"transport": transport, "target": node_id,
+                    "msg_id": msg_id, "tier": 1}
+
+        # Tier 2: RNS-discovered, not yet connected → auto-Link
+        rns_entry = self._find_rns_discovered_by_name(name)
+        if rns_entry and self._reticulum is not None:
+            dest_hash = rns_entry.get("dest_hash")
+            if dest_hash:
+                logger.info(
+                    "send_to_name: auto-establishing RNS Link to %s for first send",
+                    name,
+                )
+                peer_id = await self._connect_and_track_rns(dest_hash)
+                if peer_id:
+                    msg_id = await self.send_message(
+                        peer_id, msg_type, payload_bytes, priority,
+                    )
+                    return {"transport": "rns", "target": peer_id,
+                            "msg_id": msg_id, "tier": 2}
+
+        # Tier 3: LXMF — if name is a destination hash and LXMF is up
+        if self._lxmf is not None and self._looks_like_lxmf_hash(name):
+            text = payload_bytes.decode("utf-8", errors="replace")
+            ok = await self._lxmf.send_lxmf_to(name, text)
+            if ok:
+                return {"transport": "lxmf", "target": name,
+                        "msg_id": None, "tier": 3}
+
+        raise ValueError(
+            f"No reachable transport for peer name={name!r}. "
+            f"Tried: online peers, {len(self._rns_discovered)} RNS-discovered, "
+            f"LXMF={'available' if self._lxmf else 'disabled'}."
+        )
+
     def _on_rns_link_stats(self, peer_id: str, stats: dict) -> None:
         """Update PeerState with the latest RNS Link metrics.
 

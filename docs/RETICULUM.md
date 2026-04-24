@@ -443,6 +443,62 @@ You can run multiple interface types on the same node — RNS picks the
 shortest path automatically, and IronMesh's mesh router weighs hop
 count against link rate when choosing an outbound peer.
 
+## Seamless transport for agents
+
+With the pieces above in place, IronMesh peers are reachable via
+WebSocket, RNS Link, and LXMF — potentially all three for the same
+peer. Rather than forcing agent code to know which transport it's
+speaking over, the `Agent` SDK exposes a single unified call:
+
+```python
+from ironmesh.agent import Agent
+
+agent = Agent("alice", passphrase="...", reticulum=True, lxmf=True)
+agent.run(foreground=False)
+
+# Send to Bob — doesn't matter whether Bob is on the LAN, on the
+# LoRa segment, or an LXMF destination we've never connected to.
+result = await agent.send_to("bob", "hello")
+print(result)  # {"transport": "rns", "target": "node-bob", "tier": 2, ...}
+```
+
+The resolver tries transports in this order:
+
+1. **Existing online peer** — if `bob` is currently connected via
+   WebSocket or an RNS Link, the existing session is used.
+2. **RNS-discovered peer** — if an announce from `bob` has been
+   heard but no Link has been established yet, one is established
+   on demand. Subsequent sends reuse the Link.
+3. **LXMF** — if the argument looks like a 32-byte destination hash
+   and the `--lxmf` listener is running, the message is posted as
+   an LXMessage. Delivery is store-and-forward if the recipient is
+   offline (propagation nodes hold it).
+
+The OpenClaw channel, ACP stdio adapter, and A2A HTTP gateway all
+call `Agent.send_to` internally, so adding a transport (Yggdrasil,
+future mediums) is a single-site change in the daemon rather than a
+per-adapter rewrite.
+
+### Inspecting reachability
+
+`Agent.unified_peers` returns every known peer with a `reachable_via`
+list naming the transports that can reach them right now:
+
+```python
+for p in agent.unified_peers:
+    print(p["name"], p["reachable_via"],
+          "rtt:", p.get("estimated_rtt_ms"),
+          "hops:", p.get("rns_hops"))
+# bob   ['websocket', 'rns_announce']  rtt: 12.0  hops: None
+# carol ['rns_announce']               rtt: None  hops: 4
+# dave  ['rns']                        rtt: 180.0 hops: 3
+```
+
+An AI agent can use this to decide whether to send now (LAN peer,
+low latency), queue for later (LoRa peer, high latency), or skip
+(unreachable). All the context it needs to make scheduling decisions
+is in that single dict.
+
 ## Tuning
 
 | Flag | Default | Notes |

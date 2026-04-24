@@ -153,6 +153,65 @@ class Agent:
         )
         return fut.result(timeout=timeout)
 
+    async def send_to(
+        self,
+        name: str,
+        message: Union[str, bytes],
+        *,
+        msg_type: str = "MSG",
+        priority: str = "NORMAL",
+    ) -> Dict[str, Any]:
+        """Send to a named peer, picking the best available transport.
+
+        Unlike :meth:`send`, which requires a known online peer, this
+        call transparently falls back through the available transports:
+
+        1. Existing online peer (WebSocket or RNS Link).
+        2. An RNS-discovered peer (from announce) — auto-establishes the
+           Link on first use.
+        3. LXMF (when ``name`` is a 32-byte destination hash and the
+           ``--lxmf`` listener is running).
+
+        Returns a descriptor with the transport that was used
+        (``{"transport": "rns", "target": node_id, "msg_id": ..., "tier": 2}``).
+        Raises ``ValueError`` if no transport can reach the name.
+
+        For OpenClaw, ACP, and A2A adapters: this is the recommended
+        outbound primitive. A single call-site services all transports.
+        """
+        if self._loop is None:
+            raise RuntimeError("Agent not running. Call run() first.")
+        payload = message.encode("utf-8") if isinstance(message, str) else message
+        return await self.daemon.send_to_name(name, payload,
+                                                msg_type=msg_type,
+                                                priority=priority)
+
+    def send_to_sync(
+        self,
+        name: str,
+        message: Union[str, bytes],
+        *,
+        msg_type: str = "MSG",
+        priority: str = "NORMAL",
+        timeout: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Blocking variant of :meth:`send_to`.
+
+        RNS auto-Link establishment can take several seconds on slow
+        links, so the default timeout is generous. Raises
+        ``concurrent.futures.TimeoutError`` if the call doesn't return
+        in time.
+        """
+        if self._loop is None:
+            raise RuntimeError("Agent not running. Call run() first.")
+        payload = message.encode("utf-8") if isinstance(message, str) else message
+        fut = asyncio.run_coroutine_threadsafe(
+            self.daemon.send_to_name(name, payload,
+                                       msg_type=msg_type, priority=priority),
+            self._loop,
+        )
+        return fut.result(timeout=timeout)
+
     def reply(
         self,
         peer_id: str,
@@ -197,11 +256,29 @@ class Agent:
         return getattr(self.daemon, "node_id", None)
 
     def peer_by_name(self, name: str) -> Optional[Dict[str, Any]]:
-        """Find an online peer by agent name."""
-        for p in self.peers:
+        """Find a peer by agent name across all transports.
+
+        Returns the unified-peers entry if the name is known — whether
+        the peer is currently connected (WS or RNS Link) or only known
+        via RNS announce. The entry's ``reachable_via`` list names
+        the transports that can reach them right now.
+
+        Returns ``None`` if no peer with that name is known.
+        """
+        for p in self.unified_peers:
             if p.get("name") == name:
                 return p
         return None
+
+    @property
+    def unified_peers(self) -> List[Dict[str, Any]]:
+        """Every peer reachable via any transport.
+
+        Same shape as :attr:`peers` for online peers, extended with an
+        announce-discovered-only tier so an AI agent can see a node it
+        hasn't handshaken with yet and decide whether to reach out.
+        """
+        return self.daemon.unified_peers()
 
     # ------------------------------------------------------------------
     # Capabilities
