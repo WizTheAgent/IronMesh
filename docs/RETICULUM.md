@@ -361,6 +361,51 @@ any node can publish any source. Treat published lists as advisory,
 not authoritative. The IronMesh trust store remains the source of
 truth for who you talk to.
 
+## Fast LAN with BackboneInterface
+
+For IronMesh-to-IronMesh traffic on a single LAN segment, RNS's
+`BackboneInterface` (Linux / Android only) is significantly faster
+than `TCPClientInterface` / `TCPServerInterface`. It uses kernel
+event APIs (`epoll` on Linux) to handle thousands of concurrent links
+with low overhead, and it's wire-compatible with the TCP interface
+types — a node running `BackboneInterface` and a node running
+`TCPClientInterface` interoperate transparently.
+
+```ini
+[interfaces]
+  [[Backbone]]
+    type = BackboneInterface
+    enabled = yes
+    listen_on = 0.0.0.0
+    port = 4242
+
+  [[Backbone Client]]
+    type = BackboneInterface
+    enabled = yes
+    target_host = backbone.local
+    target_port = 4242
+```
+
+When BackboneInterface is available, prefer it for LAN segments
+between IronMesh nodes. The IronMesh WebSocket transport remains
+fully supported and is still useful for the GUI dashboard (which is
+inherently HTTP/WS-shaped) — but it stops being the only fast path
+between daemons.
+
+### Picking the right LAN transport
+
+| Scenario | Recommended |
+| --- | --- |
+| Daemon ↔ daemon on Linux LAN | `BackboneInterface` |
+| Daemon ↔ daemon on macOS / Windows LAN | `AutoInterface` (multicast) or `TCPClientInterface` |
+| Browser → dashboard | IronMesh WebSocket (`--port 8765`) |
+| Daemon ↔ daemon over WAN | `TCPClientInterface` (over a tunnel) or `I2PInterface` |
+| Daemon ↔ daemon over LoRa | `RNodeInterface` |
+
+You can run multiple interface types on the same node — RNS picks the
+shortest path automatically, and IronMesh's mesh router weighs hop
+count against link rate when choosing an outbound peer.
+
 ## Tuning
 
 | Flag | Default | Notes |
