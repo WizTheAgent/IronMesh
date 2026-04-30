@@ -55,9 +55,9 @@ the Python reference.
 
 Comprehensive cleanup pass that removed dead code (`transport.py`,
 `scripts/test_harness.py`, stale `requirements.lock.md`), migrated the
-default keys path from `~/.kingpi-secure/ironmesh/` to `~/.ironmesh/`,
-patched a tarfile path-traversal edge case in `backup.py`, and tightened
-exception handling throughout the Agent SDK.
+default keys path from a legacy vendor-prefixed location to
+`~/.ironmesh/`, patched a tarfile path-traversal edge case in
+`backup.py`, and tightened exception handling throughout the Agent SDK.
 
 ## What changed
 
@@ -72,7 +72,7 @@ exception handling throughout the Agent SDK.
 ## Breaking changes
 
 None at the wire-protocol level. The only source-level migration is the
-default keys path (`~/.kingpi-secure/ironmesh/keys.json` →
+default keys path (legacy vendor-prefixed location →
 `~/.ironmesh/keys.json`). Existing deployments can keep the old path by
 passing `--keys-path` explicitly; new installs get the cleaner default.
 

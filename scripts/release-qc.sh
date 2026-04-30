@@ -174,7 +174,7 @@ fi
 #     RFC 5737; 192.0.x doesn't match the 192.168.1. private-net
 #     pattern below
 echo "[ 7] public-facing standard"
-LEAK_PATTERNS='C:[/\\]Users[/\\][a-z]|/\.kingpi-secure|192\.168\.1\.[0-9]+|\bAudit [HCM]-[0-9]+\b|\bRAZOR #[0-9]+\b|\(M[01] (audit|fix|spike)\)|^Path [AB]\b|\bdev laptop\b'
+LEAK_PATTERNS='C:[/\\]Users[/\\][a-z]|/\.kingpi-secure|kingpi-empire|192\.168\.1\.[0-9]+|\bAudit [HCM]-[0-9]+\b|\bRAZOR #[0-9]+\b|\(M[01] (audit|fix|spike)\)|^Path [AB]\b|\bdev laptop\b|\b(kingpi|gatekeeper)\b|\bRex Ferreus\b|\brex-ferreus\b|\bRexMesh\b|\bIronGate\b|\bIronHaven\b|\bIronShield\b|\bIronMind\b|\bIron Family\b|\biron-family\b|\bfour pillars\b'
 LEAK_EXCLUDE='^(CHANGELOG\.md|docs/RELEASE_NOTES_v0\.|\.github/RELEASE_CHECKLIST\.md|\.gitignore|AGENTS\.md|discovery\.py|tests/|scripts/release-qc\.sh|scripts/leak-scan\.sh)'
 LEAK_HITS="$(git ls-files \
     | grep -vE "$LEAK_EXCLUDE" \

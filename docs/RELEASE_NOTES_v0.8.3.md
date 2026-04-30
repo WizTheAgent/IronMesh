@@ -92,9 +92,9 @@ self, "agent_name", None)`.
 all.** The dashboard's A2A dropdowns filter peers by `state.capabilities[
 'llm:*']`, and the per-peer capability pills read the same structure.
 Backend never set the key, so the filter silently matched zero peers
-and pills were permanently empty. On a live 3-node mesh where kingpi
-and gatekeeper were both announcing `llm:<model>`, the dashboard
-would not let you pick either for an A2A dialogue. Fixed by emitting
+and pills were permanently empty. On a live 3-node mesh where two
+peers were both announcing `llm:<model>`, the dashboard would not
+let you pick either for an A2A dialogue. Fixed by emitting
 an inverted dict `{capability -> [node_ids]}` — the shape every
 consumer wants — from `bridge.py:_build_full_state`.
 
@@ -165,8 +165,8 @@ silently on future dashboard edits.
 
 ### Dashboard hero screenshot in README
 
-`docs/assets/dashboard.png` — live 3-node mesh (wiz · kingpi ·
-gatekeeper) mid-A2A dialogue between kingpi and gatekeeper, showing
+`docs/assets/dashboard.png` — live 3-node mesh (Windows desktop ·
+Linux Pi · NAS) mid-A2A dialogue between two of the nodes, showing
 the full handshake panel, TOFU-pinned trust states, and
 `[response turn N/M]` CONV frames in the feed. Replaces the
 commented-out `<img>` placeholder that had been live in README with
@@ -246,8 +246,8 @@ place and restarting the bridge process.
   clean, pip-audit clean.
 - **CI matrix:** Ubuntu / Windows / **macOS** × Python 3.10 / 3.11 /
   3.12 / 3.13 = 12 jobs, all green.
-- **Live 3-node mesh:** wiz (Windows) ↔ kingpi (Pi 5, Ollama
-  `kingpi:latest`) ↔ gatekeeper (UGREEN NAS, Ollama `hermes3:3b`).
+- **Live 3-node mesh:** Windows desktop ↔ Linux Pi 5 (Ollama
+  `llama3:latest`) ↔ UGREEN NAS (Ollama `hermes3:3b`).
   End-to-end A2A dialogue verified via the dashboard's A2A panel,
   `[response turn N/M]` frames rendering in the feed, ending on
   `[END] goal-achieved` from the `[DONE]` rider.

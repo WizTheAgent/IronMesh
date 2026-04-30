@@ -152,8 +152,8 @@ peers one at a time and observe:
 ## Testing
 
 - Unit and integration test suites green (N test files exercised).
-- Live-mesh validation against the production kingpi + gatekeeper + wiz
-  mesh: fresh cap-baseline pin, cap-set change + cap-promote flow,
+- Live-mesh validation against the production 3-node mesh: fresh
+  cap-baseline pin, cap-set change + cap-promote flow,
   cross-transport replay, audit chain verify, `/metrics` scrape.
 
 ## Thanks

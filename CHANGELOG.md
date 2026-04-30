@@ -1914,7 +1914,7 @@ protocol you integrate by hand into a platform you build on.
 
 ### Changed
 
-- Default keys path migrated from `~/.kingpi-secure/ironmesh/keys.json`
+- Default keys path migrated from a legacy vendor-prefixed location
   to `~/.ironmesh/keys.json`.
 - Python minimum: 3.10 (3.9 was already dropped in 0.7.2).
 
@@ -2589,7 +2589,7 @@ This is a major release. v0.3 was a working A2A protocol with WebSocket + mDNS
 
 ## [0.3.0] — Hardened bilateral release
 
-The first release deployed in production between two nodes (kingpi and wiz).
+The first release deployed in production between two nodes.
 This entry is reconstructed retroactively for completeness.
 
 ### Added
