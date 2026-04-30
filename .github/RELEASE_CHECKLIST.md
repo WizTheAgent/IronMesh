@@ -4,6 +4,20 @@
 
 Run this checklist top-to-bottom for every `vX.Y.Z` release. Do not push tags or upload artifacts until every box is checked.
 
+## 0. Run the automated gate
+
+Before working through the manual sections below, run the automated quality-control script. It codifies the version-consistency, doc-vs-reality, broken-link, leak-scan, and packaging-smoke checks that the manual checklist used to rely on operators to remember:
+
+```bash
+bash scripts/release-qc.sh
+```
+
+Exit 0 = automated checks pass. Exit 1 = at least one regression caught — fix what it flags before continuing.
+
+The CI workflow at `.github/workflows/release-qc.yml` runs the same script on every push to `main` and on every `v*` tag, so a release that slips past the local run is still blocked at the CI gate before publication.
+
+The sections below are the manual cross-check (operator judgment, not automated).
+
 ---
 
 ## 1. Code state

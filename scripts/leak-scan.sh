@@ -145,11 +145,14 @@ is_doc_file() {
 EXCLUDED_FROM_CONTENT_SCAN=(
     # Files that document the patterns themselves (exact match)
     'scripts/leak-scan.sh'
+    'scripts/release-qc.sh'
     '.githooks/pre-commit'
     '.githooks/pre-push'
     '.github/workflows/leak-scan.yml'
+    '.github/workflows/release-qc.yml'
     '.github/RELEASE_CHECKLIST.md'
     '.gitignore'
+    'AGENTS.md'
     # Immutable release history (exact match for the catch-all CHANGELOG)
     'CHANGELOG.md'
 )
