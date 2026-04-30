@@ -18,8 +18,8 @@ protocol changes — every v0.8.x peer stays on the mesh.
   at [`clients/ts/`](../clients/ts/) — full wire-protocol port,
   live end-to-end tested against a real Python `BridgeDaemon`.
 - **Python 3.10 compatibility bug fixed** at root. `concurrent.futures.TimeoutError`
-  vs `builtins.TimeoutError` class split on 3.10 is documented in
-  [`docs/BUG-PY310-TIMEOUTERROR-CLASS-SPLIT.md`](BUG-PY310-TIMEOUTERROR-CLASS-SPLIT.md).
+  vs `builtins.TimeoutError` class split on 3.10 is documented internally
+  as a maintainer-only post-mortem.
 
 ## What's new
 
@@ -96,8 +96,8 @@ Twelve stability fixes (each with a regression test):
   — PEP 616 unified `concurrent.futures.TimeoutError` with
   `builtins.TimeoutError` in 3.11. On 3.10 they're distinct classes,
   so `except TimeoutError` missed the timeout raised by
-  `fut.result(timeout=5)`. Full analysis at
-  [`docs/BUG-PY310-TIMEOUTERROR-CLASS-SPLIT.md`](BUG-PY310-TIMEOUTERROR-CLASS-SPLIT.md).
+  `fut.result(timeout=5)`. Documented internally as a maintainer-only
+  post-mortem.
 - **MCP server peer-dict thread safety** — `daemon.peers` iterations
   now snapshot via `list(...)`. Previous code could crash with
   `RuntimeError: dictionary changed size during iteration` under

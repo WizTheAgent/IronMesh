@@ -268,6 +268,27 @@ class Metrics:
         # something else" in Grafana.
         self.peer_promoted = 0
         self.peer_blocked = 0
+        # v0.9.2: per-feature counters for the new agent-interop surfaces.
+        # Kept coarse (no label dimension) so the metrics surface stays
+        # cheap even on nodes with hundreds of peers; strategy/side
+        # breakdowns are available via the OTel spans.
+        self.capability_routes_attempted = 0
+        self.capability_routes_succeeded = 0
+        self.capability_routes_no_match = 0
+        # Server-side increments when SKIP_OFFER hits the wire; client-side
+        # increments handshake_skips_activated when the offer is accepted.
+        # Healthy fleet sums should match — divergence surfaces send
+        # failures, downgrade-rejects, or asymmetric eligibility.
+        # handshake_skips_rejected fires client-side on any malformed or
+        # downgrade-attempt SKIP_OFFER (missing binding, non-hex binding,
+        # or sentinel mismatch). Should be ~0 on healthy meshes; a spike
+        # is alert-worthy — either a buggy peer or an attack attempt.
+        self.handshake_skips_offered = 0
+        self.handshake_skips_activated = 0
+        self.handshake_skips_rejected = 0
+        self.group_broadcasts_sent = 0
+        self.group_broadcasts_received = 0
+        self.group_broadcasts_deduped = 0
 
     def to_dict(self) -> dict:
         return {
@@ -296,6 +317,15 @@ class Metrics:
             "peer_state_changed": self.peer_state_changed,
             "peer_promoted": self.peer_promoted,
             "peer_blocked": self.peer_blocked,
+            "capability_routes_attempted": self.capability_routes_attempted,
+            "capability_routes_succeeded": self.capability_routes_succeeded,
+            "capability_routes_no_match": self.capability_routes_no_match,
+            "handshake_skips_offered": self.handshake_skips_offered,
+            "handshake_skips_activated": self.handshake_skips_activated,
+            "handshake_skips_rejected": self.handshake_skips_rejected,
+            "group_broadcasts_sent": self.group_broadcasts_sent,
+            "group_broadcasts_received": self.group_broadcasts_received,
+            "group_broadcasts_deduped": self.group_broadcasts_deduped,
         }
 
 
@@ -1314,6 +1344,7 @@ class BridgeDaemon:
                  rns_retained_ratchets: int = 8,
                  rns_admin_identities: Optional[list] = None,
                  rns_skip_handshake: bool = False,
+                 rns_group_broadcast: bool = False,
                  # v0.9.1: optional LXMF interop (Sideband / Nomadnet)
                  lxmf_enabled: bool = False,
                  lxmf_storage: str = "~/.ironmesh/lxmf",
@@ -1520,6 +1551,12 @@ class BridgeDaemon:
         # Advertised in announce as the `hskip` feature. Both peers must
         # advertise + transport must be RNS Link before the skip kicks in.
         self._rns_skip_handshake = rns_skip_handshake
+        # v0.9.2: opt in to GROUP-destination broadcast on RNS. Advertised
+        # as the `group` feature. All peers in the mesh that enable this
+        # derive the same symmetric group key from the passphrase via
+        # HKDF and listen on a deterministic group destination — a single
+        # broadcast packet reaches every member.
+        self._rns_group_broadcast = rns_group_broadcast
         # v0.9.1: LXMF listener config — when _lxmf_enabled is True
         # the announce app_data also advertises the `lxmf` feature so
         # peers know this node speaks Sideband / Nomadnet messages.
@@ -1540,6 +1577,22 @@ class BridgeDaemon:
         # Auto-Link to these peers is a Phase 2/11 concern; Phase 1 just
         # records what is heard so the dashboard and capability registry
         # see the same view as the WebSocket peers.
+        #
+        # THREADING MODEL: writes happen on the asyncio event loop only —
+        # the RNS announce handler runs on the RNS Transport thread but
+        # bridges via `loop.call_soon_threadsafe(...)` (see
+        # ReticulumTransport._on_announce_received), so the actual mutation
+        # in `_on_rns_peer_announced` executes on the loop. Reads from
+        # async methods on the loop are therefore race-free.
+        #
+        # However, SYNC methods callable from worker threads (e.g.
+        # `broadcast_via_rns_group`, used by Agent SDK fire-and-forget
+        # broadcasts) MUST snapshot before iterating — `list(self._rns_discovered.values())`
+        # — because the loop can mutate the dict concurrently with their
+        # iteration. Failing to snapshot causes intermittent
+        # `RuntimeError: dictionary changed size during iteration` under
+        # busy-mesh load. Future maintainers: keep the `list(...)` even
+        # when adding new sync iteration sites.
         self._rns_discovered: dict = {}
         self._pending_pings: dict = {}  # peer_id -> monotonic send time (for RTT)
         # v0.5.2: LoRa QoS + session key rotation
@@ -1552,8 +1605,8 @@ class BridgeDaemon:
         # paths (_reconnect_loop / _try_transport_failover / _discover_loop /
         # _on_peer_discovered). Entries aged out after 60s to prevent stick.
         self._reconnecting: dict = {}  # peer_id_or_name -> started_at (monotonic)
-        # Audit C-01: protect duplicate-connection check + peer-state
-        # assignment + cleanup. Prevents identity hijacking when two
+        # Protect duplicate-connection check + peer-state assignment +
+        # cleanup atomically. Prevents identity hijacking when two
         # connections race to the same peer_id.
         self._peer_lock = asyncio.Lock()
         # Serialize auth-failure tracking to prevent rate-
@@ -1787,6 +1840,10 @@ class BridgeDaemon:
                     ratchet_interval=self._rns_ratchet_interval,
                     retained_ratchets=self._rns_retained_ratchets,
                     admin_identities=self._rns_admin_identities,
+                    group_broadcast=self._rns_group_broadcast,
+                    group_secret=(self.passphrase.encode("utf-8")
+                                  if self._rns_group_broadcast and self.passphrase
+                                  else None),
                 )
                 self._reticulum.start(asyncio.get_event_loop())
                 # Connect to any startup destinations
@@ -1924,16 +1981,50 @@ class BridgeDaemon:
             # Links. The fixed sentinel is signed into the HELLO payload
             # the same way a random server_nonce would be, so signature-
             # verification logic downstream is unchanged.
+            # v0.9.2 chunk A — server-driven Stage-1 skip (corrected
+            # design after the v0.9.2-pre-r1 unilateral-decision bug).
+            # The server is the active party and SPEAKS FIRST. If both
+            # sides are eligible to skip (RNS Link + peer's hskip
+            # advertised), the server emits SKIP_OFFER carrying the
+            # channel-binding sentinel; otherwise it emits the normal
+            # PASSPHRASE_CHALLENGE. The client type-dispatches on the
+            # first server message — never decides skip unilaterally.
+            # This guarantees both sides agree before HELLO is sent,
+            # eliminating the crossed-message handshake failure.
+            #
+            # On RNS Links, briefly poll for the remote's identify
+            # proof to land before checking eligibility. The outbound
+            # side's `link.identify()` call races our eligibility check
+            # otherwise, and we'd silently fall back to the legacy
+            # flow despite the peer having advertised hskip.
+            if (RNSLinkAdapter is not None
+                    and isinstance(websocket, RNSLinkAdapter)
+                    and getattr(self, "_rns_skip_handshake", False)):
+                await self._await_remote_identity(websocket, timeout=1.5)
             skip_stage1 = self._handshake_skip_eligible_server(websocket)
             if skip_stage1:
                 server_nonce = ew_protocol.Handshake.skip_channel_binding()
+                # Tell the client: skip is on, here's the channel binding.
+                await websocket.send(json.dumps({
+                    "type": ew_protocol.MessageType.SKIP_OFFER,
+                    "from": self.node_id,
+                    "channel_binding": server_nonce.hex(),
+                    "protocol_version": PROTOCOL_VERSION,
+                }))
+                # Counter + telemetry only after the SKIP_OFFER is on the
+                # wire — a client disconnect mid-send shouldn't inflate
+                # the offered count. The matching `activated` counter is
+                # incremented client-side only when the offer is accepted,
+                # so divergence between fleet-wide sums of offered vs
+                # activated reveals send failures or downgrade-rejects.
+                self._inc_metric("handshake_skips_offered")
                 logger.debug(
-                    "Handshake skip active — peer is RNS-identified and advertises hskip"
+                    "Handshake skip offered — peer is RNS-identified and advertises hskip"
                 )
                 _otel_span_event(
-                    "handshake.skip.activated",
+                    "handshake.skip.offered",
                     getattr(websocket, "remote_identity_hash", "unknown"),
-                    {"side": "server", "transport": "rns"},
+                    {"ironmesh.skip.side": "server", "ironmesh.transport": "rns"},
                 )
             else:
                 server_nonce = ew_protocol.Handshake.generate_server_nonce()
@@ -2124,8 +2215,8 @@ class BridgeDaemon:
                 logger.info("Peer %s on %s — mesh forwarding disabled (direct only)",
                             peer_id, peer_protocol)
 
-            # Audit C-01: duplicate-check + peer-state assignment must
-            # be atomic to prevent identity hijacking when two
+            # Duplicate-check + peer-state assignment must be atomic
+            # to prevent identity hijacking when two
             # connections race to the same peer_id.
             async with self._peer_lock:
                 # Guard against duplicate connections (both sides connect simultaneously).
@@ -2166,7 +2257,9 @@ class BridgeDaemon:
                 # via Resource only for peers that will accept them.
                 node_id_for_caps = getattr(peer_state, "node_id", None) or peer_id
                 discovered = None
-                for entry in self._rns_discovered.values():
+                # Snapshot — RNS announce handler mutates this dict on
+                # the RNS Transport thread.
+                for entry in list(self._rns_discovered.values()):
                     if entry.get("node_id") == node_id_for_caps:
                         discovered = entry
                         break
@@ -2241,8 +2334,8 @@ class BridgeDaemon:
                         peer_id, raw, transport=_transport_name,
                     )
                 except (json.JSONDecodeError, ValueError) as e:
-                    # Audit M-13: expected parse/validation errors get a
-                    # narrow warning. Unexpected exceptions fall through
+                    # Expected parse/validation errors get a narrow
+                    # warning. Unexpected exceptions fall through
                     # to the broader handler below so the code see tracebacks.
                     logger.warning("Malformed message from %s: %s", peer_id, e)
                 except nacl_exceptions.CryptoError as e:
@@ -3029,8 +3122,8 @@ class BridgeDaemon:
 
         try:
             from ironmesh.trust import TrustStore
-            # Audit C-03: TrustStore requires an agent_key; assertion
-            # enforces daemon bootstrap order (keys must load first).
+            # TrustStore requires an agent_key; assertion enforces
+            # daemon bootstrap order (keys must load first).
             if not self._keypair:
                 raise RuntimeError("TrustStore requires the daemon keypair to be loaded")
             mac_key = self._keypair.ed25519_secret[:32]
@@ -3261,6 +3354,21 @@ class BridgeDaemon:
         if msg_type == ew_protocol.MessageType.ROUTE_UNREACHABLE:
             peer_state.last_seen = time.time()
             logger.info("ROUTE_UNREACHABLE from %s: %s", peer_id, payload[:200])
+            return
+
+        # v0.9.2 chunk B (cross-host fan-out): GROUP_BROADCAST frames
+        # carry mesh-wide broadcast payloads. They route to
+        # _on_rns_group_message — NOT the regular MSG pipeline — so
+        # they share the same dedup window as the same-segment RNS
+        # GROUP packet. A peer that receives the same payload via both
+        # the local-segment GROUP packet AND the per-peer fan-out
+        # processes it exactly once.
+        if msg_type == ew_protocol.MessageType.GROUP_BROADCAST:
+            peer_state.last_seen = time.time()
+            try:
+                await self._on_rns_group_message(payload)
+            except Exception:
+                logger.exception("GROUP_BROADCAST handler failed")
             return
 
         # v0.4: CAPABILITY_ANNOUNCE — learn remote capabilities and propagate
@@ -3777,7 +3885,16 @@ class BridgeDaemon:
                 except Exception:
                     pass
         except Exception as e:
-            logger.warning("Failed to send frame to %s: %s", peer_id, e)
+            # v0.9.2: ConnectionClosed / ConnectionClosedOK during normal
+            # shutdown is the expected termination path — every queued
+            # route-announce hits a peer whose WS just closed. Downgrade
+            # to DEBUG for those cases so a graceful 50-node shutdown
+            # doesn't flood operator logs with WARNINGs. Unexpected
+            # errors still surface at WARNING.
+            if isinstance(e, websockets.ConnectionClosed):
+                logger.debug("Send to %s on closed connection: %s", peer_id, e)
+            else:
+                logger.warning("Failed to send frame to %s: %s", peer_id, e)
             # v0.6.1: on send error, also transition offline to avoid spamming
             # "failed to send" on a dead connection.
             if peer_id in self.peers and self.peers[peer_id].is_online:
@@ -3837,34 +3954,71 @@ class BridgeDaemon:
 
         Returns the peer_id on success, or None on failure.
         """
-        # v0.9.2 (chunk A): on RNS Links where both peers advertised the
-        # `hskip` feature, the entire stage-1 challenge / verify exchange
-        # is skipped. The fixed channel-binding sentinel takes the place
-        # of a real server_nonce in the HELLO signature canonicalization,
-        # so verification on the server side is unchanged. Mirror of the
-        # decision the server makes in `_handle_connection` — both ends
-        # must agree or the handshake will deadlock.
-        skip_stage1 = self._handshake_skip_eligible_client(ws)
+        # v0.9.2 chunk A — server-driven Stage-1 skip (corrected design
+        # after the v0.9.2-pre-r1 unilateral-decision bug). The client
+        # NEVER decides skip on its own; it always reads the server's
+        # first message and dispatches:
+        #
+        #   SKIP_OFFER          → server has elected to skip, use the
+        #                         channel binding it sent and go straight
+        #                         to HELLO. No PASSPHRASE_RESPONSE step.
+        #   PASSPHRASE_CHALLENGE → full challenge / verify flow.
+        #
+        # This guarantees both sides agree before HELLO is sent, even
+        # when one side has the peer's hskip-announce in
+        # `_rns_discovered` and the other does not. The previous
+        # unilateral check race would crash the handshake with
+        # `Expected HELLO, got PASSPHRASE_CHALLENGE` — fixed here.
+        raw = await asyncio.wait_for(ws.recv(), timeout=30)
+        msg = json.loads(raw)
+        first_type = msg.get("type")
+
+        skip_stage1 = (first_type == ew_protocol.MessageType.SKIP_OFFER)
+
         if skip_stage1:
-            server_nonce = ew_protocol.Handshake.skip_channel_binding()
+            cb_hex = msg.get("channel_binding")
+            if not cb_hex:
+                self._inc_metric("handshake_skips_rejected")
+                logger.warning(
+                    "SKIP_OFFER from %s missing channel_binding — abort", label,
+                )
+                return None
+            try:
+                server_nonce = bytes.fromhex(cb_hex)
+            except ValueError:
+                self._inc_metric("handshake_skips_rejected")
+                logger.warning(
+                    "SKIP_OFFER from %s carried non-hex channel_binding — abort",
+                    label,
+                )
+                return None
+            # Defense-in-depth: the offered channel binding MUST equal
+            # the deterministic sentinel. A peer that offers anything
+            # else is either misbehaving or an attacker trying to
+            # downgrade the binding. Reject the connection rather than
+            # accept an attacker-chosen sentinel.
+            expected = ew_protocol.Handshake.skip_channel_binding()
+            if not hmac.compare_digest(server_nonce, expected):
+                self._inc_metric("handshake_skips_rejected")
+                logger.warning(
+                    "SKIP_OFFER from %s carried wrong channel_binding "
+                    "(possible downgrade attempt) — abort",
+                    label,
+                )
+                return None
+            self._inc_metric("handshake_skips_activated")
             logger.debug(
-                "Handshake skip active for outbound %s — sending HELLO directly",
+                "Handshake skip ACK for %s — server offered, client accepted",
                 label,
             )
             _otel_span_event(
                 "handshake.skip.activated",
                 getattr(ws, "remote_identity_hash", "unknown"),
-                {"side": "client", "transport": "rns", "label": label},
+                {"ironmesh.skip.side": "client", "ironmesh.transport": "rns",
+                 "ironmesh.peer.label": label},
             )
-        else:
-            # Stage 1: Receive challenge
-            raw = await asyncio.wait_for(ws.recv(), timeout=30)
-            msg = json.loads(raw)
-
-            if msg.get("type") != ew_protocol.MessageType.PASSPHRASE_CHALLENGE:
-                logger.warning("Expected PASSPHRASE_CHALLENGE, got %s", msg.get("type"))
-                return None
-
+        elif first_type == ew_protocol.MessageType.PASSPHRASE_CHALLENGE:
+            # Stage 1: legacy challenge / verify flow.
             server_nonce = bytes.fromhex(msg["nonce"])
 
             # Send proof
@@ -3894,6 +4048,12 @@ class BridgeDaemon:
                     logger.warning("Mutual auth failed — server proof invalid at %s", label)
                     return None
                 logger.debug("Mutual auth verified with %s", label)
+        else:
+            logger.warning(
+                "Expected SKIP_OFFER or PASSPHRASE_CHALLENGE from %s, got %s",
+                label, first_type,
+            )
+            return None
 
         # Stage 2: Ephemeral ECDH
         my_ephemeral_private, my_ephemeral_public = ew_keys.generate_ephemeral()
@@ -4010,7 +4170,7 @@ class BridgeDaemon:
             logger.info("Peer %s on %s — mesh forwarding disabled (direct only)",
                         peer_id, peer_protocol)
 
-        # Audit C-01: atomic duplicate-check + peer-state assignment.
+        # Atomic duplicate-check + peer-state assignment.
         async with self._peer_lock:
             # Guard against duplicate connections (both sides connect simultaneously).
             # v0.5: allow WebSocket to upgrade an existing RNS connection.
@@ -4209,7 +4369,10 @@ class BridgeDaemon:
         """Did the peer with this RNS Identity hash advertise hskip?"""
         if not identity_hash_hex:
             return False
-        for entry in self._rns_discovered.values():
+        # Snapshot — RNS announce handler mutates this dict on the RNS
+        # Transport thread; iterating live can raise RuntimeError mid-
+        # handshake under busy-mesh conditions.
+        for entry in list(self._rns_discovered.values()):
             if entry.get("identity_hash") == identity_hash_hex:
                 return "hskip" in entry.get("features", [])
         return False
@@ -4223,6 +4386,34 @@ class BridgeDaemon:
         return self._peer_advertises_hskip(
             getattr(websocket, "remote_identity_hash", None)
         )
+
+    async def _await_remote_identity(self, websocket, timeout: float = 1.0) -> bool:
+        """Briefly poll for the RNS Link's remote_identity_hash to be set.
+
+        v0.9.2 chunk A live-test discovered: when an outbound peer
+        calls `link.identify()` immediately after the link becomes
+        ACTIVE, the identify-proof packet may arrive on the server's
+        RNS thread AFTER `_handle_connection` has already started its
+        eligibility check. The check then sees `remote_identity_hash =
+        None` and falls back to the legacy challenge/verify flow,
+        silently disabling the skip even when both sides would otherwise
+        be eligible.
+
+        This polls the adapter's `remote_identity_hash` for up to
+        ``timeout`` seconds (default 1.0s — RNS identify proofs land
+        in tens of milliseconds on LAN, well under a second on LoRa).
+        Returns True if identity was populated, False on timeout.
+        """
+        if RNSLinkAdapter is None or not isinstance(websocket, RNSLinkAdapter):
+            return False
+        if getattr(websocket, "remote_identity_hash", None):
+            return True
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if getattr(websocket, "remote_identity_hash", None):
+                return True
+            await asyncio.sleep(0.05)
+        return getattr(websocket, "remote_identity_hash", None) is not None
 
     def _handshake_skip_eligible_client(self, websocket) -> bool:
         """Client-side check before waiting for the PASSPHRASE_CHALLENGE."""
@@ -4275,7 +4466,9 @@ class BridgeDaemon:
         """Return the RNS announce-discovered entry for an agent name."""
         if not name:
             return None
-        for entry in self._rns_discovered.values():
+        # Snapshot — RNS announce handler mutates this dict on the RNS
+        # Transport thread.
+        for entry in list(self._rns_discovered.values()):
             if entry.get("name") == name:
                 return entry
         return None
@@ -4323,8 +4516,9 @@ class BridgeDaemon:
             })
             entry["reachable_via"].append(state.transport_type)
 
-        # RNS-discovered peers not yet connected
-        for entry in self._rns_discovered.values():
+        # RNS-discovered peers not yet connected. Snapshot — RNS
+        # announce handler mutates this dict on the RNS Transport thread.
+        for entry in list(self._rns_discovered.values()):
             node_id = entry.get("node_id")
             name = entry.get("name")
             if not node_id:
@@ -4540,8 +4734,10 @@ class BridgeDaemon:
         Raises ``ValueError`` if no peer advertises a matching
         capability (or all matches fail when strategy=all).
         """
+        self.metrics.capability_routes_attempted += 1
         candidates = self._capability_candidates(pattern)
         if not candidates:
+            self.metrics.capability_routes_no_match += 1
             raise ValueError(
                 f"No peer advertises a capability matching {pattern!r}"
             )
@@ -4567,6 +4763,7 @@ class BridgeDaemon:
                 raise ValueError(
                     f"All {len(results)} candidates for {pattern!r} failed"
                 )
+            self.metrics.capability_routes_succeeded += 1
             return {"transport": "fanout", "results": results,
                     "capability": pattern, "success": success,
                     "total": len(results)}
@@ -4583,6 +4780,7 @@ class BridgeDaemon:
                                                priority=priority)
                 res["capability"] = cap
                 res["strategy"] = strategy
+                self.metrics.capability_routes_succeeded += 1
                 return res
             except Exception as e:
                 last_err = e
@@ -4681,6 +4879,199 @@ class BridgeDaemon:
                 )
         except Exception:
             logger.exception("_on_rns_peer_announced failed")
+
+    def broadcast_via_rns_group(self, payload: bytes) -> dict:
+        """Two-phase mesh-wide broadcast.
+
+        v0.9.2 corrected design after the chunk B cross-host gap was
+        identified. RNS GROUP destinations are architecturally same-
+        segment-only (they cannot be `announce()`d, so cross-host RNS
+        Transport has no path to them). To get true cross-host
+        broadcast we layer a fan-out at the IronMesh frame layer on
+        top of the same-segment GROUP packet:
+
+          Phase 1 — RNS GROUP packet (O(1) on the local segment).
+                    Reaches every listener that shares the same RNS
+                    Transport (e.g., all daemons connected to one
+                    rnsd, or all nodes on one LoRa medium).
+          Phase 2 — IronMesh GROUP_BROADCAST fan-out (O(N) across
+                    established IronMesh connections). For every
+                    online peer that we know advertises the `group`
+                    feature in its RNS announce, send a GROUP_BROADCAST
+                    frame over the existing WS/RNS Link.
+
+        Receivers dedup on payload SHA-256 (60-second window, 10k cap)
+        so a peer that hears the same payload via BOTH phases handles
+        it exactly once. The dedup runs in `_on_rns_group_message`.
+
+        Returns a small dict describing what happened — useful for
+        callers / logs / tests:
+
+            {
+              "local_segment": True | False,  # phase 1 succeeded?
+              "fanout_sent": int,             # phase 2 peer count
+              "fanout_skipped": int,          # peers without `group`
+            }
+        """
+        result = {"local_segment": False,
+                  "fanout_sent": 0, "fanout_skipped": 0}
+        if not payload:
+            return result
+        if not isinstance(payload, (bytes, bytearray)):
+            payload = str(payload).encode("utf-8")
+        else:
+            payload = bytes(payload)
+
+        # Phase 1: same-segment RNS GROUP packet (cheap, local-only).
+        t = getattr(self, "_reticulum", None)
+        if t is not None:
+            try:
+                result["local_segment"] = bool(t.broadcast_via_group(payload))
+            except Exception as e:
+                # WARNING (not exception) — per-call failures shouldn't
+                # spam the log with full tracebacks; operators get the
+                # cause via %s and can re-run with --log-level DEBUG.
+                logger.warning("Phase-1 GROUP packet failed (continuing): %s", e)
+
+        # Phase 2: cross-host fan-out via IronMesh GROUP_BROADCAST.
+        # For every ONLINE peer we know about that ALSO advertised the
+        # `group` feature in its RNS announce, send a per-peer
+        # GROUP_BROADCAST frame. The receiver routes it to
+        # `_on_rns_group_message` (NOT the regular MSG path) which
+        # dedups on payload SHA-256 — a peer that received the same
+        # bytes via Phase 1 will silently discard the Phase-2 copy.
+        #
+        # Only send to peers that DECLARED the `group` feature so we
+        # don't surprise non-participants with traffic they won't
+        # know what to do with.
+        # Snapshot _rns_discovered before iterating — the RNS announce
+        # handler runs on the RNS Transport thread and mutates this
+        # dict concurrently. Iterating without a snapshot risks
+        # `RuntimeError: dictionary changed size during iteration`.
+        rns_group_peers = set()
+        for entry in list(self._rns_discovered.values()):
+            if "group" in (entry.get("features") or []):
+                node_id = entry.get("node_id")
+                if node_id:
+                    rns_group_peers.add(node_id)
+
+        for peer_id, state in list(self.peers.items()):
+            if not getattr(state, "is_online", False):
+                continue
+            if peer_id == self.node_id:
+                continue
+            if rns_group_peers and peer_id not in rns_group_peers:
+                result["fanout_skipped"] += 1
+                continue
+            try:
+                # Schedule the send on the daemon's event loop.
+                # send_message is async — fire-and-forget so this
+                # method stays sync-safe for callers (the local-segment
+                # GROUP packet is also fire-and-forget at the RNS layer).
+                #
+                # Use get_running_loop() — get_event_loop() is deprecated
+                # in Python 3.10+ when no loop is running and will
+                # eventually raise RuntimeError.
+                try:
+                    asyncio.get_running_loop()
+                    on_event_loop = True
+                except RuntimeError:
+                    on_event_loop = False
+                if on_event_loop:
+                    asyncio.ensure_future(
+                        self.send_message(peer_id, "GROUP_BROADCAST",
+                                            payload, "NORMAL"),
+                    )
+                else:
+                    # Fallback for callers not on the daemon loop.
+                    try:
+                        loop = self._loop if hasattr(self, "_loop") else None
+                        if loop is not None and loop.is_running():
+                            asyncio.run_coroutine_threadsafe(
+                                self.send_message(peer_id, "GROUP_BROADCAST",
+                                                    payload, "NORMAL"),
+                                loop,
+                            )
+                    except Exception:
+                        pass
+                result["fanout_sent"] += 1
+            except Exception as e:
+                # WARNING (not exception) — fan-out is per-peer; one
+                # failure shouldn't dump a traceback for every other
+                # peer in the broadcast set.
+                logger.warning(
+                    "Phase-2 GROUP_BROADCAST fan-out to %s failed: %s",
+                    peer_id, e,
+                )
+
+        # Metric: count this as one logical send if EITHER phase reached
+        # at least one peer. Detailed counts live in the result dict.
+        if result["local_segment"] or result["fanout_sent"] > 0:
+            self._inc_metric("group_broadcasts_sent")
+        return result
+
+    # v0.9.2 hardening: bound the dedup cache size so a flood of
+    # unique-payload group broadcasts can't drive unbounded memory
+    # growth. 10k entries × ~80 bytes/entry ≈ 800 KB cap, plenty of
+    # headroom for legitimate operator traffic. OrderedDict gives
+    # O(1) eviction of the oldest entry.
+    _GROUP_DEDUP_MAX = 10_000
+    _GROUP_DEDUP_TTL = 60.0
+
+    async def _on_rns_group_message(self, payload: bytes) -> None:
+        """Inbound broadcast packet on the shared GROUP destination.
+
+        Dedup is keyed on SHA-256 of the payload so self-sent broadcasts
+        that echo back (on some RNS versions) don't re-enter processing.
+        Beyond that, group traffic rides the existing gossip/message
+        pipeline — the daemon just hands the payload to the generic
+        frame handler with a synthetic `group:` source marker, so any
+        pipeline that inspects the sender can distinguish group traffic
+        from unicast without adding a new MessageType.
+        """
+        if not payload:
+            return
+        digest = hashlib.sha256(payload).digest()
+        from collections import OrderedDict
+        seen = self.__dict__.get("_group_seen")
+        if seen is None or not isinstance(seen, OrderedDict):
+            seen = OrderedDict()
+            self._group_seen = seen
+        now = time.time()
+        # Per-call O(1) hot path: pop the oldest entry IF it's stale.
+        # The full sweep happens lazily in the size-cap branch below,
+        # which is rare for a healthy mesh but bounds worst-case memory.
+        while seen:
+            oldest_key = next(iter(seen))
+            if now - seen[oldest_key] > self._GROUP_DEDUP_TTL:
+                seen.popitem(last=False)
+            else:
+                break
+        if digest in seen:
+            self._inc_metric("group_broadcasts_deduped")
+            # Move-to-end so a hot duplicate doesn't get evicted by
+            # a later size-cap trim before it's actually stale.
+            seen.move_to_end(digest)
+            return
+        seen[digest] = now
+        # Hard cap on size — even before TTL expires, never let the
+        # dict grow past _GROUP_DEDUP_MAX entries.
+        while len(seen) > self._GROUP_DEDUP_MAX:
+            seen.popitem(last=False)
+        self._inc_metric("group_broadcasts_received")
+        try:
+            logger.debug("RNS group broadcast received (%d bytes)", len(payload))
+        except Exception:
+            pass
+        # Surface via a daemon hook that operator code can override.
+        handler = getattr(self, "on_group_broadcast", None)
+        if callable(handler):
+            try:
+                result = handler(payload)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                logger.exception("on_group_broadcast handler raised")
 
     # ------------------------------------------------------------------
     # Background loops
@@ -4801,6 +5192,20 @@ class BridgeDaemon:
                 pending = self._in_proc_counter_bumps.get(counter_name, 0)
                 if pending > 0:
                     self._in_proc_counter_bumps[counter_name] = pending - 1
+        except AttributeError:
+            pass
+
+    def _inc_metric(self, counter_name: str) -> None:
+        """Defensive counter +=1 for v0.9.x metrics that may not exist
+        on every Metrics shape (older test fixtures, downgrade paths).
+        Use this instead of bare `self.metrics.X += 1` when the
+        attribute could be absent. For audit-mirrored counters use
+        `_reserve_counter_bump` instead — it serializes against the
+        audit scanner.
+        """
+        try:
+            cur = getattr(self.metrics, counter_name)
+            setattr(self.metrics, counter_name, cur + 1)
         except AttributeError:
             pass
 
@@ -5589,6 +5994,25 @@ class BridgeDaemon:
              "Operator promoted a pending peer to trusted (drained any queued messages)"),
             ("peer_blocked", "ironmesh_peer_blocked_total", "counter",
              "Operator blocked a peer (local-only quiet block; distinct from signed REVOCATION)"),
+            # v0.9.2 agent-interop surfaces
+            ("capability_routes_attempted", "ironmesh_capability_routes_attempted_total",
+             "counter", "send_to_capability calls regardless of outcome"),
+            ("capability_routes_succeeded", "ironmesh_capability_routes_succeeded_total",
+             "counter", "send_to_capability calls that reached at least one peer"),
+            ("capability_routes_no_match", "ironmesh_capability_routes_no_match_total",
+             "counter", "send_to_capability calls that found no online candidate"),
+            ("handshake_skips_offered", "ironmesh_handshake_skips_offered_total",
+             "counter", "SKIP_OFFER frames sent by this node as the server side of an RNS Link handshake"),
+            ("handshake_skips_activated", "ironmesh_handshake_skips_activated_total",
+             "counter", "SKIP_OFFER frames accepted by this node as the client side (skip is fully on)"),
+            ("handshake_skips_rejected", "ironmesh_handshake_skips_rejected_total",
+             "counter", "SKIP_OFFER frames rejected by this node (malformed or wrong channel binding — possible downgrade attempt)"),
+            ("group_broadcasts_sent", "ironmesh_group_broadcasts_sent_total",
+             "counter", "Outbound packets sent to the RNS GROUP broadcast destination"),
+            ("group_broadcasts_received", "ironmesh_group_broadcasts_received_total",
+             "counter", "Inbound packets from the RNS GROUP broadcast destination (post-dedup)"),
+            ("group_broadcasts_deduped", "ironmesh_group_broadcasts_deduped_total",
+             "counter", "GROUP broadcast packets suppressed by the payload-hash dedup cache"),
         ]
         lines = []
         for key, name, kind, help_text in spec:

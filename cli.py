@@ -52,13 +52,16 @@ def parse_args():
     )
     # --passphrase REMOVED from run parser — leaks in process list (ps aux).
     # Use --passphrase-file, IRONMESH_PASSPHRASE_FILE, or interactive getpass.
-    run_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json")
+    run_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json",
+                           help="Identity key file path (default: ~/.ironmesh/keys.json)")
     run_parser.add_argument("--keys-passphrase", default=None, help="Passphrase to decrypt key file")
-    run_parser.add_argument("--db-path", default="~/.ironmesh/data.db")
+    run_parser.add_argument("--db-path", default="~/.ironmesh/data.db",
+                           help="SQLite store for messages, peers, audit metadata (default: ~/.ironmesh/data.db)")
     run_parser.add_argument("--tls-cert", default=None, help="TLS certificate file for WSS")
     run_parser.add_argument("--tls-key", default=None, help="TLS private key file for WSS")
     run_parser.add_argument("--log-level", default="INFO",
-                           choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+                           choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                           help="Daemon log verbosity (default: INFO)")
     run_parser.add_argument("--log-file", default=None, help="Log to file instead of stderr")
     run_parser.add_argument("--bind", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
     run_parser.add_argument("--rotate-keys", action="store_true", help="Rotate keys before starting")
@@ -125,6 +128,13 @@ def parse_args():
                                 "advertise the `hskip` feature. Saves three round-"
                                 "trips on LoRa. Identity authentication is provided "
                                 "by the RNS Link itself. Default: off.")
+    run_parser.add_argument("--rns-group-broadcast", action="store_true",
+                           help="Join a mesh-wide RNS Destination.GROUP whose "
+                                "symmetric key is derived from the mesh passphrase "
+                                "via HKDF. All peers that enable this listen on "
+                                "the same group destination and can receive "
+                                "single-packet broadcasts. Advertised as the "
+                                "`group` feature. Default: off.")
     # v0.9.1: LXMF interop (Sideband / Nomadnet)
     run_parser.add_argument("--lxmf", action="store_true",
                            help="Enable the LXMF delivery identity listener "
@@ -297,11 +307,14 @@ def parse_args():
     keys_parser = sub.add_parser("keys", help="Key management")
     keys_sub = keys_parser.add_subparsers(dest="keys_command")
     gen_parser = keys_sub.add_parser("generate", help="Generate new keypair")
-    gen_parser.add_argument("--path", default="~/.ironmesh/keys.json")
+    gen_parser.add_argument("--path", default="~/.ironmesh/keys.json",
+                            help="Output path for the new key file (default: ~/.ironmesh/keys.json)")
     gen_parser.add_argument("--passphrase", default=None, help="Encrypt key file with passphrase")
     info_parser = keys_sub.add_parser("info", help="Show key info")
-    info_parser.add_argument("--path", default="~/.ironmesh/keys.json")
-    info_parser.add_argument("--passphrase", default=None)
+    info_parser.add_argument("--path", default="~/.ironmesh/keys.json",
+                             help="Key file to inspect (default: ~/.ironmesh/keys.json)")
+    info_parser.add_argument("--passphrase", default=None,
+                             help="Passphrase to decrypt the key file (if encrypted)")
 
     kc_store = keys_sub.add_parser(
         "keychain-store",
@@ -332,9 +345,12 @@ def parse_args():
     # --- backup / restore ---
     backup_parser = sub.add_parser("backup", help="Create an encrypted backup of node state")
     backup_parser.add_argument("--out", required=True, help="Output backup file path")
-    backup_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json")
-    backup_parser.add_argument("--trust-path", default="~/.ironmesh/known_peers.json")
-    backup_parser.add_argument("--audit-path", default="~/.ironmesh/audit.log")
+    backup_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json",
+                               help="Identity key file to include in the backup")
+    backup_parser.add_argument("--trust-path", default="~/.ironmesh/known_peers.json",
+                               help="TOFU trust store to include in the backup")
+    backup_parser.add_argument("--audit-path", default="~/.ironmesh/audit.log",
+                               help="Audit log to include in the backup")
 
     restore_parser = sub.add_parser("restore", help="Restore from an encrypted backup")
     restore_parser.add_argument("--in", dest="in_path", required=True, help="Backup file path")
@@ -411,9 +427,12 @@ def parse_args():
         "doctor",
         help="One-shot diagnostic — trust file, schema, queues, gate flag, key file, port",
     )
-    doctor_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json")
-    doctor_parser.add_argument("--keys-passphrase", default=None)
-    doctor_parser.add_argument("--db-path", default="~/.ironmesh/data.db")
+    doctor_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json",
+                                help="Identity key file to check (default: ~/.ironmesh/keys.json)")
+    doctor_parser.add_argument("--keys-passphrase", default=None,
+                                help="Passphrase to decrypt the key file (if encrypted)")
+    doctor_parser.add_argument("--db-path", default="~/.ironmesh/data.db",
+                                help="SQLite store to check (default: ~/.ironmesh/data.db)")
     doctor_parser.add_argument("--trust-path", default=None,
                                 help="Trust file path (default ~/.ironmesh/known_peers.json)")
     doctor_parser.add_argument("--port", type=int, default=8765,
@@ -854,6 +873,7 @@ def cmd_run(args):
             or os.environ.get("IRONMESH_RNS_ADMIN_IDENTITIES")
         ),
         rns_skip_handshake=getattr(args, "rns_skip_handshake", False),
+        rns_group_broadcast=getattr(args, "rns_group_broadcast", False),
         # v0.9.1: LXMF
         lxmf_enabled=getattr(args, "lxmf", False),
         lxmf_storage=getattr(args, "lxmf_storage", "~/.ironmesh/lxmf"),
@@ -890,8 +910,8 @@ def cmd_trust(args):
     """Manage peer trust."""
     from ironmesh import keys as ew_keys
     from ironmesh.trust import TrustStore
-    # Audit C-03: TrustStore is bound to the agent identity. Load keys
-    # to derive the MAC key. Require a passphrase to decrypt them.
+    # TrustStore is bound to the agent identity. Load keys to derive
+    # the MAC key. Require a passphrase to decrypt them.
     keys_path = getattr(args, "keys_path", "~/.ironmesh/keys.json")
     pp = getattr(args, "keys_passphrase", None) or os.environ.get("IRONMESH_PASSPHRASE")
     if not pp:
@@ -1715,6 +1735,15 @@ def cmd_doctor(args):
     failures = 0
     print("ironmesh doctor — IronMesh installation diagnostic")
     print("=" * 60)
+    # Always print the installed version up front. Operators debugging
+    # "why doesn't --rns-skip-handshake work on my install?" need to see
+    # whether their PATH / venv resolves to the daemon they think it does.
+    try:
+        import ironmesh as _im
+        print(f"Installed: ironmesh {_im.__version__}  ({_im.__file__})")
+        print("=" * 60)
+    except Exception:
+        pass
 
     # 1. Identity key file readable + decryptable.
     print(f"[1/7] Identity key file: {keys_path}")

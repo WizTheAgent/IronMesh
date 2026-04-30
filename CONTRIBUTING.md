@@ -78,8 +78,10 @@ pip install -e ".[dev,rns]"
 pytest tests/ -v
 ```
 
-Expect around 470+ passing tests and one `xpassed`. Anything else is
-a regression.
+As of v0.9.2 the suite runs **892 tests** (2 skipped, 1 xpassed) on
+the matrix Ubuntu + Windows + macOS × Python 3.10–3.13. Anything
+substantially below that on a clean checkout is a regression — open
+an issue with the platform + Python version.
 
 ## Security issues
 

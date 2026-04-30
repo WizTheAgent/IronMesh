@@ -134,6 +134,64 @@ jobs:
         run: |
           ./scripts/ci-pytest.sh pytest tests/integration -v
 
+  packaging:
+    # Build the wheel + sdist, run scripts/release-smoke.sh against the
+    # wheel, and verify the conformance vector tests pass from a fresh
+    # sdist install. Catches packaging-only regressions that the unit
+    # test job misses (the unit job tests the source tree, not the
+    # built artifact). Examples of bugs this gate catches:
+    #   - v0.9.0: Dockerfile / pyproject missing COPY ironmesh_a2a /
+    #             ironmesh_acp lines (caught now by release-smoke.sh
+    #             step [3] required-paths check).
+    #   - v0.9.2: MANIFEST.in absent → tests/conformance/vectors/*.json
+    #             excluded from sdist → downstream `pytest` collected
+    #             0 conformance tests and silently reported success.
+    #
+    # Triggered on:
+    #   - tag pushes (v*) — pre-release verification
+    #   - PRs that touch packaging files (pyproject.toml, MANIFEST.in,
+    #     Dockerfile, scripts/release-smoke.sh) — early warning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install build pytest pytest-asyncio
+      - name: Build wheel + sdist
+        run: python -m build
+      - name: Release-smoke gate (wheel content + import surface)
+        shell: bash
+        run: ./scripts/release-smoke.sh
+      - name: Verify sdist contains test fixtures
+        shell: bash
+        run: |
+          set -e
+          SDIST=$(ls -t dist/ironmesh-*.tar.gz | head -1)
+          TMP=$(mktemp -d)
+          tar -xzf "$SDIST" -C "$TMP"
+          SRC="$TMP/$(ls "$TMP" | head -1)"
+          # Hard fail if conformance vectors missing — they're the
+          # cross-language wire-compat contract.
+          for v in handshake.skip_channel_binding.json \
+                   group.identity_material_derivation.json \
+                   group.symmetric_key_derivation.json; do
+            if [ ! -f "$SRC/tests/conformance/vectors/$v" ]; then
+              echo "FAIL: sdist missing tests/conformance/vectors/$v"
+              exit 1
+            fi
+          done
+          # Run the conformance vector tests from the extracted sdist
+          # against the locally-built wheel. Catches the silent
+          # "0 tests collected" failure mode end-to-end.
+          pip install --quiet "dist/$(ls dist | grep .whl | head -1)"
+          cd "$SRC" && python -m pytest tests/test_conformance_vectors.py --no-header -q
+
 # bench-smoke removed 2026-04-17. The background-responder pattern it used
 # was the direct cause of a ~6-hour stuck CI run, and its multicast/mDNS
 # behavior on hosted runners is inherently flaky. The benchmark harness

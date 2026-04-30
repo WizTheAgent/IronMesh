@@ -68,7 +68,7 @@ auth scheme + URLs).
 ```json
 {
   "protocolVersion": "0.3.0",
-  "version": "0.9.0",
+  "version": "0.9.2",
   "name": "ironmesh-a2a",
   "description": "IronMesh node exposed as an A2A peer",
   "url": "https://your.host.example.com/a2a/jsonrpc",
@@ -215,7 +215,8 @@ Per-peer HMAC-SHA256 authentication derived from the existing
 ECDH session keys (matching the third-party `openclaw-a2a-gateway`
 pattern, with `X-A2A-Signature`, `X-A2A-Timestamp`, `X-A2A-Nonce`,
 `X-A2A-Source-Gateway` headers + a `NonceCache` for replay
-protection) is the v0.9.1 roadmap item.
+protection) is on the post-v0.9.2 roadmap. Track in
+[`docs/ROADMAP_TO_1.0.md`](ROADMAP_TO_1.0.md).
 
 ## 6. Reply routing
 

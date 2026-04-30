@@ -42,22 +42,66 @@ FORWARD_PREFIX = b"[FED] "
 
 
 class FederationPolicy:
-    """Policy engine for cross-mesh message forwarding."""
+    """Policy engine for cross-mesh message forwarding.
+
+    v0.9.2 adds **per-source rules**. The policy document can now carry
+    a ``per_source`` list whose entries override the global allow/deny
+    when the sending peer's node_id or agent name matches a glob::
+
+        {
+            "allow": ["llm:*"],
+            "deny":  ["tool:filesystem"],
+            "per_source": [
+                {"source": "ops-*",     "allow": ["*"]},
+                {"source": "guest-*",   "deny":  ["*"]},
+                {"source": "trader-*",  "allow": ["tool:trade:read"],
+                                        "deny":  ["tool:trade:write"]}
+            ]
+        }
+
+    Per-source rules are evaluated in document order; the first match
+    wins. Falls through to the global allow/deny if no rule matches.
+    Backwards compatible: omit ``per_source`` and behavior is unchanged
+    from v0.9.1.
+    """
 
     def __init__(self, allow: Optional[List[str]] = None,
-                 deny: Optional[List[str]] = None):
+                 deny: Optional[List[str]] = None,
+                 per_source: Optional[List[Dict[str, Any]]] = None):
         self.allow_patterns = allow or ["*"]
         self.deny_patterns = deny or []
+        self.per_source: List[Dict[str, Any]] = []
+        for entry in per_source or []:
+            if not isinstance(entry, dict):
+                continue
+            src = entry.get("source")
+            if not src or not isinstance(src, str):
+                continue
+            self.per_source.append({
+                "source": src,
+                "allow": list(entry.get("allow", ["*"])),
+                "deny": list(entry.get("deny", [])),
+            })
 
-    def should_forward(self, capability: str) -> bool:
-        denied = any(fnmatch.fnmatch(capability, p) for p in self.deny_patterns)
-        if denied:
+    def should_forward(self, capability: str,
+                        source: Optional[str] = None) -> bool:
+        # Per-source override: first matching `source` glob wins.
+        if source:
+            for rule in self.per_source:
+                if fnmatch.fnmatch(source, rule["source"]):
+                    if any(fnmatch.fnmatch(capability, p) for p in rule["deny"]):
+                        return False
+                    return any(fnmatch.fnmatch(capability, p) for p in rule["allow"])
+        # Global rules
+        if any(fnmatch.fnmatch(capability, p) for p in self.deny_patterns):
             return False
-        allowed = any(fnmatch.fnmatch(capability, p) for p in self.allow_patterns)
-        return allowed
+        return any(fnmatch.fnmatch(capability, p) for p in self.allow_patterns)
 
     def to_dict(self) -> Dict:
-        return {"allow": self.allow_patterns, "deny": self.deny_patterns}
+        out = {"allow": self.allow_patterns, "deny": self.deny_patterns}
+        if self.per_source:
+            out["per_source"] = self.per_source
+        return out
 
 
 class FederationGateway:
@@ -74,6 +118,7 @@ class FederationGateway:
         self.policy = FederationPolicy(
             allow=policy.get("allow"),
             deny=policy.get("deny"),
+            per_source=policy.get("per_source"),
         )
         self.config_path = os.path.expanduser(config_path)
 
@@ -124,7 +169,7 @@ class FederationGateway:
             forwarded_any = False
             for target_nid, caps in peer_caps.items():
                 matched_cap = next(
-                    (c for c in caps if self.policy.should_forward(c)),
+                    (c for c in caps if self.policy.should_forward(c, source=peer_id)),
                     None,
                 )
                 if matched_cap is None:

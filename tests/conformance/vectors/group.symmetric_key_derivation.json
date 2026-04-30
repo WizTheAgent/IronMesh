@@ -1,0 +1,15 @@
+{
+  "name": "group.symmetric_key_derivation",
+  "description": "HKDF-SHA256 derivation of the 32-byte symmetric key loaded into the GROUP destination's private key for AES-token decryption. Domain-separated from the identity material derivation (different salt + info) so rotating one cannot leak material into the other.",
+  "spec_section": "PROTOCOL_SPEC.md \u00a78 feature flags / group broadcast key derivation",
+  "version": "ironmesh/0.8",
+  "input": {
+    "secret_utf8": "test-passphrase-conformance-vector-v1",
+    "hkdf_sha256": {
+      "salt_utf8": "ironmesh-group-key-v1",
+      "info_utf8": "broadcast",
+      "length_bytes": 32
+    }
+  },
+  "expected_bytes_hex": "2f3f84076d8afc5b2edcbe16ec857de9abfe074dbff2a8f33d24178e0d1c3377"
+}

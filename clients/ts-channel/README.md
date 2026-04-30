@@ -4,15 +4,18 @@ OpenClaw channel plugin for IronMesh. Lets OpenClaw agents send and
 receive messages over the IronMesh peer-to-peer mesh — end-to-end
 encrypted, no cloud, your network only.
 
-> **Status:** `0.1.0` (first non-alpha cut, ships with IronMesh v0.8.5).
-> Implements the lifecycle /
-> outbound / messaging / directory / status / config surfaces of the
-> OpenClaw `ChannelPlugin` contract, plus a bundled-entry helper that
-> wires the package into OpenClaw's loader without glue code. Trust
-> gating is daemon-authoritative as of v0.8.5: pending peers' messages
-> queue at the IronMesh daemon (not the channel plugin) and operators
-> promote via the dashboard or MCP tools — see
+> **Status:** `0.2.0` — published to npm. Ships with IronMesh
+> v0.9.x; forward-compatible across v1.0 per
+> [`STABILITY_PROMISE.md`](../../docs/STABILITY_PROMISE.md).
+> Implements the lifecycle / outbound / messaging / directory /
+> status / config surfaces of the OpenClaw `ChannelPlugin` contract,
+> plus a bundled-entry helper that wires the package into OpenClaw's
+> loader without glue code. Trust gating is daemon-authoritative
+> (since v0.8.5): pending peers' messages queue at the IronMesh
+> daemon (not the channel plugin) and operators promote via the
+> dashboard or MCP tools — see
 > [`docs/OPERATOR_TRUST_RUNBOOK.md`](../../docs/OPERATOR_TRUST_RUNBOOK.md).
+> Install: `npm install @wiztheagent/openclaw-ironmesh`.
 
 ## What it does
 

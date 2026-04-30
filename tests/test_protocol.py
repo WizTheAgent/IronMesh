@@ -25,7 +25,7 @@ class TestFrame:
         assert f.payload == b"hello"
         assert f.source == "alice"
         assert f.destination == "bob"
-        assert len(f.msg_id) in (32, 36)  # Audit M-01: hex or UUID format
+        assert len(f.msg_id) in (32, 36)  # hex or UUID format
 
     def test_to_dict_and_from_dict(self):
         f = Frame(msg_type=MessageType.MSG, payload=b"test", source="a", destination="b")

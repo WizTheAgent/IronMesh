@@ -41,9 +41,9 @@ class CapabilityRegistry:
             os.path.expanduser(persist_path) if persist_path else None
         )
         self._hmac_key = hmac_key
-        # Audit M-09: validate HMAC key presence at init when persistence
-        # is enabled — otherwise the registry silently persists unsigned
-        # state that a malicious reader/writer could tamper.
+        # Validate HMAC key presence at init when persistence is enabled —
+        # otherwise the registry silently persists unsigned state that a
+        # malicious reader/writer could tamper.
         if self._persist_path and not self._hmac_key:
             logger.critical(
                 "CapabilityRegistry persist_path=%s without hmac_key — "

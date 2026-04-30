@@ -9,9 +9,9 @@ Exposes the local IronMesh node as an A2A v0.3.0 peer:
 * ``POST /a2a/v1/inbox`` — direct envelope inbox for gateway-to-gateway
   command dispatch.
 
-Authentication is bearer-token only in v0.9.0 (set ``IRONMESH_A2A_TOKEN``
-or pass ``--token``); HMAC-from-ECDH per-peer auth is on the v0.9.1
-roadmap.
+Authentication is bearer-token only as of v0.9.2 (set
+``IRONMESH_A2A_TOKEN`` or pass ``--token``); HMAC-from-ECDH per-peer
+auth remains on the post-v0.9.2 roadmap.
 
 Entry point: ``python -m ironmesh_a2a`` or ``ironmesh-a2a``.
 """

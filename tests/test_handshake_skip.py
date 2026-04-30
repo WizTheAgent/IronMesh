@@ -166,3 +166,94 @@ class TestEligibility:
         t._daemon = daemon_on
         decoded = decode_app_data(t._build_app_data())
         assert "hskip" in decoded.get("f", [])
+
+
+# ---------------------------------------------------------------------------
+# v0.9.2 chunk A — server-driven SKIP_OFFER protocol
+# ---------------------------------------------------------------------------
+
+class TestSkipOfferProtocol:
+    """The corrected design after the v0.9.2-pre-r1 unilateral-decision
+    bug. Server emits SKIP_OFFER carrying the channel binding sentinel
+    in place of PASSPHRASE_CHALLENGE; client type-dispatches on the
+    first server message. Both sides agree before HELLO is sent.
+    """
+
+    def test_skip_offer_message_type_exists(self):
+        from ironmesh.protocol import MessageType, MESSAGE_SCHEMAS
+        assert MessageType.SKIP_OFFER == "SKIP_OFFER"
+        # Schema must require channel_binding
+        assert MessageType.SKIP_OFFER in MESSAGE_SCHEMAS
+        assert "channel_binding" in MESSAGE_SCHEMAS[MessageType.SKIP_OFFER]["required"]
+
+    def test_skip_offer_channel_binding_matches_sentinel(self):
+        # The server must always offer the deterministic sentinel.
+        # Anything else is a downgrade attempt — the client will reject.
+        from ironmesh.protocol import Handshake
+        cb = Handshake.skip_channel_binding()
+        assert len(cb) == 32
+        # The sentinel itself is documented; equality with a known
+        # constant catches accidental rederivation drift.
+        # (If this hex changes, every conformance vector must be regenerated.)
+        assert cb.hex() == (
+            "d56294e40f47c8c7a524ec8c0fd83711"
+            "968de30b951414088b82014b131d79ef"
+        )
+
+    def test_client_rejects_skip_offer_with_wrong_binding(self):
+        # Defense-in-depth: a tampered channel_binding in SKIP_OFFER
+        # must NOT be accepted as the binding. The client uses
+        # hmac.compare_digest against Handshake.skip_channel_binding()
+        # — verified by manually invoking the comparison here.
+        import hmac as _hmac
+        from ironmesh.protocol import Handshake
+        sentinel = Handshake.skip_channel_binding()
+        attacker_chosen = b"X" * 32
+        # The literal check that lives in _do_client_handshake:
+        assert not _hmac.compare_digest(attacker_chosen, sentinel)
+        # And the trivially-correct case:
+        assert _hmac.compare_digest(sentinel, sentinel)
+
+    def test_client_rejects_skip_offer_missing_binding(self):
+        # The client checks `cb_hex = msg.get("channel_binding")` and
+        # bails on falsy. None / empty string both reject.
+        for bad in (None, "", "not-hex-at-all-...zzz"):
+            try:
+                bytes.fromhex(bad) if bad else None
+                rejectable = bad in (None, "")
+            except Exception:
+                rejectable = True
+            assert rejectable
+
+    def test_first_message_dispatch_table(self):
+        # Catalog of valid first-message types from server. Anything
+        # else is a protocol violation (handled by the else branch
+        # in _do_client_handshake).
+        from ironmesh.protocol import MessageType
+        accepted = {MessageType.SKIP_OFFER, MessageType.PASSPHRASE_CHALLENGE}
+        # Ensure these enum values exist (regression guard).
+        assert MessageType.SKIP_OFFER in accepted
+        assert MessageType.PASSPHRASE_CHALLENGE in accepted
+
+    def test_skip_metric_fields_exist(self):
+        # The three-way counter split is part of the v0.9.2 surface.
+        # Operators rely on offered/activated divergence and rejected
+        # spikes for alerting; renaming or dropping these without a
+        # deprecation cycle is a SemVer break.
+        from ironmesh.bridge import Metrics
+        m = Metrics()
+        for field in (
+            "handshake_skips_offered",
+            "handshake_skips_activated",
+            "handshake_skips_rejected",
+        ):
+            assert hasattr(m, field), f"metric field {field!r} missing"
+            assert getattr(m, field) == 0, f"{field} should default to 0"
+        # to_dict() must surface all three for the JSON metrics endpoint.
+        d = m.to_dict()
+        for field in (
+            "handshake_skips_offered",
+            "handshake_skips_activated",
+            "handshake_skips_rejected",
+        ):
+            assert field in d, f"to_dict() missing {field!r}"

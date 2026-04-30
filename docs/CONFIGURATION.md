@@ -9,13 +9,32 @@ also appear here.
 When multiple sources set the same value, later wins:
 
 1. Defaults compiled into the daemon
-2. CLI flag (`--name`, `--port`, etc.)
-3. Environment variable (`IRONMESH_*`)
-4. The first-run wizard's generated config (effectively a stored CLI
+2. JSON config file at `~/.ironmesh/config.json` (see [JSON config file](#json-config-file) below)
+3. CLI flag (`--name`, `--port`, etc.)
+4. Environment variable (`IRONMESH_*`)
+5. The first-run wizard's generated config (effectively a stored CLI
    command)
 
 The only exception is the **passphrase**, which has its own priority
 chain — see [Passphrase sources](#passphrase-sources) below.
+
+## JSON config file
+
+`~/.ironmesh/config.json` is loaded on daemon startup if present and
+its top-level fields are merged into the runtime config. The schema
+mirrors the `IronMeshConfig` dataclass in `ironmesh/config.py` —
+roughly the same field names as the CLI flags but with underscores
+instead of dashes (e.g. CLI `--db-path` → JSON `"db_path"`,
+`--rns-skip-handshake` → `"rns_skip_handshake"`). Unknown fields are
+ignored. Malformed JSON falls back to defaults with a warning rather
+than crashing the daemon.
+
+CLI flags and environment variables override JSON config values per
+the precedence list above. The JSON file is the right place for
+settings you want to persist across `ironmesh run` invocations
+without re-typing on every launch (timeouts, paths, feature flags);
+for secrets like the passphrase, prefer the dedicated `--passphrase-file`
+or env var sources — never inline secrets in JSON config.
 
 ## CLI flags — `ironmesh run`
 
@@ -91,12 +110,28 @@ a clear error.
 |---|---|
 | `IRONMESH_NAME` | Default `--name`. |
 | `IRONMESH_PORT` | Default `--port`. |
+| `IRONMESH_KEYS_PATH` | Default `--keys-path`. |
+| `IRONMESH_DB_PATH` | Default `--db-path`. |
+| `IRONMESH_LOG_LEVEL` | Default `--log-level` (`DEBUG`/`INFO`/`WARNING`/`ERROR`). |
+| `IRONMESH_LOG_FILE` | Default `--log-file`. Redirect logs to a file path instead of stderr. |
+| `IRONMESH_TLS_CERT` | Default `--tls-cert`. Path to TLS certificate for WSS. |
+| `IRONMESH_TLS_KEY` | Default `--tls-key`. Path to TLS private key for WSS. |
 | `IRONMESH_REQUIRE_MSG_PROMOTION` | `1\|true\|yes` enables the pending-trust gate (same as `--require-message-promotion`). |
 | `IRONMESH_PENDING_QUEUE_CAP` | Override the per-peer pending-trust queue cap (default `100`). |
 | `IRONMESH_TRUST_PATH` | Override `~/.ironmesh/known_peers.json`. |
 | `IRONMESH_ROTATE_KEYS=1` | Rotate keys before start (same as `--rotate-keys`). |
 | `IRONMESH_PASSPHRASE_NEW` | Used by `ironmesh keys keychain-store --passphrase-from-env` to read the new passphrase non-interactively. |
 | `IRONMESH_SETUP_PASSPHRASE` | Used by `ironmesh setup --non-interactive --passphrase-from-env`. |
+| `IRONMESH_RNS_ENABLED` | `1\|true\|yes` enables Reticulum transport (same as `--reticulum`). |
+| `IRONMESH_RNS_CONFIGDIR` | Override the RNS config directory (same as `--rns-configdir`). |
+| `IRONMESH_RNS_RATCHETS` | `0\|false\|no` disables RNS per-packet ratchets. |
+| `IRONMESH_RNS_RATCHET_INTERVAL` | Seconds between ratchet rotations (default `1800`). |
+| `IRONMESH_RNS_RETAINED_RATCHETS` | Past ratchets retained for late packets (default `8`). |
+| `IRONMESH_RNS_ADMIN_IDENTITIES` | Comma-separated allow-list of RNS Identity hashes for admin RPC paths. |
+| `IRONMESH_SEED_RNS_CONFIG` | `1` enables the per-daemon RNS config seeder (multi-daemon-per-host without rnsd). Off by default. |
+| `IRONMESH_PASSPHRASE_KEYCHAIN` | OS-keychain passphrase backend. |
+| `IRONMESH_A2A_TOKEN` | Bearer token enforced by the `ironmesh-a2a` HTTP gateway. |
+| `IRONMESH_ACP_TIMEOUT` | Per-call timeout (seconds) for the `ironmesh-acp` server. |
 
 ## Files written / read
 

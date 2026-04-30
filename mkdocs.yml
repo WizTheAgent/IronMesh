@@ -85,8 +85,16 @@ nav:
   - Specification:
       - Protocol spec: PROTOCOL_SPEC.md
       - Threat model: THREAT_MODEL.md
+      - Stability promise (v1.0): STABILITY_PROMISE.md
       - Roadmap to 1.0: ROADMAP_TO_1.0.md
   - Performance:
       - Benchmarks: BENCHMARKS.md
       - Observability: OBSERVABILITY.md
+      - Metrics reference: METRICS_REFERENCE.md
       - Dashboard: DASHBOARD.md
+  - Security:
+      - Security overview: SECURITY.md
+      - Trust binding: TRUST_BINDING.md
+      - Trust gate architecture: TRUST_GATE_ARCHITECTURE.md
+  - Testing:
+      - Testing guide: TESTING.md

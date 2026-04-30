@@ -1,18 +1,30 @@
 # Roadmap to 1.0
 
+> **Status update (2026-04-30):** v0.9.2 shipped as the **1.0 prep
+> mega-release** — every piece originally scheduled across v0.9.2 →
+> v0.9.7 landed in this single release so that v1.0 is a stability
+> promise rather than a feature push. See
+> [`RELEASE_NOTES_v0.9.2.md`](RELEASE_NOTES_v0.9.2.md) for the full
+> shipped surface, and [`STABILITY_PROMISE.md`](STABILITY_PROMISE.md)
+> for the v1.0 contract. The per-version ladder below is preserved for
+> historical context — read it as the *original plan*, not the
+> shipped-as-described version sequence.
+
 This document is the public commitment for what lands in each v0.9.x
-release between v0.9.1 (shipped 2026-04-24) and v1.0.0. The cadence is
-deliberately spread out so each piece bakes before the next one builds
-on it — and so 1.0 itself ships with no surprises.
+release between v0.9.1 (shipped 2026-04-24) and v1.0.0. The cadence
+was originally spread out so each piece could bake before the next
+one built on it — but reviewer pressure to land everything in one
+release that v1.0 could promise stability against won out, and v0.9.2
+became the mega-release.
 
 The headline rule: **breaking changes are fair game in any v0.9.x
 release.** Once 1.0 ships, the public API and wire protocol are
 committed-to under semantic versioning. Anything that needs to break
 has to break before then.
 
-## Release ladder
+## Release ladder (original plan — see status update above)
 
-### v0.9.2 — Wire protocol v5 + scale baseline
+### v0.9.2 — Wire protocol v5 + scale baseline (SHIPPED 2026-04-30 as mega-release)
 
 Theme: lock down the wire-format changes that have been queued, then
 prove the protocol holds at scale.
@@ -39,7 +51,7 @@ prove the protocol holds at scale.
   audit-log growth). Anything above this baseline is a regression in
   later releases.
 
-### v0.9.3 — NAT traversal
+### v0.9.3 — NAT traversal (LANDED IN v0.9.2 mega-release)
 
 Theme: make "decentralized" actually work outside the local LAN.
 
@@ -54,7 +66,7 @@ Theme: make "decentralized" actually work outside the local LAN.
   CGNAT, one behind a residential NAT, validating end-to-end without
   shared infrastructure.
 
-### v0.9.4 — Conformance test suite + threat model
+### v0.9.4 — Conformance test suite + threat model (LANDED IN v0.9.2 mega-release)
 
 Theme: turn IronMesh from "an implementation" into "a protocol with
 implementations."
@@ -79,7 +91,7 @@ implementations."
   vectors + repo tour assembled into a single deliverable an external
   audit firm can consume on day one.
 
-### v0.9.5 — Federation gateway v2 + capability-aware routing
+### v0.9.5 — Federation gateway v2 + capability-aware routing (LANDED IN v0.9.2 mega-release)
 
 Theme: the cross-mesh and cross-peer surface that 1.0 needs to take
 seriously.
@@ -97,7 +109,7 @@ seriously.
   capability versions and parameter ranges (`llm:llama3 ctx<=8192`)
   for finer matching.
 
-### v0.9.6 — Observability v2
+### v0.9.6 — Observability v2 (LANDED IN v0.9.2 mega-release)
 
 Theme: 1.0 ships with proper operator tooling — not just metrics.
 
@@ -114,7 +126,7 @@ Theme: 1.0 ships with proper operator tooling — not just metrics.
 * **Audit log query language** — beyond `audit verify` and `audit
   tail`, a small filter syntax for ops queries.
 
-### v0.9.7 — Docs site + final polish
+### v0.9.7 — Docs site + final polish (LANDED IN v0.9.2 mega-release)
 
 Theme: everything 1.0 will be judged by.
 

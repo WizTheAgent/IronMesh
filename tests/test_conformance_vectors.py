@@ -43,6 +43,8 @@ def test_vector(vector_path):
         _exercise_announce_vector(vector)
     elif category == "handshake":
         _exercise_handshake_vector(vector)
+    elif category == "group":
+        _exercise_group_vector(vector)
     else:
         pytest.skip(f"category {category!r} not yet covered by reference runner")
 
@@ -85,6 +87,32 @@ def _exercise_announce_vector(vector):
     )
     decoded = decode_app_data(encoded)
     assert decoded == vector["expected_decoded"]
+
+
+def _exercise_group_vector(vector):
+    """Chunk B: deterministic HKDF-SHA256 derivations for the shared
+    GROUP destination. Both vectors feed `secret_utf8` through HKDF
+    with documented salt+info+length and assert byte equality with the
+    Python reference implementation's `_hkdf_sha256` helper.
+    """
+    from ironmesh.reticulum_transport import _hkdf_sha256
+
+    inp = vector["input"]
+    secret = inp["secret_utf8"].encode("utf-8")
+    hkdf = inp["hkdf_sha256"]
+    derived = _hkdf_sha256(
+        secret,
+        salt=hkdf["salt_utf8"].encode("utf-8"),
+        info=hkdf["info_utf8"].encode("utf-8"),
+        length=hkdf["length_bytes"],
+    )
+    expected_hex = vector["expected_bytes_hex"]
+    actual_hex = derived.hex()
+    assert actual_hex == expected_hex, (
+        f"vector {vector['name']!r} bytes mismatch:\n"
+        f"  expected: {expected_hex}\n"
+        f"  actual:   {actual_hex}"
+    )
 
 
 def _exercise_handshake_vector(vector):

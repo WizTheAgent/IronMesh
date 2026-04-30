@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v0.9.2 — 1.0 prep
+## [0.9.2] — 2026-04-27 — 1.0 prep mega-release
 
 The mega-release on the road to 1.0. Every piece originally
 scheduled across v0.9.2 → v0.9.7 (per `docs/ROADMAP_TO_1.0.md`)
@@ -15,16 +15,53 @@ rather than a feature push.
 ### Added
 
 - **Stage-1 handshake skip on identified RNS Links** (chunk A,
-  protocol/0.8). When both peers advertise the `hskip` feature in
-  their RNS announces and the local daemon has opted in via
-  `--rns-skip-handshake`, the IronMesh stage-1 challenge / verify
-  is replaced by a deterministic 32-byte SHA-256 sentinel used as
-  channel binding. Saves three round-trips on LoRa where each is
-  ~250 ms at 3.12 kbps. RNS Link Identity authentication takes the
-  place of the IronMesh-layer passphrase on these connections; the
-  passphrase remains the gate everywhere else. Documented in
+  protocol/0.8). Opt-in via `--rns-skip-handshake`. When both peers
+  advertise the `hskip` feature in their RNS announces, the IronMesh
+  stage-1 challenge / verify is replaced by a deterministic 32-byte
+  SHA-256 sentinel used as channel binding. RNS Link Identity
+  authentication takes the place of the IronMesh-layer passphrase
+  on these connections; the passphrase remains the gate everywhere
+  else. **Server-driven negotiation:** the server is the active
+  party and SPEAKS FIRST — when both sides are eligible it emits a
+  new `SKIP_OFFER` message carrying the channel binding sentinel;
+  otherwise it emits the legacy `PASSPHRASE_CHALLENGE`. The client
+  type-dispatches on the first server message — never decides skip
+  unilaterally. This eliminates the asymmetric-decision race that
+  would otherwise crash handshakes when announces propagated
+  asymmetrically. Defense-in-depth: client rejects any
+  `SKIP_OFFER` whose channel_binding doesn't equal the deterministic
+  sentinel (downgrade-attempt guard). The outbound side calls
+  `link.identify(self._identity)` after RNS Link ACTIVE so the
+  receiving side can match the peer's hskip-announce; the server
+  briefly polls (1.5s budget) for the identify proof to land before
+  deciding. Verified live cross-host — both sides' counters
+  incremented to 1 on the first identified RNS Link.
+  14 unit tests + live-fire cross-host validation. Documented in
   `PROTOCOL_SPEC.md §2 Stage 1 skip` + `THREAT_MODEL.md` cross-asset
   attacks (downgrade path).
+- **Shared-secret mesh-wide broadcast** (chunk B). Opt-in via
+  `--rns-group-broadcast`. Both the group Identity (64 B) and the
+  symmetric group key (32 B) are derived from the daemon passphrase
+  via HKDF-SHA256 with domain-separated `info` labels, so every peer
+  in the mesh independently arrives at the exact same destination
+  hash and can decrypt group traffic without any negotiation.
+  Two-phase delivery — phase 1 is an O(1) RNS GROUP packet on the
+  local segment (reaches everyone sharing the same RNS Transport,
+  e.g., daemons connected to one rnsd, or all nodes on one LoRa
+  medium); phase 2 is an O(N) IronMesh GROUP_BROADCAST fan-out over
+  every established connection to peers that advertised the `group`
+  feature in their RNS announce. The two-phase design fills the
+  RNS architectural gap: GROUP destinations cannot be `announce()`d
+  (RNS rejects with "Only SINGLE destination types can be
+  announced"), so cross-host packets won't naturally route to a
+  remote GROUP listener — phase 2 covers that path explicitly.
+  Inbound surface: `on_group_broadcast(payload)` hook. Dedup keyed
+  on payload SHA-256 with a 60 s window + 10,000-entry hard cap (an
+  OrderedDict for O(1) eviction) — a peer that hears the same payload
+  via BOTH phases handles it exactly once. New `GROUP_BROADCAST`
+  message type in `protocol.py` carries the payload over established
+  Links. Verified live cross-host. Documented in
+  `PROTOCOL_SPEC.md §8 feature flags`.
 - **`Agent.send_to_capability(pattern, payload)`** (chunk E). Resolves
   an fnmatch glob against the capability registry and dispatches via
   the unified-transport layer. Three strategies: `first` (best-RTT
@@ -36,14 +73,26 @@ rather than a feature push.
   on identified RNS Links and the new `hskip` feature flag.
   Documented in `PROTOCOL_SPEC.md §8` (announce app_data) +
   `§11` (per-feature stable-since table).
+- **100-node synthetic scale harness** (chunk D) at
+  `scripts/stress_scale_100.py`. Spawns N daemons on sequential
+  localhost ports, wires a random mostly-connected bootstrap
+  topology, then validates (a) full mesh convergence within a
+  deadline (every node sees every other node in `unified_peers`),
+  (b) broadcast fan-out from node 0 is delivered to all N-1 others
+  exactly once (dedup cache correctness at scale), (c) no daemon
+  crashes during the run. Operator-run, not pytest-collected —
+  ~30-60 s wall-clock and several hundred MB of RAM at the default
+  N=100. Seed is fixed by default so topology is reproducible.
 - **Conformance test suite skeleton** (chunk H). Language-agnostic
   golden vectors live in `tests/conformance/vectors/` with a
   documented JSON format. The Python reference implementation runs
   them via `tests/test_conformance_vectors.py`; alternate
   implementations (Go / Rust / Swift) are expected to load the same
   files and run an equivalent runner. First wave covers announce
-  app_data (3 vectors) + handshake skip sentinel (1 vector) — more
-  follow as the wire surface matures.
+  app_data (3 vectors), handshake skip sentinel (1 vector), and
+  shared-secret group key derivation (2 vectors — identity material
+  + symmetric key, both HKDF-SHA256 with documented salt+info+length)
+  — more follow as the wire surface matures.
 - **OpenTelemetry spans on the v0.9.x agent surfaces** (chunk I).
   `Agent.send_to_name`, `Agent.send_to_capability`, handshake skip
   activations all instrumented. Spans are no-ops on installs without
@@ -55,6 +104,112 @@ rather than a feature push.
   focused theme; no v0.9.x release introduces a breaking change
   without a documented migration path. Originally a multi-release
   ladder; collapsed into v0.9.2 per release scope expansion.
+- **Federation policy v2 — per-source matchers.** `FederationPolicy`
+  now accepts a `per_source` list of glob-matched rules that override
+  the global allow/deny for a specific sender. First match wins; falls
+  through to global policy on no match. Backwards compatible — omit
+  `per_source` and behavior is identical to v0.9.1. Use cases include
+  per-team trust tiers (`ops-*` unrestricted, `guest-*` fully denied)
+  and per-capability sub-scoping (`trader-*` allowed `tool:trade:read`,
+  denied `tool:trade:write`). Six new tests in
+  `tests/test_federation.py`.
+- **Bundled NAT relay — operator-run rendezvous for WAN meshes.** New
+  module `ironmesh.nat_relay` + entry `python -m ironmesh.nat_relay`
+  implements Option A (pure relay) from `NAT_TRAVERSAL_DESIGN.md`. A
+  single-purpose WebSocket server that forwards sealed envelopes
+  between registered peers by `node_id`. The relay never holds session
+  keys, never sees plaintext — it only reads the outermost `{type, to}`
+  envelope. Per-peer forward-rate caps (100/s sustained) and registry
+  caps (10k peers per instance) bound abuse. Eight new tests in
+  `tests/test_nat_relay.py` (registry unit tests + E2E
+  register/forward/unreachable/unregistered paths). Hole-punching on
+  top of this relay fallback remains on the roadmap for a later
+  release.
+- **Metrics v0.9.2 — new counters for the agent-interop surfaces.**
+  `ironmesh_capability_routes_attempted_total`,
+  `_succeeded_total`, `_no_match_total` for `send_to_capability()`
+  outcomes; `ironmesh_handshake_skips_offered_total` (server emitted
+  SKIP_OFFER), `ironmesh_handshake_skips_activated_total` (client
+  accepted), `ironmesh_handshake_skips_rejected_total` (client
+  rejected for missing/non-hex/wrong channel_binding) for the chunk A
+  skip path — three-way split so divergence between fleet-wide sums
+  of offered vs activated surfaces send failures, and any non-zero
+  `_rejected` rate flags downgrade-attempt or buggy-peer noise for
+  the alert pipeline; `ironmesh_group_broadcasts_{sent,received,deduped}_total`
+  for chunk B broadcast. All registered in the Prometheus spec and
+  to_dict() JSON surface. Two new Prometheus alert rules:
+  `IronMeshCapabilityRouteNoMatchSpike` and
+  `IronMeshGroupBroadcastDedupStorm`. Full catalog in the new
+  `docs/METRICS_REFERENCE.md`.
+- **`docs/STABILITY_PROMISE.md` — the v1.0 stability contract.**
+  Enumerates every wire-protocol surface, Python API, CLI flag,
+  config-file field, metric name, and OTel span name that is frozen
+  at v1.0. Defines the deprecation procedure (one minor of
+  warnings + migration guide + next-major removal), security backport
+  policy (≥ 6 months on the previous minor), and the wire-version
+  negotiation matrix. The §6 commitment: v1.0 is the label, not a
+  feature drop — nothing on the wire changes.
+- **Docs site nav overhaul.** `mkdocs.yml` nav now surfaces the
+  stability promise, metrics reference, security section, and testing
+  section alongside the existing Operator / Transport / Integration /
+  Specification groups. `docs/index.md` landing page updated with
+  direct links to the new v0.9.2 deliverables.
+- **Opt-in RNS multi-process RPC mitigation.** Two ironmesh daemons
+  on one host without rnsd can collide on the default RNS shared-
+  instance RPC port (37428) with different per-configdir authkeys.
+  Set `IRONMESH_SEED_RNS_CONFIG=1` to enable a per-daemon config
+  seeder that writes unique `shared_instance_port` and
+  `instance_control_port` (deterministically derived from the
+  daemon's node_id hash) into the daemon's configdir. **Off by
+  default** because turning it on prevents the daemon from joining
+  an existing rnsd shared instance. AutoInterface settings
+  (`group_id`, `discovery_port`, `data_port`) are NEVER overridden —
+  that would fragment the global cross-host mesh. The standard
+  multi-daemon-on-one-host pattern remains rnsd; this seeder is for
+  no-rnsd test setups only.
+- **Shutdown WARN spam quieted.** Graceful shutdown previously fired
+  `logger.warning("Failed to send frame to %s: %s", ...)` for every
+  in-flight route announce hitting a closing peer. `ConnectionClosed`
+  is now logged at DEBUG; unexpected exceptions still surface at
+  WARNING.
+- **Ratchet directory not pre-created on RNS singleton-reuse.** When
+  a second in-process daemon reused an existing `RNS.Reticulum`
+  singleton, RNS tried to write a per-destination ratchet file
+  inside a configdir the second daemon had specified but never
+  populated. Resulted in `FileNotFoundError` mid-init.
+  `ReticulumTransport.start()` now ensures the configdir exists
+  unconditionally on both the create-new and singleton-reuse paths.
+- **GROUP destination duplicate registration in shared singleton.**
+  When two in-process daemons both opted into `--rns-group-broadcast`
+  with the same passphrase, the second's RNS Destination init failed
+  with `'Attempt to register an already registered destination.'`
+  silently leaving its `_group_destination = None`. The transport now
+  detects an existing IN-direction GROUP destination via
+  `RNS.Destination.hash_from_name_and_identity` + iteration of
+  `RNS.Transport.destinations`, and adopts it. The first daemon's
+  packet callback still owns receive; the second can SEND on the
+  shared destination.
+- **`broadcast_via_group` no longer recreates the OUT destination on
+  every call.** The OUT-direction RNS.Destination is now constructed
+  lazily on first use and cached on the transport. Avoids wasted
+  Destination registrations and any RNS routing-cache confusion in
+  high-frequency broadcast paths.
+- **GROUP broadcast dedup cache is now bounded + O(1) hot-path.**
+  Previously the cache used a plain dict and walked all entries on
+  every receive to find stale ones — O(N) per receive, with no size
+  cap. A burst of unique-payload broadcasts could drive unbounded
+  memory growth and degrade receive latency. Now uses an
+  `OrderedDict` capped at 10,000 entries with O(1) eviction of
+  stale-or-oldest entries. New regression test
+  `test_group_dedup_cache_is_bounded` enforces the cap.
+- **NAT relay payload type validation.** `FORWARD` frames now require
+  `payload` to be a non-null string (typically a base64-encoded
+  sealed envelope); previously any JSON value (`null`, list, dict,
+  number) was forwarded verbatim, surfacing as opaque downstream
+  errors. `to` is also explicitly required to be non-empty. Forward-
+  to-target failures are now logged at INFO instead of DEBUG so
+  operators can see persistent delivery problems. Two new tests
+  cover the validation paths.
 
 ### Documentation
 
@@ -73,16 +228,19 @@ rather than a feature push.
 
 ### Deferred from this release
 
-- Group-destination broadcast (originally chunk B): wire-protocol
-  cost not justified at current PING sizes; revisit in v1.x if
-  mesh-wide notification needs surface.
-- NAT traversal full implementation (originally a v0.9.3 line item):
-  design doc updated; production implementation deferred as a v1.x
-  item to keep v0.9.2 ship-able.
-- Docs site migration to mkdocs-material: scaffolding in place;
-  content migration is a v1.x backlog item.
-- 100-node synthetic scale test: fixture committed, full sustained-
-  throughput baseline-publishing deferred to a follow-up CI run.
+- NAT traversal hole-punching layer. The relay half of the hybrid
+  design (Option A in `NAT_TRAVERSAL_DESIGN.md`) ships in v0.9.2; the
+  STUN-based hole-punching optimization on top of it remains a future
+  release item — the relay is always a correct fallback, so the gap
+  is a latency optimization rather than a correctness one.
+- 100-node synthetic scale test — full sustained-throughput baseline
+  publishing to the docs site. The fixture ships in v0.9.2
+  (`scripts/stress_scale_100.py`); the first baseline numbers will
+  land in a follow-up commit once the harness runs on dedicated
+  hardware instead of a shared workstation.
+- Multi-hop federation gateway cascades. Federation v2 per-source
+  rules ship in v0.9.2; cascading multi-mesh → multi-mesh → multi-mesh
+  topologies are tracked for a later release.
 
 ## [0.9.1] — 2026-04-24 — Reticulum integration sweep
 
@@ -1455,8 +1613,8 @@ changes — every v0.8.x peer stays on the mesh.
   51 vitest tests including a live e2e that spawns a real Python
   `BridgeDaemon` and exchanges a MSG round-trip (~6 s), plus
   parallel-send and large-payload (256 KiB) e2e coverage.
-- **WS API gap analysis** at [`docs/OPENCLAW_WS_API_GAPS.md`](docs/OPENCLAW_WS_API_GAPS.md)
-  — five-gap audit concluding the channel plugin is feasible with
+- **WS API gap analysis** at `docs/OPENCLAW_WS_API_GAPS.md` (kept
+  internal — five-gap audit concluding the channel plugin is feasible with
   ~120 LOC of new daemon code (under the spike's 200-LOC ceiling).
 - **`__main__.py`** so `python -m ironmesh` works from a checkout (the
   installed `ironmesh` script entry already worked).
@@ -1472,8 +1630,8 @@ changes — every v0.8.x peer stays on the mesh.
   `finally:` block in `tests/test_concurrency_audit.py::
   test_100_parallel_sends_no_drops` even though the test body had
   already passed. Same widening applied defensively to `bridge.py`'s
-  handshake-failure handler. Full analysis at
-  [`docs/BUG-PY310-TIMEOUTERROR-CLASS-SPLIT.md`](docs/BUG-PY310-TIMEOUTERROR-CLASS-SPLIT.md).
+  handshake-failure handler. Documented internally as a maintainer-only
+  bug post-mortem.
 - **CI: collapsed dual pytest runs + `scripts/ci-pytest.sh` wrapper.**
   Every job since 04-17 was hitting the 20-min cap because the second
   "Check coverage threshold" step silently re-ran the entire suite
@@ -1607,7 +1765,7 @@ Full write-up: [`docs/RELEASE_NOTES_v0.8.3.md`](docs/RELEASE_NOTES_v0.8.3.md).
   crash matrix (SIGKILL mid-handshake, corrupt trust store, corrupt
   routes.json, disk-full on audit.log); 7 pathological payloads
   fired at the dashboard. `pip-audit` + `bandit` clean. Full matrix
-  and findings in [`docs/AUDIT_v0.8.3.md`](docs/AUDIT_v0.8.3.md).
+  and findings retained internally as the v0.8.3 audit record.
 - **Real-adapter integration tests.** `tests/integration/` exercises
   `adapters/langchain_adapter.py`, `crewai_adapter.py`,
   `autogen_adapter.py` against a `fake_ollama` stub so the adapters

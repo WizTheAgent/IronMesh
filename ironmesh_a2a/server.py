@@ -13,16 +13,17 @@ package requires no extra dependencies:
 Authentication
 --------------
 
-Bearer token only in v0.9.0 — clients send
+Bearer token only as of v0.9.2 — clients send
 ``Authorization: Bearer <token>`` and the server compares against the
 single token loaded from ``--token`` or the ``IRONMESH_A2A_TOKEN`` env
 var. The AgentCard advertises this scheme.
 
-A future v0.9.1 will add HMAC-SHA256 per-peer authentication derived
+A future release will add HMAC-SHA256 per-peer authentication derived
 from the existing ECDH session keys (matches the third-party
 ``openclaw-a2a-gateway`` reference implementation pattern), with
 ``X-A2A-{Signature,Timestamp,Nonce,Source-Gateway}`` headers and a
-``NonceCache`` for replay protection.
+``NonceCache`` for replay protection. Tracked in
+``docs/ROADMAP_TO_1.0.md``.
 
 Anti-loop
 ---------
@@ -595,12 +596,15 @@ def main() -> int:
                         "disable auth (DEV ONLY).")
     p.add_argument("--no-token", action="store_true",
                    help="disable bearer token check entirely (dev only)")
-    p.add_argument("--passphrase-env", default="IRONMESH_PASSPHRASE")
-    p.add_argument("--passphrase-file", default=None)
+    p.add_argument("--passphrase-env", default="IRONMESH_PASSPHRASE",
+                   help="env var holding the mesh passphrase (default: IRONMESH_PASSPHRASE)")
+    p.add_argument("--passphrase-file", default=None,
+                   help="file containing the mesh passphrase (alternative to --passphrase-env)")
     p.add_argument("--peer", action="append", default=None,
                    metavar="HOST:PORT",
                    help="bootstrap mesh peer hint (repeatable)")
-    p.add_argument("--allow-plaintext-ws", action="store_true", default=True)
+    p.add_argument("--allow-plaintext-ws", action="store_true", default=True,
+                   help="allow plaintext ws:// fallback for mesh connections (default on for embedded daemon)")
     p.add_argument("--max-request-bytes", type=int,
                    default=A2A_DEFAULT_RESPONSE_BYTES,
                    help=f"max inbound HTTP body (default {A2A_DEFAULT_RESPONSE_BYTES})")

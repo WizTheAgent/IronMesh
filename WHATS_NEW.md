@@ -30,14 +30,16 @@ The arc, version by version:
 | **v0.8.5.3** | 2026-04-19 | Quickstart hardening: explicit `INSECURE` startup warnings on the two opt-in shortcut flags, dated deprecation notice for the pending-trust gate (default-on in v0.9), two new examples (`conv_multiturn.py`, `persona_debate.py`), `.github/RELEASE_CHECKLIST.md`. |
 | **v0.8.5.4** | 2026-04-20 | Repo-hygiene release. Three-layer leak-scan defense (pre-commit hook, pre-push hook, CI workflow). Personal identifiers in shipped CLI examples and docs replaced with generic `alice`/`bob`/TEST-NET-1 placeholders. Coverage badge wired (Codecov). New `WHATS_NEW.md`, `BENCHMARKS.md`, `TESTING.md`. |
 
-## Where IronMesh is today
+## Where IronMesh is today (v0.9.2)
 
-- **686 tests** passing on Ubuntu + Windows + macOS across Python 3.10–3.13, plus a 3-node live-mesh validation pass on every release.
-- **17 core modules**, ~11,300 lines of Python, audit-graded crypto stack (Ed25519 + X25519 + XSalsa20-Poly1305 via PyNaCl).
-- **21 MCP tools** exposed via stdio JSON-RPC, usable from Claude Desktop and any MCP-capable agent.
-- **Three transports:** WebSocket (default), Reticulum/LoRa (opt-in via `ironmesh[rns]`), federation between meshes via `FederationGateway`.
-- **Two reference clients** beyond Python: Go (full wire protocol, crypto verified against Python) and TypeScript (alpha, published to npm).
-- **Distribution:** PyPI, Docker Hub, GitHub Releases. Each release follows `.github/RELEASE_CHECKLIST.md` end-to-end with a wheel-packaging smoke gate (`scripts/release-smoke.sh`) before any `twine upload`.
+- **892 tests** passing on Ubuntu + Windows + macOS across Python 3.10–3.13, plus live cross-host validation on every wire-surface change. The 14-phase E2E driver (`scripts/stress_e2e_round4.py`) runs 37 checks across multi-hop routing, burst load, dedup/replay defense, audit-tamper detection, connect storm, shutdown-under-load, and a 5-probe attack-surface battery — green on the v0.9.2 ship.
+- **27 core modules** in the wheel, audit-graded crypto stack (Ed25519 + X25519 + XSalsa20-Poly1305 via PyNaCl), formal threat model in `docs/THREAT_MODEL.md`, v1.0 surface contract in `docs/STABILITY_PROMISE.md`.
+- **25 MCP tools** exposed via stdio JSON-RPC, usable from Claude Desktop and any MCP-capable agent.
+- **Four transports:** WebSocket (default), Reticulum/LoRa (opt-in via `ironmesh[rns]`), LXMF (Sideband / Nomadnet interop), and the bundled NAT relay (Option A — pure relay, sealed envelopes, never holds session keys) for WAN meshes that can't direct-connect. Federation between meshes via `FederationGateway` with v2 per-source matchers.
+- **Three reference clients** beyond Python: Go (full wire protocol, crypto verified against Python), TypeScript (`@wiztheagent/ironmesh-client`), and the OpenClaw channel adapter (`@wiztheagent/openclaw-ironmesh`).
+- **Wire format `ironmesh/0.8`** with two opt-in feature flags (`hskip` for handshake-skip on identified RNS Links, `group` for shared-secret broadcast) — every existing wire path is unchanged, so v0.9.x peers stay interoperable and v0.8.x peers continue to interoperate on the legacy surfaces.
+- **Operator surface:** `ironmesh setup` (interactive first-run wizard), `ironmesh demo` (60-second two-agent local demo), `ironmesh doctor` (mesh-health diagnostic), `ironmesh upgrade` (PyPI version check), 9 new metrics + 4 Prometheus alert rules + a Grafana dashboard, OpenTelemetry spans on the v0.9.x agent surfaces.
+- **Distribution:** PyPI, Docker Hub, GitHub Releases, mkdocs site at [docs.ironmesh.org](https://docs.ironmesh.org). Each release follows `.github/RELEASE_CHECKLIST.md` end-to-end with a wheel-packaging smoke gate (`scripts/release-smoke.sh`) before any `twine upload`.
 
 ## What's coming
 

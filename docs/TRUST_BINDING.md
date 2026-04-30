@@ -200,8 +200,13 @@ closed by v0.8.5.6:
 Both require wire-protocol extensions (new frame fields, HELLO
 negotiation). Shipping them in a patch release would risk mixed-
 version mesh instability. They are fully designed in
-[`TRUST_BINDING_WIRE_v0.9.md`](TRUST_BINDING_WIRE_v0.9.md) and slated
-for v0.9 as opt-in-first, then default-on in v0.9.1 or v1.0.
+[`TRUST_BINDING_WIRE_v0.9.md`](TRUST_BINDING_WIRE_v0.9.md). The
+cap-set-binding TOFU extension shipped in **v0.9.0** as an opt-in
+default — a peer reconnecting with changed caps is demoted to
+`pending-cap-change` and surfaced via `ironmesh trust cap-diff
+<node_id>` for review. The HELLO-negotiated handshake-skip on
+identified RNS Links shipped in **v0.9.2** behind
+`--rns-skip-handshake`. Default-on for both is on the path to v1.0.
 
 ## Threat model summary
 

@@ -4,12 +4,13 @@ TypeScript / Node.js client for the IronMesh agent-to-agent mesh
 protocol. Connects, handshakes, and exchanges messages with an
 IronMesh daemon over WebSocket.
 
-> **Status:** functional alpha (`0.1.0-alpha.2`). The full wire
-> protocol — 3-stage passphrase + ECDH + signed-HELLO handshake,
-> binary frame v4, SecretBox + Ed25519 — is implemented and
-> end-to-end tested against a live Python `BridgeDaemon`. Reconnect
-> with backoff is wired. Not yet on npm; use as a workspace
-> dependency or install from the GitHub repo until 1.0.
+> **Status:** `0.2.0` — published to npm. Compatible with IronMesh
+> daemons at v0.9.x (and forward across v1.0 per
+> [`STABILITY_PROMISE.md`](../../docs/STABILITY_PROMISE.md)). The full
+> wire protocol — 3-stage passphrase + ECDH + signed-HELLO handshake,
+> binary frame v4, SecretBox + Ed25519 — is implemented and end-to-end
+> tested against a live Python `BridgeDaemon`. Reconnect with backoff
+> is wired. Install: `npm install @wiztheagent/ironmesh-client`.
 
 ## Why this exists
 

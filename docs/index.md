@@ -35,10 +35,16 @@ the same for capability-based routing.
   walkthrough.
 * **[Reticulum guide](RETICULUM.md)** — every knob for the LoRa /
   RNS transport.
+* **[NAT traversal](NAT_TRAVERSAL.md)** — WAN deployment recipes,
+  including the bundled NAT relay shipped in v0.9.2.
 * **[Protocol spec](PROTOCOL_SPEC.md)** — wire-level details for
   third-party implementers.
 * **[Threat model](THREAT_MODEL.md)** — what IronMesh defends
   against and what's out of scope.
+* **[Stability promise](STABILITY_PROMISE.md)** — what surfaces are
+  frozen at v1.0 and what's expressly not.
+* **[Metrics reference](METRICS_REFERENCE.md)** — catalog of every
+  Prometheus metric + OTel span exported by the daemon.
 * **[Roadmap to 1.0](ROADMAP_TO_1.0.md)** — release ladder and the
   v1.0 stability commitment.
 

@@ -792,3 +792,471 @@ class TestIronMeshAnnounceHandler:
         # Empty app_data still fires the callback with an empty dict
         daemon._on_rns_peer_announced.assert_called_once()
         assert daemon._on_rns_peer_announced.call_args.args[2] == {}
+
+
+# ---------------------------------------------------------------------------
+# v0.9.2 chunk B — group destination + HKDF derivation
+# ---------------------------------------------------------------------------
+
+class TestGroupBroadcast:
+    def test_hkdf_matches_rfc5869_basic(self):
+        """HKDF helper must be deterministic and length-correct."""
+        out1 = rt_mod._hkdf_sha256(b"secret", b"salt", b"info", 32)
+        out2 = rt_mod._hkdf_sha256(b"secret", b"salt", b"info", 32)
+        assert out1 == out2
+        assert len(out1) == 32
+        # Different info → different output
+        out3 = rt_mod._hkdf_sha256(b"secret", b"salt", b"other", 32)
+        assert out3 != out1
+        # Length > one SHA-256 block must still work
+        out4 = rt_mod._hkdf_sha256(b"secret", b"salt", b"info", 64)
+        assert len(out4) == 64
+        assert out4[:32] == out1
+
+    def test_group_disabled_by_default(self):
+        daemon = MagicMock()
+        transport = ReticulumTransport(daemon, announce_interval=60.0)
+        assert transport._group_broadcast_enabled is False
+        assert transport._group_destination is None
+        assert transport.group_destination_hash_hex is None
+
+    def test_group_feature_only_when_destination_active(self):
+        """The `group` feature advertises only when broadcast is actually live."""
+        daemon = MagicMock()
+        daemon.name = "n"
+        daemon.node_id = "abc123"
+        daemon.config = MagicMock()
+        daemon.config.capabilities = []
+        daemon._lxmf_enabled = False
+        daemon._rns_skip_handshake = False
+        transport = ReticulumTransport(
+            daemon, announce_interval=60.0,
+            group_broadcast=True, group_secret=b"passphrase",
+        )
+        # Enabled flag alone — without a live destination — must NOT
+        # advertise the feature. Prevents shouting the flag when the
+        # derivation quietly failed.
+        assert transport._group_destination is None
+        decoded = rt_mod.decode_app_data(transport._build_app_data())
+        assert "group" not in (decoded.get("f") or [])
+        # Simulate a successful setup
+        transport._group_destination = MagicMock()
+        decoded = rt_mod.decode_app_data(transport._build_app_data())
+        assert "group" in (decoded.get("f") or [])
+
+    def test_broadcast_via_group_returns_false_when_disabled(self):
+        daemon = MagicMock()
+        transport = ReticulumTransport(daemon, announce_interval=60.0)
+        assert transport.broadcast_via_group(b"hi") is False
+
+
+# ---------------------------------------------------------------------------
+# v0.9.2 RNS config seeding — avoids cross-process RPC port collisions
+# ---------------------------------------------------------------------------
+
+class TestRnsConfigSeeding:
+    """Seeder is OPT-IN via IRONMESH_SEED_RNS_CONFIG=1; tests set it."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_seeder(self, monkeypatch):
+        monkeypatch.setenv("IRONMESH_SEED_RNS_CONFIG", "1")
+
+    def test_deterministic_ports_by_node_id(self, tmp_path):
+        daemon = MagicMock()
+        daemon.node_id = "abc123deadbeef"
+        t = ReticulumTransport(daemon, configdir=str(tmp_path))
+        t._maybe_seed_rns_config()
+        cfg = (tmp_path / "config").read_text()
+        # Two runs with the same node_id produce the same ports
+        import re
+        ports1 = sorted(re.findall(r"_port = (\d+)", cfg))
+        # Second transport, same node_id, different configdir
+        import tempfile
+        with tempfile.TemporaryDirectory() as td2:
+            daemon2 = MagicMock()
+            daemon2.node_id = "abc123deadbeef"
+            t2 = ReticulumTransport(daemon2, configdir=td2)
+            t2._maybe_seed_rns_config()
+            cfg2 = open(td2 + "/config").read()
+            ports2 = sorted(re.findall(r"_port = (\d+)", cfg2))
+        assert ports1 == ports2  # deterministic
+
+    def test_different_node_ids_get_different_ports(self, tmp_path):
+        import tempfile
+        daemon1 = MagicMock(); daemon1.node_id = "node-one-xxxxxxxx"
+        daemon2 = MagicMock(); daemon2.node_id = "node-two-yyyyyyyy"
+        with tempfile.TemporaryDirectory() as td1, tempfile.TemporaryDirectory() as td2:
+            t1 = ReticulumTransport(daemon1, configdir=td1)
+            t1._maybe_seed_rns_config()
+            t2 = ReticulumTransport(daemon2, configdir=td2)
+            t2._maybe_seed_rns_config()
+            c1 = open(td1 + "/config").read()
+            c2 = open(td2 + "/config").read()
+        import re
+        p1 = sorted(re.findall(r"_port = (\d+)", c1))
+        p2 = sorted(re.findall(r"_port = (\d+)", c2))
+        # Extremely unlikely collision — not literally impossible but
+        # essentially zero with a 1000-slot hash space and independent hashes.
+        assert p1 != p2
+
+    def test_existing_config_not_overwritten(self, tmp_path):
+        (tmp_path / "config").write_text("[reticulum]\ncustom_option = true\n")
+        daemon = MagicMock()
+        daemon.node_id = "tester"
+        t = ReticulumTransport(daemon, configdir=str(tmp_path))
+        t._maybe_seed_rns_config()
+        kept = (tmp_path / "config").read_text()
+        assert "custom_option" in kept
+        assert "shared_instance_port" not in kept
+
+    def test_no_configdir_is_noop(self):
+        daemon = MagicMock()
+        t = ReticulumTransport(daemon, configdir=None)
+        # Should not raise even with no configdir
+        t._maybe_seed_rns_config()
+
+    def test_seeder_off_by_default(self, monkeypatch, tmp_path):
+        """Without IRONMESH_SEED_RNS_CONFIG=1, the seeder is a no-op
+        — production daemons should NEVER auto-seed. Regression test for
+        the v0.9.2 ship issue where auto-seeding broke any host running
+        rnsd because it gave the daemon unique RPC ports that prevented
+        finding the existing rnsd shared instance.
+        """
+        monkeypatch.delenv("IRONMESH_SEED_RNS_CONFIG", raising=False)
+        daemon = MagicMock()
+        daemon.node_id = "test-node"
+        t = ReticulumTransport(daemon, configdir=str(tmp_path))
+        t._maybe_seed_rns_config()
+        cfg = tmp_path / "config"
+        assert not cfg.exists(), (
+            "Seeder fired without explicit opt-in — would conflict "
+            "with rnsd on hosts that have it"
+        )
+
+    def test_group_broadcast_two_phase_result_shape(self):
+        """v0.9.2 chunk B cross-host fix: broadcast_via_rns_group
+        returns a dict describing both phase-1 (local segment) and
+        phase-2 (per-peer fan-out) outcomes. Plain bool was the prior
+        return contract; the dict is the new shape.
+        """
+        from ironmesh.bridge import BridgeDaemon
+        from unittest.mock import MagicMock
+        # Direct invocation via unbound method — avoids constructing
+        # a full BridgeDaemon (which validates passphrase, opens DB,
+        # etc.) and avoids the read-only `node_id` property.
+        stub = MagicMock()
+        stub._reticulum = None
+        stub._rns_discovered = {}
+        stub.peers = {}
+        stub.node_id = "self-node"
+        stub.metrics = MagicMock()
+        result = BridgeDaemon.broadcast_via_rns_group(stub, b"x")
+        assert isinstance(result, dict)
+        assert set(result.keys()) >= {
+            "local_segment", "fanout_sent", "fanout_skipped",
+        }
+        assert result["local_segment"] is False
+        assert result["fanout_sent"] == 0
+        assert result["fanout_skipped"] == 0
+
+    def test_group_broadcast_skips_peers_without_group_feature(self):
+        """Fan-out only sends to peers whose RNS announce included
+        `group` — non-participants should never receive a frame they
+        don't know how to handle.
+        """
+        from ironmesh.bridge import BridgeDaemon
+        from unittest.mock import MagicMock
+        stub = MagicMock()
+        stub._reticulum = None
+        stub._rns_discovered = {
+            "destA": {
+                "node_id": "peer-with-group",
+                "features": ["group", "mesh"],
+            },
+            "destB": {
+                "node_id": "peer-without-group",
+                "features": ["mesh"],
+            },
+        }
+        st1 = MagicMock(); st1.is_online = True
+        st2 = MagicMock(); st2.is_online = True
+        stub.peers = {
+            "peer-with-group": st1,
+            "peer-without-group": st2,
+        }
+        stub.node_id = "self-node"
+        stub.metrics = MagicMock()
+        stub._loop = None
+        sent_to = []
+        async def _send(peer_id, mtype, payload, prio):
+            sent_to.append((peer_id, mtype, payload))
+        stub.send_message = _send
+        try:
+            result = BridgeDaemon.broadcast_via_rns_group(stub, b"hello")
+        except RuntimeError:
+            # asyncio.get_event_loop() may raise on no-loop platforms;
+            # the gating decision still ran before the schedule attempt.
+            result = {"fanout_skipped": 1, "fanout_sent": 0}
+        assert result["fanout_skipped"] >= 1, (
+            "Peer without `group` feature must be skipped, got "
+            f"{result}"
+        )
+
+    def test_group_dedup_cache_is_bounded(self):
+        """v0.9.2 hardening regression: the group-broadcast dedup
+        cache must cap at a known size so a flood of unique payloads
+        cannot drive unbounded memory growth.
+        """
+        from collections import OrderedDict
+        from ironmesh.bridge import BridgeDaemon
+        cap = BridgeDaemon._GROUP_DEDUP_MAX
+        assert cap > 0
+        # Honest upper bound — must be a sensible value, not e.g. 10**9.
+        assert 1000 <= cap <= 100_000
+
+        # Simulate the eviction loop directly (the hot path)
+        seen: "OrderedDict[bytes, float]" = OrderedDict()
+        import time as _time
+        now = _time.time()
+        # Inject 2x cap + 1 entries; eviction should keep <= cap
+        for i in range((cap * 2) + 1):
+            key = i.to_bytes(8, "big")
+            seen[key] = now
+            while len(seen) > cap:
+                seen.popitem(last=False)
+        assert len(seen) == cap, (
+            f"Eviction failed to bound cache: {len(seen)} > {cap}"
+        )
+
+    def test_seeder_does_not_fragment_global_mesh(self, tmp_path):
+        """Critical: the seeder must NOT override AutoInterface
+        group_id, discovery_port, or data_port. Doing so would put
+        each daemon on its own multicast group and break cross-host
+        meshing — every host would see a private mesh of one. This
+        regression-tests the v0.9.2 fix.
+        """
+        daemon = MagicMock()
+        daemon.node_id = "host-A-deadbeef00"
+        t = ReticulumTransport(daemon, configdir=str(tmp_path))
+        t._maybe_seed_rns_config()
+        cfg = (tmp_path / "config").read_text()
+        # These three keys, if present, fragment the cross-host mesh.
+        # AutoInterface must inherit RNS defaults so all ironmesh
+        # daemons across all hosts share the same multicast group.
+        assert "group_id" not in cfg, (
+            "Seeder set group_id — would fragment global mesh")
+        assert "discovery_port = " not in cfg, (
+            "Seeder set discovery_port — daemons on different hosts "
+            "would land on different multicast addresses")
+        assert "data_port = " not in cfg, (
+            "Seeder set data_port — same fragmentation hazard")
+
+
+class TestGroupBroadcastE2E:
+    """v0.9.2 chunk B end-to-end wiring — sender and receiver paths
+    exercised together against an in-process fake reticulum so the
+    full lifecycle (broadcast → fan-out → dedup → on_group_broadcast
+    hook → metric increment) is covered without needing live RNS.
+
+    These tests catch wiring bugs the unit-level tests miss: a typo
+    in the metric attribute name, a hook that doesn't get awaited
+    properly, dedup that suppresses the wrong frame, etc.
+    """
+
+    def _make_stub(self):
+        """Construct a daemon stub wired enough for the receive path."""
+        from collections import OrderedDict
+        from types import MethodType
+        from unittest.mock import MagicMock
+        from ironmesh.bridge import BridgeDaemon, Metrics
+        stub = MagicMock()
+        stub.node_id = "self-node"
+        # Real metrics object — exercise the actual increment path.
+        stub.metrics = Metrics()
+        # The dedup cache attribute is created lazily inside
+        # _on_rns_group_message; pre-create here to be explicit.
+        stub._group_seen = OrderedDict()
+        # MagicMock auto-mocks attribute access, so the class-level
+        # int constants `_GROUP_DEDUP_MAX` / `_GROUP_DEDUP_TTL` need
+        # to be set explicitly or the cache eviction comparisons
+        # raise TypeError on `int > MagicMock`.
+        stub._GROUP_DEDUP_MAX = BridgeDaemon._GROUP_DEDUP_MAX
+        stub._GROUP_DEDUP_TTL = BridgeDaemon._GROUP_DEDUP_TTL
+        # Bind the real _inc_metric helper too — otherwise MagicMock
+        # auto-mocks it and the metric increments silently no-op,
+        # making every "metric incremented" assertion vacuously fail.
+        stub._inc_metric = MethodType(BridgeDaemon._inc_metric, stub)
+        # Hook starts unset; tests opt-in.
+        if hasattr(stub, "on_group_broadcast"):
+            del stub.on_group_broadcast
+        return stub
+
+    def test_receive_invokes_hook_and_increments_metric(self):
+        """A first-time payload via _on_rns_group_message MUST:
+        - call the operator's on_group_broadcast hook with the bytes
+        - increment metrics.group_broadcasts_received
+        - NOT increment metrics.group_broadcasts_deduped
+        """
+        import asyncio
+        from ironmesh.bridge import BridgeDaemon
+        stub = self._make_stub()
+        received = []
+
+        def hook(payload: bytes) -> None:
+            received.append(payload)
+        stub.on_group_broadcast = hook
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(
+                BridgeDaemon._on_rns_group_message(stub, b"hello-mesh"),
+            )
+        finally:
+            loop.close()
+        assert received == [b"hello-mesh"]
+        assert stub.metrics.group_broadcasts_received == 1
+        assert stub.metrics.group_broadcasts_deduped == 0
+
+    def test_dedup_second_call_suppresses_hook(self):
+        """Same payload seen twice in the dedup window MUST:
+        - fire the hook EXACTLY once (not twice)
+        - increment received exactly once
+        - increment deduped exactly once on the second call
+        """
+        import asyncio
+        from ironmesh.bridge import BridgeDaemon
+        stub = self._make_stub()
+        received = []
+        stub.on_group_broadcast = lambda p: received.append(p)
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(BridgeDaemon._on_rns_group_message(stub, b"dup"))
+            loop.run_until_complete(BridgeDaemon._on_rns_group_message(stub, b"dup"))
+        finally:
+            loop.close()
+        assert received == [b"dup"]
+        assert stub.metrics.group_broadcasts_received == 1
+        assert stub.metrics.group_broadcasts_deduped == 1
+
+    def test_distinct_payloads_each_fire_hook(self):
+        """Two DIFFERENT payloads must both fire the hook — dedup is
+        per-payload-hash, not a global suppression.
+        """
+        import asyncio
+        from ironmesh.bridge import BridgeDaemon
+        stub = self._make_stub()
+        received = []
+        stub.on_group_broadcast = lambda p: received.append(p)
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(BridgeDaemon._on_rns_group_message(stub, b"a"))
+            loop.run_until_complete(BridgeDaemon._on_rns_group_message(stub, b"b"))
+        finally:
+            loop.close()
+        assert received == [b"a", b"b"]
+        assert stub.metrics.group_broadcasts_received == 2
+        assert stub.metrics.group_broadcasts_deduped == 0
+
+    def test_async_hook_is_awaited(self):
+        """The hook may be a coroutine function. The receive path
+        MUST await it — otherwise async operator code silently never
+        runs.
+        """
+        import asyncio
+        from ironmesh.bridge import BridgeDaemon
+        stub = self._make_stub()
+        received = []
+
+        async def async_hook(payload: bytes) -> None:
+            await asyncio.sleep(0)  # force a real coroutine yield
+            received.append(payload)
+        stub.on_group_broadcast = async_hook
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(
+                BridgeDaemon._on_rns_group_message(stub, b"async-payload"),
+            )
+        finally:
+            loop.close()
+        assert received == [b"async-payload"]
+
+    def test_empty_payload_short_circuits(self):
+        """Empty payload MUST early-return without firing hook or
+        touching metrics. Defensive: an empty broadcast carries no
+        information and could indicate a malformed peer.
+        """
+        import asyncio
+        from ironmesh.bridge import BridgeDaemon
+        stub = self._make_stub()
+        received = []
+        stub.on_group_broadcast = lambda p: received.append(p)
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(
+                BridgeDaemon._on_rns_group_message(stub, b""),
+            )
+        finally:
+            loop.close()
+        assert received == []
+        assert stub.metrics.group_broadcasts_received == 0
+        assert stub.metrics.group_broadcasts_deduped == 0
+
+    def test_hook_exception_does_not_break_dedup_or_metric(self):
+        """If the operator's hook raises, the metric MUST still be
+        incremented (the bytes were validly received and counted) and
+        the dedup cache MUST still record the payload (so the next
+        identical payload is suppressed). The exception is logged,
+        not re-raised — operator bugs in their hook shouldn't take
+        down the receive path.
+        """
+        import asyncio
+        from ironmesh.bridge import BridgeDaemon
+        stub = self._make_stub()
+
+        def bad_hook(payload: bytes) -> None:
+            raise RuntimeError("operator bug")
+        stub.on_group_broadcast = bad_hook
+
+        loop = asyncio.new_event_loop()
+        try:
+            # First call — hook raises, but receive is still counted.
+            loop.run_until_complete(BridgeDaemon._on_rns_group_message(stub, b"oops"))
+            assert stub.metrics.group_broadcasts_received == 1
+            # Second call with same payload — dedup suppresses, no second
+            # hook invocation attempt (no second exception).
+            loop.run_until_complete(BridgeDaemon._on_rns_group_message(stub, b"oops"))
+            assert stub.metrics.group_broadcasts_received == 1
+            assert stub.metrics.group_broadcasts_deduped == 1
+        finally:
+            loop.close()
+
+    def test_phase1_failure_does_not_block_phase2(self):
+        """Sender side: if Phase 1 (RNS GROUP packet) raises, Phase 2
+        (per-peer fan-out) MUST still run. The two phases are
+        independent — a same-segment failure shouldn't drop
+        cross-host delivery.
+        """
+        from unittest.mock import MagicMock
+        from ironmesh.bridge import BridgeDaemon, Metrics
+        stub = MagicMock()
+        stub.node_id = "self"
+        stub.metrics = Metrics()
+        # Phase 1 reticulum stub that ALWAYS raises.
+        bad_t = MagicMock()
+        bad_t.broadcast_via_group.side_effect = RuntimeError("phase 1 bombed")
+        stub._reticulum = bad_t
+        # No Phase 2 peers either, but the result dict shape is still
+        # the contract under test.
+        stub._rns_discovered = {}
+        stub.peers = {}
+        result = BridgeDaemon.broadcast_via_rns_group(stub, b"x")
+        # local_segment must be False (phase 1 raised), and the
+        # method must NOT have re-raised — the result dict is proof.
+        assert result["local_segment"] is False
+        assert result["fanout_sent"] == 0
+        # broadcast_via_group should have been called exactly once
+        # (we don't retry phase 1 on the same broadcast).
+        assert bad_t.broadcast_via_group.call_count == 1

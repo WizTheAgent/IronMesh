@@ -1,8 +1,16 @@
-# IronMesh — 5-minute Quickstart
+# IronMesh — 5-minute Dashboard Quickstart
 
-Get two nodes talking over encrypted WebSocket in five minutes.  For
-the full feature list, security model, and architecture, see
-[`README.md`](README.md).
+> **Looking for the canonical walkthrough?** See
+> [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the v0.9.2
+> multi-node SDK walkthrough that ends with a working Python `Agent`
+> call. For the fastest possible first-look, run `ironmesh demo` —
+> it spawns two local agents and confirms your install in 60 seconds
+> with no config files.
+
+This page is the **dashboard-focused** 5-minute quickstart: get two
+nodes talking over encrypted WebSocket and watch them live in the
+browser dashboard. For the full feature list, security model, and
+architecture, see [`README.md`](README.md).
 
 ## 1. Install (pick one)
 

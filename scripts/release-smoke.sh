@@ -74,12 +74,24 @@ required = [
     "ironmesh/roles.py",
     "ironmesh/tools.py",
     "ironmesh/agent.py",
+    "ironmesh/reticulum_transport.py",
+    "ironmesh/lxmf_listener.py",
+    "ironmesh/nat_relay.py",
+    "ironmesh/telemetry.py",
     "ironmesh/adapters/__init__.py",
     "ironmesh/adapters/langchain_adapter.py",
     "ironmesh/adapters/crewai_adapter.py",
     "ironmesh/adapters/autogen_adapter.py",
     "ironmesh_mcp/__init__.py",
     "ironmesh_mcp/server.py",
+    # v0.9.0+: sibling top-level packages — their absence from the
+    # wheel was the exact bug the v0.9.1 follow-ups doc called out
+    # (Dockerfile missing COPY ironmesh_a2a / COPY ironmesh_acp).
+    # Verifying their presence here is the smoke gate's primary job.
+    "ironmesh_a2a/__init__.py",
+    "ironmesh_a2a/server.py",
+    "ironmesh_acp/__init__.py",
+    "ironmesh_acp/server.py",
 ]
 missing = [p for p in required if p not in names]
 if missing:
@@ -136,8 +148,21 @@ mods = [
     # design when their optional third-party dep isn't installed, which is
     # the expected smoke-venv state. Their presence as files is checked
     # in step [3] via wheel inspection.
+    "ironmesh.nat_relay",
+    "ironmesh.telemetry",
+    # ironmesh.reticulum_transport + ironmesh.lxmf_listener are
+    # deliberately NOT smoke-imported here — they require the optional
+    # `rns` / `lxmf` packages which the smoke venv intentionally lacks.
+    # Their presence as files is checked in step [3].
     "ironmesh_mcp",
     "ironmesh_mcp.server",
+    # v0.9.0+: sibling top-level packages. Server-module imports
+    # exercise their argparse + asyncio surface enough to catch a
+    # broken __init__.py or a missing transitive dep.
+    "ironmesh_a2a",
+    "ironmesh_a2a.server",
+    "ironmesh_acp",
+    "ironmesh_acp.server",
 ]
 for m in mods:
     __import__(m)

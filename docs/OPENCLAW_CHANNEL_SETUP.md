@@ -229,7 +229,7 @@ Pre-shared assumptions:
 
 ## See also
 
-- [`PROTOCOL.md`](PROTOCOL.md) — IronMesh wire-protocol reference.
+- [`PROTOCOL_SPEC.md`](PROTOCOL_SPEC.md) — IronMesh wire-protocol reference.
 - [`QUICKSTART.md`](QUICKSTART.md) — daemon setup if you don't have
   one running.
 - [`CAPABILITIES.md`](CAPABILITIES.md) — capability advertisement,

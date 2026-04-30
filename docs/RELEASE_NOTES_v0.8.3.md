@@ -105,7 +105,7 @@ serialization drift.
 
 ### v0.8.3 E2E debugging audit
 
-Documented in [`docs/AUDIT_v0.8.3.md`](AUDIT_v0.8.3.md). Covers:
+Documented internally. Covers:
 
 - **Hypothesis fuzzing on `ConvEnvelope`** — 9 properties × 400
   inputs. Round-trip, validation, reply helpers, terminal detection,

@@ -9,49 +9,43 @@
 
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **v0.9.0 — pre-1.0 release.** 759+ tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus a multi-node live-mesh validation pass.
+> **v0.9.2 — 1.0 prep mega-release.** 892 tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus live cross-host validation on the new wire surfaces.
 > Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
+> Wire-format `ironmesh/0.8` adds opt-in feature flags (handshake-skip, group-broadcast) without disturbing any existing path. The headline doc — [`docs/STABILITY_PROMISE.md`](docs/STABILITY_PROMISE.md) — is the v1.0 contract for everything we commit to keeping stable.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
 **IronMesh** — Local-first, end-to-end encrypted mesh protocol for AI agents.
 Zero-config on LAN. Optional LoRa transport. Works when the cloud doesn’t.
-`pip install ironmesh`
+
+```bash
+pip install ironmesh
+ironmesh demo          # spawn two local agents, exchange an encrypted ping
+ironmesh setup         # interactive first-run wizard
+```
+
+That's the 60-second path: zero config files, no two machines required. The demo spawns two daemons in subprocesses, runs the handshake, exchanges a hello, and tears down. When that prints `PASS`, your install is good.
 
 ## Why IronMesh
 
-Most agent frameworks assume the cloud is always available.  
-IronMesh gives you a production-grade transport layer that keeps working when the router dies, the ISP is down, or you’re fully air-gapped.
+Most agent frameworks assume the cloud is always available. Google's A2A needs HTTPS + internet. Anthropic's MCP is tool integration, not peer-to-peer. ACP is local-IPC-only. ANP wants a complex DID setup that still assumes internet.
 
-- Zero-config LAN discovery via mDNS  
-- End-to-end encryption with forward secrecy (NaCl/libsodium)  
-- Offline message queuing in encrypted SQLite  
-- Optional LoRa transport via Reticulum for off-grid use  
+None of them work when you pull the ethernet cable. None of them work in a basement. None of them work off-grid.
+
+IronMesh is the production-grade transport layer that keeps working when the router dies, the ISP is down, or you're fully air-gapped.
+
+- Zero-config LAN discovery via mDNS
+- End-to-end encryption with forward secrecy (NaCl/libsodium)
+- Offline message queuing in encrypted SQLite
+- Optional LoRa transport via Reticulum for off-grid use
 - Clean integration with Ollama, LangChain, AutoGen, CrewAI, and MCP
+
+For preppers, homelab operators, privacy advocates, tinkerers, and anyone who thinks the answer to "what if the internet goes down?" shouldn't be "then nothing works."
+
+**Local-first. Offline-capable. Mesh-ready. Zero-config. No cloud required. Ever.**
 
 <p align="center">
   <img src="docs/assets/dashboard.png" alt="IronMesh operator console — live metrics, signed Ed25519 + X25519 handshake diagram, pending-trust + pending-cap-change review panels, encrypted message feed, and A2A conversation controls, all served by the daemon itself with no external dashboards required" width="900">
 </p>
-
-## Why IronMesh Exists
-
-When we looked for a way to make AI agents talk to each other on a local network, there was nothing. Every existing protocol assumes you're connected to the internet, routing through someone else's cloud, trusting someone else's infrastructure.
-
-- Google's A2A? Requires HTTPS and internet connectivity. Your agents can't talk if the cloud goes down.
-- Anthropic's MCP? Tool integration, not peer-to-peer. It doesn't let agents talk to each other.
-- ACP? Local IPC only — can't cross machines on your LAN.
-- ANP? Decentralized but complex DID setup, still assumes internet.
-
-None of them work if you pull the ethernet cable from your router. None of them work in a basement. None of them work off-grid.
-
-**IronMesh was built because that's unacceptable.**
-
-We believe in self-hosted AI. Run whatever model you want — local LLMs, local agents, local everything — on hardware you own, on a network you control. No API keys to some corporation that can revoke your access. No telemetry phoning home. No terms of service that change overnight.
-
-In a world that's increasingly pushing centralized AI controlled by a handful of private corporations and governments, the ability to run your own agents that communicate securely on your own network isn't a luxury — it's a necessity. If your AI can only function when it's tethered to someone else's server, it's not really yours.
-
-IronMesh is for preppers, homelab operators, privacy advocates, tinkerers, and anyone who thinks the answer to "what if the internet goes down?" shouldn't be "then nothing works."
-
-**Local-first. Offline-capable. Mesh-ready. Zero-config. No cloud required. Ever.**
 
 ## Features
 
@@ -147,13 +141,15 @@ These assume the internet. IronMesh doesn't.
 
 Requires Python 3.10 or newer. On Linux the firewall must allow UDP 5353
 (mDNS) and TCP 8765 (WebSocket) between nodes. Full walkthrough:
-[GETTING_STARTED.md](GETTING_STARTED.md).
+[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md). For the legacy
+dashboard-focused 5-minute quickstart, see [GETTING_STARTED.md](GETTING_STARTED.md)
+in the repo root.
 
 ### Install
 
 ```bash
 pip install ironmesh            # PyPI
-# or: docker pull wiztheagent/ironmesh:0.9.0
+# or: docker pull wiztheagent/ironmesh:0.9.2
 # or: ./scripts/install.sh       (Linux / macOS systemd)
 # or: see docs/TERMUX.md         (Android)
 ```
@@ -301,7 +297,7 @@ register_ironmesh(my_agent, my_autogen_assistant)
 ironmesh-mcp --passphrase-file ~/.ironmesh/passphrase
 ```
 
-### OpenClaw bridge (NEW in v0.8.4)
+### OpenClaw bridge
 
 OpenClaw agents can use IronMesh as a discovery + transport layer through
 the bundled MCP server. After registering `python -m ironmesh_mcp` as an
@@ -338,13 +334,15 @@ export IRONMESH_PASSPHRASE='your-strong-secret-phrase-12-plus'
 
 See [`docs/PROTOCOL_SPEC.md`](docs/PROTOCOL_SPEC.md) for the formal wire specification.
 
-### TypeScript client (alpha)
+### TypeScript client
 
-A TypeScript client lives at [`clients/ts/`](clients/ts/) — package
-name `@wiztheagent/ironmesh-client@0.1.0-alpha.1`. Public type surface
-is stable; the wire-protocol implementation is in progress (M2 of the
-OpenClaw integration plan). Browser dashboards, Node.js agents, and
-the upcoming OpenClaw Channel Plugin all depend on it. Status and
+A TypeScript client lives at [`clients/ts/`](clients/ts/) — published
+to npm as `@wiztheagent/ironmesh-client` (current `0.2.0`). The full
+wire protocol — 3-stage handshake, binary frame v4, SecretBox + Ed25519
+— is implemented and end-to-end tested against a live Python daemon.
+The OpenClaw channel plugin
+([`@wiztheagent/openclaw-ironmesh`](https://www.npmjs.com/package/@wiztheagent/openclaw-ironmesh))
+is built on top of it. Status and
 implementation order: [`clients/ts/README.md`](clients/ts/README.md).
 
 ### Advanced: low-level BridgeDaemon API
@@ -361,7 +359,7 @@ async def main():
 asyncio.run(main())
 ```
 
-### LoRa / Reticulum transport (v0.5)
+### LoRa / Reticulum transport
 
 IronMesh can communicate over LoRa radio using [Reticulum](https://reticulum.network/) as a second transport layer. Both WebSocket (LAN) and Reticulum (LoRa) run simultaneously — no internet required for either.
 
@@ -539,183 +537,43 @@ pytest tests/ -v --cov=ironmesh
 
 ## Recent changes
 
-**v0.9.0 (current):** Capability persistence + OpenClaw plugin
-compatibility. The capability registry now persists learned remote
-capabilities to disk on every gossip round (previously they were held
-in memory only and lost on restart). The MCP server accepts manual
-peer bootstrap via `--peer host:port[,host:port,…]` for environments
-where mDNS is unavailable. New `ironmesh audit verify --rotate-corrupt`
-flag archives a tampered audit log and lets the daemon start a fresh
-chain on the next write — recovery for the operator-runbook case
-where two daemons collided on the same audit path pre-v0.8.5.6. The
-TypeScript client (`@wiztheagent/ironmesh-client`) now honours a
-per-message `toNodeId` destination hint so messages addressed to a
-non-handshake peer are relayed by the daemon's mesh router. The
-OpenClaw channel plugin (`@wiztheagent/openclaw-ironmesh@0.2.0`) is
-restructured to load cleanly into OpenClaw 2026.3.x via the
-`register(api)` extension shape, bundles its WebSocket client (no
-sibling-package install needed), and accepts target syntax
-`<32-hex node-id>`, `mesh:<node-id>`, or loose agent name. No
-protocol or schema changes; every v0.8.x peer stays interoperable.
-See [`CHANGELOG.md`](CHANGELOG.md) and
-[`docs/RELEASE_NOTES_v0.9.0.md`](docs/RELEASE_NOTES_v0.9.0.md).
+**v0.9.2 (current) — 1.0 prep mega-release.** Every piece originally
+scheduled across v0.9.2 → v0.9.7 landed in this single release so that
+v1.0 is a stability promise rather than a feature push. Wire-format
+`ironmesh/0.8` adds two opt-in feature flags (`hskip`, `group`) without
+disturbing any existing path. Stage-1 handshake skip on identified RNS
+Links — server-driven `SKIP_OFFER` negotiation, downgrade-attempt
+guard, verified live cross-host. Shared-secret mesh-wide broadcast
+with two-phase delivery and SHA-256 dedup. Bundled NAT relay (pure
+relay, sealed envelopes, never holds session keys). Capability-aware
+agent routing — `Agent.send_to_capability(pattern, payload)` with
+`first` / `random` / `all` strategies. Federation policy v2 with
+per-source matchers. 9 new metrics + 4 Prometheus alert rules + a
+Grafana dashboard. OpenTelemetry spans on the v0.9.x agent surfaces.
+Threat model formalised for v1.0 audit prep. Conformance test suite
+skeleton with language-agnostic golden vectors. The headline doc —
+[`docs/STABILITY_PROMISE.md`](docs/STABILITY_PROMISE.md) — enumerates
+every wire-protocol surface, Python API, CLI flag, config-file field,
+metric name, and OTel span name that is frozen at v1.0. mkdocs site
+scaffold for [docs.ironmesh.org](https://docs.ironmesh.org). 100-node
+synthetic scale harness + 14-phase comprehensive E2E driver. RNS
+multiprocess RPC authkey collision mitigation (opt-in). Full upgrade
+path: `pip install --upgrade ironmesh`. See
+[`docs/RELEASE_NOTES_v0.9.2.md`](docs/RELEASE_NOTES_v0.9.2.md).
 
-**v0.8.5.8:** Hardens the v0.8.5.7 observability layer
-under real operational pressure. Counter continuity across daemon
-restart (reconciled from the audit log tail, so Grafana's `rate()`
-and `increase()` queries stay smooth through a restart). Every
-audit-event counter reservation now goes through a single structured
-helper that cannot drift if an emit fails — static-analysis test
-enforces the pattern. Audit chain is now verified automatically on
-daemon startup; tamper surfaces immediately instead of waiting for a
-manual `ironmesh audit verify`. CLI audit-emit failures surface at
-WARNING instead of silently swallowing. Grafana dashboard gains two
-new panels (cap-binding activity + operator trust actions /
-cross-transport replay). OPERATOR_RUNBOOK gains a trust-store
-corruption recovery playbook. Dashboard version badge is now driven
-by `__version__` instead of a stale string literal. See
-[`docs/RELEASE_NOTES_v0.8.5.8.md`](docs/RELEASE_NOTES_v0.8.5.8.md).
+**v0.9.0** added capability persistence, OpenClaw plugin compatibility, the cap-set-binding TOFU extension, and the ACP + A2A interop surfaces.
 
-**v0.8.5.7:** Finished shipping the capability-set binding
-feature end-to-end. Dashboard `PENDING CAP CHANGE` panel, nine new
-Prometheus counters + OpenTelemetry spans, five new / improved CLI
-subcommands, two new MCP tools (total 25). See
-[`docs/RELEASE_NOTES_v0.8.5.7.md`](docs/RELEASE_NOTES_v0.8.5.7.md).
+**v0.9.1** was the Reticulum integration sweep — auto-discovery via announces, per-packet ratchets, `RNS.Resource` auto-routing, public capability RPC paths, identity-gated admin RPC, and LXMF interop (Sideband / Nomadnet).
 
-**v0.8.5.6:** Trust-binding patch on top of v0.8.5.5. Closes
-two security gaps surfaced during external review. (1) **Capability-set
-binding in pending-trust:** the trust store now records a SHA-256 hash
-of each peer's advertised capability set. When a previously-trusted
-peer reconnects with a different cap set, it's auto-demoted to a new
-`pending-cap-change` state — operators re-promote via
-`ironmesh trust cap-promote <node>` (CLI) or `ironmesh_cap_promote_peer`
-(MCP). New audit events `PEER_CAP_BASELINE` / `PEER_CAP_SET_CHANGED` /
-`PEER_CAP_ACCEPTED`. (2) **Cross-transport replay detection:** when
-DedupCache catches a duplicate that arrived via a *different* transport
-than the original (e.g. WebSocket then Reticulum), it now emits
-`MSG_REPLAY_CROSS_TRANSPORT` before dropping — operators get a signal
-where there used to be silence. Two design docs land alongside:
-[`docs/TRUST_BINDING.md`](docs/TRUST_BINDING.md) covers what shipped;
-[`docs/TRUST_BINDING_WIRE_v0.9.md`](docs/TRUST_BINDING_WIRE_v0.9.md)
-specifies the three wire-protocol extensions queued for v0.9
-(deterministic session ID, rolling transcript hash, reconnect
-continuity challenge). No protocol or schema changes in this patch;
-existing `known_peers.json` files auto-migrate on first load. See
-[`CHANGELOG.md`](CHANGELOG.md) and
-[`docs/RELEASE_NOTES_v0.8.5.6.md`](docs/RELEASE_NOTES_v0.8.5.6.md).
-
-**v0.8.5.5:** Big-batch quality-of-life patch on top of
-v0.8.5.4. Adds the OS keychain backend
-([`ironmesh keys keychain-store`](docs/CONFIGURATION.md)),
-[CLI named profiles](docs/CONFIGURATION.md#profiles)
-(`--profile=secure|dev|offline`), an
-[`ironmesh upgrade`](docs/CONFIGURATION.md) self-check command, a
-[Windows service installer](docs/WINDOWS_SERVICE.md) (NSSM-based), a
-[reverse-proxy-friendly dashboard mode](docs/REVERSE_PROXY.md) with
-loud bind-address warnings, and an
-[OpenTelemetry tracing layer](docs/OBSERVABILITY.md) that's no-op
-when not configured. The TS client graduates out of alpha to **0.2.0**
-with [TOFU pin enforcement](clients/ts/README.md). New docs: full
-[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) reference, plus
-[off-grid](docs/deployments/off-grid.md) and
-[multi-tenant](docs/deployments/multi-tenant.md) reference deployments
-to complement the existing [homelab](docs/deployments/homelab.md) one.
-[CodeQL scanning](.github/workflows/codeql.yml) added to CI;
-[CITATION.cff](CITATION.cff) added for academic citations. No protocol
-or schema changes; every v0.8.x peer stays interoperable. See
-[`CHANGELOG.md`](CHANGELOG.md) and
-[`docs/RELEASE_NOTES_v0.8.5.5.md`](docs/RELEASE_NOTES_v0.8.5.5.md).
-
-**v0.8.5.4:** Repo-hygiene and credibility-documentation
-patch on top of v0.8.5.3. Three new layers (pre-commit hook, pre-push
-hook, CI workflow) catch internal-only content before it can enter the
-public repo. Personal identifiers in shipped CLI examples and docs
-replaced with generic `alice`/`bob`/TEST-NET-1 placeholders. New
-[`WHATS_NEW.md`](WHATS_NEW.md) (six-month trajectory),
-[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) (real LAN + LoRa numbers),
-and [`docs/TESTING.md`](docs/TESTING.md) (test-philosophy walkthrough).
-Coverage badge wired (Codecov). No protocol or schema changes; every
-v0.8.x peer stays interoperable. See [`CHANGELOG.md`](CHANGELOG.md) and
-[`docs/RELEASE_NOTES_v0.8.5.4.md`](docs/RELEASE_NOTES_v0.8.5.4.md).
-
-**v0.8.5.3:** Quickstart hardening and onboarding polish. The
-`--open-discovery` and `--allow-plaintext-ws` shortcut flags now emit
-explicit `INSECURE` warnings on startup so they cannot quietly make it
-into a production config; the README quickstart leads with the secure
-deployment path and demotes the localhost-shortcut walkthrough to a
-clearly-labeled `Advanced / Testing` section. The pending-trust message
-gate emits a startup deprecation notice when opt-in is disabled, with a
-dated commitment to default-on in v0.9. Two new examples:
-[`conv_multiturn.py`](examples/conv_multiturn.py) (a self-contained
-ConvEnvelope walkthrough that runs without any LLM dependency) and
-[`persona_debate.py`](examples/persona_debate.py) (orchestrates a
-persona-vs-persona debate between two `llm_bridge.py` instances using
-the bundled persona presets). Adds `.github/RELEASE_CHECKLIST.md` so
-the doc-sync drift that motivated this release cannot recur. No
-protocol or schema changes; every v0.8.x peer stays interoperable. See
-[`CHANGELOG.md`](CHANGELOG.md) and
-[`docs/RELEASE_NOTES_v0.8.5.3.md`](docs/RELEASE_NOTES_v0.8.5.3.md).
-
-**v0.8.5.2:** Operator polish on top of v0.8.5 plus a batch of security
-hardening fixes. HMAC-chained audit events for every gate decision,
-`ironmesh trust set-state` CLI for offline trust edits, `ironmesh
-doctor` one-shot diagnostic, gate counters in `/api/mesh_stats` and
-Prometheus, constant-time GUI token comparison, and nine other
-hardening fixes from a deep audit. See
-[`docs/RELEASE_NOTES_v0.8.5.2.md`](docs/RELEASE_NOTES_v0.8.5.2.md).
-
-**v0.8.5:** Pending-trust message gate — opt-in default-deny mode for new
-TOFU peers, with operator promote/block via dashboard, MCP, or `/ws`. Three
-new MCP tools (18 → 21). OpenClaw channel plugin reaches `0.1.0` with a
-bundled-entry helper + `configSchema`. See
-[`docs/RELEASE_NOTES_v0.8.5.md`](docs/RELEASE_NOTES_v0.8.5.md) for the
-release-cycle highlights.
-
-**v0.8.3:** the operator dashboard is rebuilt from scratch
-to match the ironmesh.org visual identity — a monospace operator
-console with the site's 3-stage handshake diagram baked in, a TOFU
-trust tri-state column, concurrent WS/RNS transport view, stat-strip
-sparklines, regex-capable message feed, bearer-token masked reveal,
-and a CSP meta tag that locks the page to same-origin so *pull the
-plug on your router* still renders. Two latent serialization bugs
-that kept capabilities and peer names invisible in `/api/state` are
-fixed. Plus the full v0.8.3 E2E audit: Hypothesis fuzzing on the
-CONV envelope, a new concurrency test suite, a fixed TOCTOU race in
-`DedupCache`, and macOS added to the CI matrix. No wire-protocol
-changes — v0.8.2 peers stay on the mesh. Full write-up:
-[v0.8.3 release notes](docs/RELEASE_NOTES_v0.8.3.md).
-
-**v0.8.2:** structured multi-turn AI-to-AI dialogue, seven
-persona presets for LLM bridges, byte + time budgets, `[DONE]` smart
-termination, a one-click **Start A2A** panel in the dashboard, and an
-opt-in tool-use registry (`echo`, `http-get`, `file-read`). Fixes
-a GUI-WS `message_event` bug that blanked `peer_id` and `payload`.
-Full write-up: [v0.8.2 release notes](docs/RELEASE_NOTES_v0.8.2.md).
-
-**v0.8.1:** fixed a duplicate-handshake race that could kick the
-winning connection offline when two peers dialed each other at
-nearly the same time, silenced the CPython proactor shutdown
-`AssertionError` on Windows, and added the `ironmesh demo`
-subcommand for a 10-second smoke test. See the
-[v0.8.1 release notes](docs/RELEASE_NOTES_v0.8.1.md).
-
-**v0.8.0:**
-- **Agent SDK** — the `Agent` class wraps the bridge daemon so you can join the mesh in 3 lines. Decorator-based handlers, sync+async send, capability discovery. See the Python SDK section above.
-- **Framework adapters** — first-party LangChain, CrewAI, and AutoGen integration modules under `adapters/`. Drop IronMesh into an existing agent stack with one call.
-- **Multi-mesh federation** — `FederationGateway` bridges two independent meshes with allow/deny glob rules on capabilities. Each mesh keeps its own trust boundary.
-- **Go reference client** — full wire-protocol implementation in `clients/go/`. Crypto primitives verified against the Python reference.
-- **Per-peer observability** (from v0.7.2) — Prometheus metrics labelled by peer, message lifetime histogram, stable `/api/mesh_stats` JSON.
-- **Backpressure + throttling** (from v0.7.2) — per-peer queue cap with priority-aware eviction, per-peer bandwidth budget.
-- **MCP server** — `ironmesh_mcp/` exposes the mesh as tools for Claude Desktop and other MCP-capable agents over stdio JSON-RPC.
-
-Full list: [CHANGELOG.md](CHANGELOG.md). Planned work: [docs/ROADMAP.md](docs/ROADMAP.md).
+**v0.8.x** brought the operator dashboard rebuild, multi-turn AI-to-AI dialogue, the pending-trust message gate, and the cap-binding patch. Per-version detail in
+[`CHANGELOG.md`](CHANGELOG.md) and [`docs/RELEASE_NOTES_v0.*.md`](docs/).
 
 ## Distribution & caveats
 
 Where to get it and what's still rough:
 
-- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport, `[keychain]` for OS-keychain passphrase storage, `[otel]` for OpenTelemetry tracing). Latest: **v0.9.0**.
-- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.9.0`. Non-root UID 1000. See [`Dockerfile`](Dockerfile) + [`docker-compose.yml`](docker-compose.yml).
+- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport, `[keychain]` for OS-keychain passphrase storage, `[otel]` for OpenTelemetry tracing). Latest: **v0.9.2**.
+- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.9.2` (or `:latest`). Non-root UID 1000. See [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml), and [`docker-compose.demo.yml`](docker-compose.demo.yml) for an instant 2-node demo.
 - **GitHub releases** — signed tags, wheel + sdist attached: [releases page](https://github.com/WizTheAgent/IronMesh/releases).
 - **Go client** — `clients/go/` (reference implementation, crypto primitives verified against Python).
 - **LoRa end-to-end latency** — Measured live at 915 MHz SF8/BW125 between two RNode-equipped nodes (1 hop, strong signal): 16-byte probe 1.07 — 1.23 s, 64-byte probe 1.17 — 1.25 s, 256-byte probe 1.77 — 1.98 s, 100% delivery across 9 probes. Multi-hop + long-range interference sweeps are still pending — see [`docs/LORA_VALIDATION.md`](docs/LORA_VALIDATION.md).
@@ -724,36 +582,6 @@ Where to get it and what's still rough:
 - **Windows service** — No native service wrapper shipped. Run under WSL2, a terminal session, or Docker.
 - **GUI dashboard auth** — Per-session 32-byte token only. If you ever expose the dashboard beyond localhost (NOT recommended), front it with a reverse proxy that enforces your own auth.
 - **No third-party protocol audit.** The cryptographic primitives are NaCl / libsodium, but the IronMesh protocol itself has not been externally reviewed. Read [SECURITY.md](SECURITY.md) for the threat model and [docs/PROTOCOL_SPEC.md](docs/PROTOCOL_SPEC.md) for the wire format before relying on this for anything critical.
-
-## Legacy highlights (v0.4 → v0.7.1)
-
-- **Multi-hop mesh routing** — Distance-vector with split horizon, poisoned reverse, TTL loop prevention, route persistence, partition detection, circuit breakers. See [docs/MESH.md](docs/MESH.md).
-- **End-to-end encryption over multi-hop** — NaCl `SealedBox` payload wrapping; relays cannot read forwarded messages.
-- **Capability discovery** — Agents advertise services and discover them across the mesh. See [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
-- **Reticulum / LoRa transport** — Optional second transport layer with RNode hardware.
-- **Session key rotation** — Automatic rekey with tie-breaker to prevent simultaneous initiation.
-- **Audit log rotation** — 10 MB rotation with cryptographic chain anchors across files.
-- **Full security audit** — 53/62 items closed in v0.7.1; remaining 9 deferred to v0.7.2+ (see CHANGELOG).
-
-## Three-node quick start (v0.4)
-
-```bash
-# Terminal 1 — node-a, talks only to b
-ironmesh run --name node-a --port 8765 --allowed-peers node-b
-
-# Terminal 2 — node-b, the relay
-ironmesh run --name node-b --port 8766
-
-# Terminal 3 — node-c, talks only to b
-ironmesh run --name node-c --port 8767 --allowed-peers node-b \
-  --capability llm:llama3
-```
-
-Within ~60 seconds, `node-a` learns a route to `node-c` through `node-b`.
-You can then send messages from `node-a` to `node-c` and they will be
-relayed through `node-b` — but `node-b` cannot read the message bodies
-(end-to-end encryption). From `node-a`, `daemon.find_capability("llm:*")`
-returns `[("node-c-fingerprint", "llm:llama3")]`.
 
 ## Included Examples
 

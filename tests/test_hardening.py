@@ -58,7 +58,7 @@ class TestReplaySeqZero:
 
 class TestFullUUID:
     def test_frame_msg_id_is_secure_random(self):
-        """Audit M-01: msg_id is cryptographically random (nacl.utils.random).
+        """msg_id is cryptographically random (nacl.utils.random).
         Accept either legacy UUID4 format (36 chars with dashes) or
         the post-M-01 hex format (32 chars). Both are 128-bit random.
         """

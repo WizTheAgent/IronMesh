@@ -205,8 +205,8 @@ class AuditLog:
         self._max_bytes = max(1024, int(max_bytes))
         self._last_hmac = self._GENESIS
         self._enabled = hmac_key is not None
-        # Audit M-19: serialize log + rotate so the size check and the
-        # actual file write/rename aren't interleaved across threads.
+        # Serialize log + rotate so the size check and the actual file
+        # write/rename aren't interleaved across threads.
         self._write_lock = threading.Lock()
         if not self._enabled:
             # Never silently disable audit logging.

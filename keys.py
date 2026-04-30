@@ -205,8 +205,8 @@ def load_keys(path: str, passphrase: Optional[str] = None) -> AgentKeys:
     # parsing is identical across versions 1 and 2 today.
     _version = data.get("version", 1)
 
-    # Audit M-03: bound base64 input before decoding. An Ed25519 key
-    # encodes to 44 chars; 100 is generous headroom for whitespace.
+    # Bound base64 input before decoding. An Ed25519 key encodes to
+    # 44 chars; 100 is generous headroom for whitespace.
     pub_b64 = data["ed25519_public"]
     if not isinstance(pub_b64, str) or len(pub_b64) > 100:
         raise ValueError(f"Invalid Ed25519 public key base64 (length={len(pub_b64)!r})")

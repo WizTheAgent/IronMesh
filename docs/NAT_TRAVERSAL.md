@@ -15,9 +15,17 @@ ICE infrastructure, no public ports to expose.
 This doc walks through the three overlay options that work well
 with IronMesh today.
 
-> **Native hole-punching is on the roadmap** for IronMesh v1.1+. The
-> design doc lives at [`NAT_TRAVERSAL_DESIGN.md`](NAT_TRAVERSAL_DESIGN.md).
-> Until that ships, the recipes below are the recommended path.
+> **v0.9.2 ships the relay half of the hybrid design.** An operator-run
+> rendezvous server (`python -m ironmesh.nat_relay`) forwards sealed
+> envelopes between NATted peers. The relay never sees plaintext — it
+> reads only the outermost `{type, to}` envelope. See §4 below.
+> Hole-punching on top of the relay fallback is still on the roadmap
+> for a later release. The full design doc lives at
+> [`NAT_TRAVERSAL_DESIGN.md`](NAT_TRAVERSAL_DESIGN.md).
+>
+> For the fastest WAN deployment today, Tailscale + IronMesh (§2) is
+> still the lowest-friction option. The bundled relay in §4 is for
+> operators who want to avoid a third-party dependency.
 
 ## Option 1 — Tailscale (easiest)
 
@@ -219,6 +227,58 @@ All three networks present as peers to the same IronMesh agent.
 | Full sovereignty, no SaaS | **Yggdrasil** (or self-hosted Headscale) |
 | Internet + LoRa unified | **Reticulum** |
 | LAN only | **Default mDNS** (no overlay needed) |
+
+## Option 4 — Bundled NAT relay (v0.9.2+)
+
+If you don't want to run Tailscale, Nebula, or Headscale, IronMesh
+now ships with a built-in rendezvous / relay server. Run it on any
+box with a public IP (or any box reachable by every peer you want
+to connect — a VPS, a home server with a port-forward, a LAN
+jumphost), and every NATted IronMesh node can reach every other
+NATted IronMesh node through it.
+
+### Run the relay
+
+```bash
+# On the public host — requires one open TCP port (default 18787)
+python -m ironmesh.nat_relay --port 18787 --bind 0.0.0.0
+```
+
+That's it. The relay is a single-purpose process with no database
+and no identity of its own. Peers register over a long-lived
+outbound WebSocket; the relay forwards sealed envelopes between
+registered peers by ``node_id``. Plaintext never touches the relay.
+
+### Attach peers to it
+
+Every IronMesh node opts in with ``--nat-relay wss://relay.host:18787``.
+The first outbound WebSocket registers the local node_id; subsequent
+``send_to`` calls that can't find a direct or mesh route fall back
+through the relay.
+
+### Threat model
+
+The relay is **metadata-aware, payload-blind**. An operator of the
+relay can observe:
+
+- which node_ids are registered and for how long,
+- who talks to whom, at what frequency, with what byte volume.
+
+The relay **cannot** decrypt payloads — every frame is a sealed
+envelope encrypted end-to-end between sender and destination. Cross
+reference: ``THREAT_MODEL.md §5 Cross-asset attacks`` for the full
+adversary analysis. If metadata exposure to the relay operator is
+unacceptable for your deployment, use option 1 (Tailscale) instead
+— it hides the metadata at the IP layer.
+
+### When to run your own vs. use a community relay
+
+- **Run your own** if you have a VPS and want full control. It's ~200
+  lines of Python with no state; an ops-free workload.
+- **Use a community relay** if you're personal / low-volume and the
+  metadata trade is acceptable. (No public community relay is
+  operated by the IronMesh project itself — this is operator-run
+  infrastructure by design.)
 
 ## What's intentionally not in scope here
 

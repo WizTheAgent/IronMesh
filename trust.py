@@ -138,8 +138,7 @@ def _trust_file_lock(path: str):
 
 # Legacy MAC key (home-directory-derived) — kept only for one-shot
 # migration away from the v0.5 format. No new trust stores should rely
-# on it. Audit C-03 requires every TrustStore to be bound to the
-# agent's identity key.
+# on it; every TrustStore must be bound to the agent's identity key.
 _LEGACY_MAC_KEY = hashlib.sha256(
     b"ironmesh-trust-store-v1:" + os.path.expanduser("~").encode()
 ).digest()
@@ -243,7 +242,7 @@ class TrustStore:
                         self._peers = raw.get("peers", raw)
                         self._revoked = raw.get("revoked", {}) if isinstance(raw, dict) else {}
                     else:
-                        # Audit C-03: one-shot migration from legacy
+                        # One-shot migration from legacy
                         # home-directory-derived MAC to agent-key MAC.
                         old_mac = hmac_mod.new(
                             _LEGACY_MAC_KEY, data_str.encode(), hashlib.sha256

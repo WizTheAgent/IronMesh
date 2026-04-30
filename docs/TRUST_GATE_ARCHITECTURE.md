@@ -27,10 +27,13 @@ Three options were on the table for the v0.8.5 default:
 
 Option **A** was chosen. A breaking security change deserves its own release
 window with explicit operator opt-in feedback before the default
-flips. v0.9.0 is the natural place to revisit. C was rejected because
-operators can't reason about a security policy whose state is
-implicit — "why are messages being queued?" must always have a
-predictable answer.
+flips. v0.9.0 was the natural place to revisit, and the cap-set-binding
+TOFU extension that shipped in v0.9.0 is the result. The default-on flip
+itself remains on the path to v1.0; see
+[`docs/STABILITY_PROMISE.md`](STABILITY_PROMISE.md). Option C was
+rejected because operators can't reason about a security policy whose
+state is implicit — "why are messages being queued?" must always have
+a predictable answer.
 
 ## Where the gate lives
 
@@ -106,10 +109,12 @@ self-loopback exemption.
 
 For relayed messages, this means the gate evaluates the **relay**'s
 trust state, not the original source. A trusted relay can deliver
-messages from a pending peer. This is a known limitation of v0.8.5;
-v0.9.0 may add `source_signature` verification so relays gate on the
-originator. For deployments where this matters (multi-hop topologies
-with mixed trust), prefer direct connections over relays for now.
+messages from a pending peer. This is a known limitation through
+v0.9.2; per-source signature verification on relayed messages remains
+an open item on the path to v1.0 — see
+[`docs/ROADMAP_TO_1.0.md`](ROADMAP_TO_1.0.md). For deployments where
+this matters (multi-hop topologies with mixed trust), prefer direct
+connections over relays for now.
 
 Self-loopback (`peer_id == self.node_id`) bypasses the gate as a
 defensive measure; in practice daemons don't connect to themselves

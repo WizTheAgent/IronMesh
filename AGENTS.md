@@ -101,8 +101,8 @@ examples/                  # runnable walkthroughs (cap_binding_workflow etc.)
 1. Add the `tool_*` method to `IronMeshMCP` in `ironmesh_mcp/server.py`.
 2. Append a spec entry to `TOOL_SPECS` — name, description, JSON Schema.
 3. Update `tests/test_mcp.py::test_total_tool_count` assertion.
-4. Add the tool to the "23 MCP tools" / "25 MCP tools" callouts in
-   `README.md` and the website.
+4. Update the "25 MCP tools" callouts in the module docstring of
+   `ironmesh_mcp/server.py`, `WHATS_NEW.md`, and the website.
 
 ## Where internal-only docs live
 

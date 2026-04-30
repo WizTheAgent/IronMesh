@@ -8,7 +8,7 @@ hardware you already own, no cloud, no API keys, no internet.
 > **Audience:** anyone who wants to evaluate IronMesh on a Sunday
 > afternoon. r/LocalLLaMA, r/selfhosted, r/homelab. Built to be
 > reproducible, not scaled to production. For a production blueprint
-> see [`production.md`](production.md) (planned).
+> see `production.md` (planned).
 
 ## What you'll build
 

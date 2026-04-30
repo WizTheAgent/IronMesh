@@ -56,20 +56,35 @@
 
 | File | Purpose |
 |------|---------|
-| `__init__.py` | Package metadata, version, public API exports |
-| `crypto.py` | ECDH key exchange, SecretBox encrypt/decrypt, Ed25519 signing, detached signatures, secure_wipe |
+| `__init__.py` | Package metadata, `__version__`, public API exports |
+| `crypto.py` | ECDH key exchange, SecretBox encrypt/decrypt, Ed25519 signing, detached signatures, `secure_wipe` |
 | `keys.py` | Ed25519 identity keygen, X25519 ephemeral keygen, save/load with Argon2id (mandatory encryption by default) |
-| `protocol.py` | MessageType enum, Frame binary wire format (with Ed25519 signatures), ReplayGuard, TokenBucket, PeerState, Handshake, MessageBus (immutable data passing) |
-| `bridge.py` | Main daemon: WebSocket server, auth flow, ECDH handshake, binary frame message routing, offline queue, metrics, token-authenticated GUI dashboard, audit logging, mDNS fingerprint pinning, auth failure IP blocking |
-| `discovery.py` | mDNS/Zeroconf service announce + listener with rate limiting and TXT record size validation |
+| `keychain.py` | Optional OS-keychain passphrase storage (macOS Keychain, Windows Credential Manager, Linux Secret Service) — `pip install ironmesh[keychain]` |
+| `protocol.py` | `MessageType` enum, `Frame` binary wire format (signed), `ReplayGuard`, `TokenBucket`, `PeerState`, `Handshake`, immutable `MessageBus` |
+| `bridge.py` | Main daemon: WebSocket server, auth flow, handshake, binary frame routing, offline queue, metrics, token-authenticated dashboard, audit logging, mDNS fingerprint pinning, auth-failure IP blocking |
+| `mesh.py` | Multi-hop routing — link-state announces, sequence numbers, RTT-weighted shortest path, broadcast suppression, hop-count cap |
+| `mesh_crypto.py` | E2E `SealedBox` encryption for relayed messages (recipient-only decrypt; relays only see envelope) |
+| `agent.py` | High-level `Agent` SDK — `send_to(name)`, `send_to_capability(pattern)`, `@on_message` handler decorator, capability advertisement |
+| `capabilities.py` | Capability registry — local + remote-learned advertisements, glob match, HMAC-protected persistence, cap-set-binding TOFU change detection |
+| `roles.py` | Role + permission descriptors (operator, observer, …) for the trust + admin RPC paths |
+| `tools.py` | Operator action surface used by the dashboard + MCP server |
+| `discovery.py` | mDNS / Zeroconf service announce + listener with rate limiting and TXT record size validation |
 | `store.py` | Async SQLite message store with encrypted payloads (SecretBox), schema migrations, offline queue, peer metadata, parameterized queries |
-| `trust.py` | TOFU (Trust-On-First-Use) peer key pinning with agent-key-derived HMAC |
-| `transport.py` | Transport abstraction layer (WebSocket now, TCP/QUIC/LoRa later) |
-| `reticulum_transport.py` | Reticulum (LoRa) transport — `RNSLinkAdapter` (duck-typed WebSocket over RNS Link) + `ReticulumTransport` lifecycle manager. Optional dependency (`rns`). |
-| `hooks.py` | Hook/plugin system with circuit breaker (auto-unregister after 3 consecutive failures) |
-| `config.py` | Centralized configuration with file/env loading |
-| `cli.py` | CLI entry point with subcommands: run, trust, keys. Passphrase via file/env/getpass only (no CLI argv). |
-| `audit.py` | Tamper-evident HMAC-SHA256 chained audit log for all security events |
+| `conversation.py` | Multi-turn conversation envelope (correlation IDs, durability, GC) |
+| `trust.py` | TOFU (Trust-On-First-Use) peer key pinning + cap-set-binding (HMAC-protected); promotion / demotion / pending-cap-change states |
+| `federation.py` | `FederationGateway` for cross-mesh forwarding with v2 per-source matchers |
+| `reticulum_transport.py` | Reticulum (LoRa / RNS) transport — `RNSLinkAdapter` (duck-typed WebSocket over RNS Link) + `ReticulumTransport` lifecycle manager. Optional (`pip install ironmesh[rns]`) |
+| `lxmf_listener.py` | LXMF inbox for Sideband / Nomadnet interop. Optional (rides on `[rns]`) |
+| `nat_relay.py` | Bundled NAT relay (Option A — pure relay; sealed envelopes; never holds session keys; per-peer rate caps) for WAN meshes that can't direct-connect |
+| `hooks.py` | Hook / plugin system with circuit breaker (auto-unregister after 3 consecutive failures) |
+| `config.py` | Centralised configuration with file / env loading |
+| `cli.py` | CLI entry point: `run`, `setup`, `demo`, `doctor`, `upgrade`, `trust`, `keys`, `backup`, `restore`, `audit`, `session`. Passphrase via file / env / getpass only (no CLI argv) |
+| `audit.py` | Tamper-evident HMAC-SHA256 chained audit log for all security events; on-startup verification; counter reconciliation |
+| `backup.py` | Encrypted backup / restore of node state (keys, trust, audit, store) |
+| `telemetry.py` | OpenTelemetry spans on the v0.9.x agent surfaces. Optional (`pip install ironmesh[otel]`) |
+| `ironmesh_mcp/` | MCP server — exposes 25 IronMesh tools to any MCP-capable host (Claude Desktop, Claude Code, VS Code MCP) over stdio JSON-RPC |
+| `ironmesh_a2a/` | A2A (Google Agent-to-Agent) gateway — exposes the daemon as an A2A peer |
+| `ironmesh_acp/` | ACP (Agent Communication Protocol) gateway |
 
 ---
 
@@ -89,7 +104,11 @@ All from **PyNaCl** (libsodium). No custom crypto.
 
 ---
 
-## 5. Handshake Flow (v0.3 — Ephemeral ECDH)
+## 5. Handshake Flow
+
+Three-stage handshake, stable since v0.3 (binary wire format v4 since
+v0.8). v0.9.2 adds an opt-in **Stage-1 skip on identified RNS Links**
+behind `--rns-skip-handshake` — see `docs/PROTOCOL_SPEC.md §2`.
 
 ### Stage 1: Mutual Passphrase Authentication
 
@@ -346,53 +365,42 @@ The passphrase must match on both sides. A passphrase is required (minimum 12 ch
 
 ## 14. Version Compatibility Matrix
 
-| Feature | v0.3 | v0.4 | v0.5 | v0.5.1 | v0.5.2 | v0.6.0 |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|
-| Binary frame + mandatory encryption | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Ed25519 detached signatures | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| TOFU key pinning | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Per-IP rate limiting + auth ban | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Mesh routing (multi-hop) | — | ✓ | ✓ | ✓ | ✓ | ✓ |
-| E2E SealedBox for relayed messages | — | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Capability discovery | — | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Audit log with HMAC chain + rotation | — | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Reticulum (LoRa) transport | — | — | ✓ | ✓ | ✓ | ✓ |
-| RNS Buffer/Channel reliable framing | — | — | — | ✓ | ✓ | ✓ |
-| Transport failover (WS ↔ RNS) | — | — | — | ✓ | ✓ | ✓ |
-| RTT measurement (heartbeat) | — | — | — | — | ✓ | ✓ |
-| Session key rotation (in-session REKEY) | — | — | — | — | ✓ | ✓ |
-| LoRa QoS / compression | — | — | — | — | ✓ | ✓ |
-| Signed revocation broadcast | — | — | — | — | — | ✓ |
-| mDNS `idhash` hint | — | — | — | — | — | ✓ |
-| Jittered exponential backoff | — | — | — | — | — | ✓ |
-| Protocol version rejection | — | — | — | — | — | ✓ |
-| Encrypted backup/restore | — | — | — | — | — | ✓ |
-| Signed audit log export | — | — | — | — | — | ✓ |
-| Frame parser fuzzing | — | — | — | — | — | ✓ |
+The full surface contract for the v1.0 stability promise is in [`docs/STABILITY_PROMISE.md`](docs/STABILITY_PROMISE.md). The per-feature stable-since matrix lives in [`docs/PROTOCOL_SPEC.md §11`](docs/PROTOCOL_SPEC.md). This section is the abbreviated feature-introduced view.
+
+| Feature | Stable since | Wire version |
+|---|---|---|
+| Binary frame + mandatory encryption + Ed25519 detached signatures + TOFU key pinning | v0.3 | `ironmesh/0.3` |
+| Mesh routing (multi-hop) + E2E `SealedBox` for relayed messages + capability discovery + audit log with HMAC chain | v0.4 | `ironmesh/0.4` |
+| Reticulum (LoRa / RNS) transport — `RNSLinkAdapter` + `ReticulumTransport` | v0.5 | `ironmesh/0.5` |
+| RNS Buffer/Channel reliable framing + transport failover (WS ↔ RNS) | v0.5.1 | `ironmesh/0.5` |
+| RTT heartbeat + session-key rotation (in-session REKEY) + LoRa QoS / compression | v0.5.2 | `ironmesh/0.5` |
+| Signed revocation broadcast + mDNS `idhash` hint + jittered backoff + protocol-version rejection + encrypted backup / restore + signed audit-log export + frame-parser fuzzing | v0.6 | `ironmesh/0.6` |
+| Pending-trust gate (operator-promoted message gating) | v0.8.5 | `ironmesh/0.7` |
+| Capability persistence + OpenClaw plugin compatibility + cap-set-binding TOFU + ACP + A2A interop | v0.9.0 | `ironmesh/0.7` |
+| Reticulum integration sweep — auto-discovery via announces, per-packet ratchets, `RNS.Resource` auto-routing, public capability RPC, identity-gated admin RPC, LXMF interop | v0.9.1 | `ironmesh/0.7` |
+| **Stage-1 handshake skip on identified RNS Links** (opt-in, `--rns-skip-handshake`) | v0.9.2 | `ironmesh/0.8` (`hskip` flag) |
+| **Shared-secret mesh-wide broadcast** (opt-in, `--rns-group-broadcast`) | v0.9.2 | `ironmesh/0.8` (`group` flag) |
+| **NAT relay** (Option A — pure relay; sealed envelopes; per-peer rate caps) | v0.9.2 | n/a (sidecar) |
+| **`Agent.send_to_capability`** with `first` / `random` / `all` strategies | v0.9.2 | uses existing wire |
+| **Federation policy v2** — per-source matchers | v0.9.2 | n/a (local config) |
+| **OpenTelemetry spans** on the v0.9.x agent surfaces (`ironmesh[otel]`) | v0.9.2 | n/a (local) |
+| **Conformance test vectors** (language-agnostic golden vectors) | v0.9.2 | n/a (test) |
 
 ### Interoperability
 
-- **Drop-in upgrade**: v0.6 peers negotiate with v0.3/0.4/0.5 peers; the
-  minimum common feature set is used.
-- **Hard floor**: `--min-protocol-version ironmesh/0.4` refuses v0.3 peers.
-  Default floor remains `ironmesh/0.3` for maximum compat.
-- **REKEY is silent on older peers**: a v0.6 node skips rekey for peers
-  below v0.5 (`_peer_supports_rekey`).
-- **REVOCATION is silent on older peers**: message is dropped by v0.3/0.4
-  peers; v0.6 nodes still apply locally to block the revoked node from
-  connecting to them.
-- **LoRa compression flag**: `routing["compressed"]` is set only for
-  v0.5.2+ RNS peers.
+- **Drop-in upgrade.** v0.9.x peers stay interoperable with each other; v0.8.x peers continue to interoperate on the existing wire surfaces. Wire-format v5 (`ironmesh/0.8`) just NAMES the optional Stage 1 skip and the new `hskip` / `group` feature flags — bytes unchanged from v4 unless both peers opt in.
+- **Feature negotiation is announce-driven.** Peers advertise feature flags in their announces. The opt-in skip and group-broadcast paths only activate when both sides advertise the relevant flag.
+- **Hard floor.** `--min-protocol-version ironmesh/0.4` refuses v0.3 peers. Default floor remains `ironmesh/0.3` for maximum compat.
+- **Forward compatibility.** Old peers see new wire types as unknown frames and drop them gracefully — they do not crash.
 
-### Upgrade Path
+### Upgrade path
 
 1. Back up keys + trust + audit: `ironmesh backup --out node.imb`
-2. Upgrade the package on each node
+2. Upgrade the package on each node: `pip install --upgrade ironmesh`
 3. Restart the bridge — peers re-handshake automatically
-4. Verify connectivity with `ironmesh trust list` and the dashboard
-5. Once all peers are v0.6+, raise `--min-protocol-version ironmesh/0.5`
-   to enforce modern features
+4. Verify connectivity with `ironmesh doctor` + `ironmesh trust list`
+5. (Optional, v0.9.2+) Enable handshake skip on identified RNS Links with `--rns-skip-handshake` once all RNS peers are at v0.9.2
 
 ---
 
-*IronMesh v0.6 — Local-first encrypted A2A protocol — No cloud, no internet, no compromises.*
+*IronMesh v0.9.2 — Local-first encrypted agent-to-agent mesh protocol — No cloud, no internet, no compromises.*

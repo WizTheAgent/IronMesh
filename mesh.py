@@ -280,8 +280,8 @@ class DedupCache:
         self._ttl = ttl
         # OrderedDict for LRU at source level: source -> OrderedDict[msg_id] = ts
         self._sources: "OrderedDict[str, OrderedDict[str, float]]" = OrderedDict()
-        # Audit M-07: serialize dedup access. mesh relays can be called
-        # from multiple incoming connection coroutines concurrently.
+        # Serialize dedup access. mesh relays can be called from
+        # multiple incoming connection coroutines concurrently.
         self._lock = threading.Lock()
 
     def is_duplicate(self, source: str, msg_id: str) -> bool:
@@ -726,7 +726,7 @@ class MeshRouter:
         """Process a ROUTE_ANNOUNCE payload from a directly-connected peer."""
         if self._mode == "off":
             return
-        # Audit M-10: bound payload before parsing.
+        # Bound payload size before parsing.
         if len(payload) > 1_048_576:
             logger.warning("ROUTE_ANNOUNCE from %s too large: %d bytes",
                            peer_id, len(payload))
@@ -736,7 +736,7 @@ class MeshRouter:
         except Exception as e:
             logger.warning("Bad ROUTE_ANNOUNCE from %s: %s", peer_id, e)
             return
-        # Audit M-06: require dict payload.
+        # Require dict payload.
         if not isinstance(data, dict):
             logger.warning("ROUTE_ANNOUNCE from %s not a dict: %s",
                            peer_id, type(data).__name__)
@@ -806,7 +806,7 @@ class MeshRouter:
             # passive mode silently drops
             return False
 
-        # Audit M-12: refuse to relay stale messages (default 24h
+        # Refuse to relay stale messages (default 24h
         # freshness window). Prevents ancient queued traffic from being
         # replayed into the mesh after a long partition heals.
         ts = getattr(frame, "timestamp", None)

@@ -13,6 +13,14 @@
 # Tune the `for:` durations to match your network's normal cadence.
 # All rules are conservative; expect to relax thresholds for high-
 # churn environments.
+#
+# Note (v0.9.2): four rules below reference metrics that are designed
+# but not yet emitted by the daemon — they will fire as soon as the
+# corresponding instrumentation lands in a future v0.9.x release.
+# Each is tagged with a `# PENDING-INSTRUMENTATION:` comment naming
+# the missing counter so operators know not to expect the alert until
+# then. Leaving the rules in place rather than deleting them keeps
+# the alert pack stable for downstream Helm charts / Ansible roles.
 
 groups:
   - name: ironmesh.handshake
@@ -65,6 +73,9 @@ groups:
   - name: ironmesh.mesh
     interval: 30s
     rules:
+      # PENDING-INSTRUMENTATION: ironmesh_route_unreachable_total is not
+      # emitted by the daemon yet. Leave rule in place so it activates
+      # automatically once the counter lands.
       - alert: IronMeshMeshRouteUnreachable
         expr: rate(ironmesh_route_unreachable_total[5m]) > 0.5
         for: 5m
@@ -93,6 +104,9 @@ groups:
   - name: ironmesh.rns
     interval: 30s
     rules:
+      # PENDING-INSTRUMENTATION: ironmesh_rns_resource_{starts,completes}_total
+      # are not emitted by the daemon yet (large-payload Resource
+      # transfer counters). Leave rule in place for future use.
       - alert: IronMeshRnsResourceStall
         expr: |
           increase(ironmesh_rns_resource_starts_total[10m])
@@ -108,26 +122,47 @@ groups:
             Surface via `/im/admin/peers` and inspect `rns_estimated_bps`
             for the affected peer.
 
-      - alert: IronMeshHandshakeSkipFailure
+      - alert: IronMeshHandshakeSkipActivationGap
         expr: |
-          rate(ironmesh_handshake_skip_attempts_total[5m]) > 0
-          and rate(ironmesh_handshake_skip_failures_total[5m]) /
-              rate(ironmesh_handshake_skip_attempts_total[5m]) > 0.1
+          rate(ironmesh_handshake_skips_offered_total[5m]) > 0
+          and (
+            rate(ironmesh_handshake_skips_offered_total[5m])
+            - rate(ironmesh_handshake_skips_activated_total[5m])
+          ) / rate(ironmesh_handshake_skips_offered_total[5m]) > 0.1
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Handshake-skip success rate on {{ $labels.instance }} dropped below 90%"
+          summary: "Stage-1 skip activations on {{ $labels.instance }} are trailing offers by >10%"
           description: |
-            Stage-1 skip is failing more than 10% of the time it's
-            attempted. Likely a peer-side rns_skip_handshake config
-            mismatch or a stale `hskip` advertise from a peer that
-            no longer supports it. Inspect logs for the failing peer
-            and consider disabling rns_skip_handshake on this node.
+            The server is offering SKIP_OFFER but the client side isn't
+            activating in matching volume. Likely causes: peers
+            disconnecting mid-handshake, downgrade rejections (see
+            companion `_rejected` alert), or asymmetric peer config.
+            Inspect logs for the failing peer.
+
+      - alert: IronMeshHandshakeSkipRejected
+        expr: rate(ironmesh_handshake_skips_rejected_total[5m]) > 0
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }} rejected a SKIP_OFFER — possible downgrade attempt or buggy peer"
+          description: |
+            A SKIP_OFFER frame was received with a malformed or wrong
+            channel_binding. The deterministic sentinel is hard-coded
+            in every IronMesh build, so a mismatch means either a
+            broken peer implementation OR an attacker trying to
+            substitute an attacker-chosen channel binding for the
+            documented sentinel. Inspect daemon logs for the rejecting
+            peer's source address and review trust pinning.
 
   - name: ironmesh.capability
     interval: 60s
     rules:
+      # PENDING-INSTRUMENTATION: ironmesh_capability_registry_size is not
+      # emitted as a top-level gauge yet (it's tracked internally but
+      # not exposed). Leave rule in place for future use.
       - alert: IronMeshCapabilityRegistryGrowth
         expr: |
           (ironmesh_capability_registry_size
@@ -145,6 +180,9 @@ groups:
   - name: ironmesh.lxmf
     interval: 60s
     rules:
+      # PENDING-INSTRUMENTATION: ironmesh_lxmf_drops_unmapped_total is not
+      # emitted by the LXMF listener yet. Leave rule in place for
+      # future use.
       - alert: IronMeshLxmfBacklog
         expr: ironmesh_lxmf_drops_unmapped_total > 100
         for: 10m
@@ -156,3 +194,37 @@ groups:
             A flood of LXMF messages from senders not in the
             `inbound_route` map. Either configure a `--lxmf-default-peer`
             catch-all or add the prolific senders to the route map.
+
+  - name: ironmesh.v092
+    interval: 60s
+    rules:
+      - alert: IronMeshCapabilityRouteNoMatchSpike
+        expr: rate(ironmesh_capability_routes_no_match_total[5m]) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} is failing to match capability patterns >0.2/s"
+          description: |
+            send_to_capability() is raising "no peer advertises a
+            matching capability" faster than 0.2/s. Either the pattern
+            is wrong, the capability owner went offline, or the
+            registry hasn't received an announce recently. Inspect via
+            `/im/cap/list` or `ironmesh_discover_capabilities` MCP tool.
+
+      - alert: IronMeshGroupBroadcastDedupStorm
+        expr: |
+          rate(ironmesh_group_broadcasts_deduped_total[5m])
+          / clamp_min(rate(ironmesh_group_broadcasts_received_total[5m]), 0.001)
+          > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} GROUP broadcast dedup ratio > 2 — possible echo loop"
+          description: |
+            More packets are being suppressed by the payload-hash dedup
+            cache than are being delivered. Likely a sender echoing its
+            own broadcast back onto itself, or a relay loop between
+            peers that all advertise `group`. Check announce feature
+            flags and the topology.

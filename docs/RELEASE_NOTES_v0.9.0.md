@@ -195,7 +195,7 @@ surfaced and is now in this release.
 - [`docs/OPENCLAW_CHANNEL_SETUP.md`](OPENCLAW_CHANNEL_SETUP.md) — channel plugin setup.
 - [`docs/OPENCLAW_MCP_SETUP.md`](OPENCLAW_MCP_SETUP.md) — MCP bridge setup.
 - [`docs/OPERATOR_TRUST_RUNBOOK.md`](OPERATOR_TRUST_RUNBOOK.md) — pending-trust gate operations.
-- [`docs/PROTOCOL.md`](PROTOCOL.md) — wire-protocol reference.
+- [`docs/PROTOCOL_SPEC.md`](PROTOCOL_SPEC.md) — wire-protocol reference.
 
 ## Acknowledgements
 

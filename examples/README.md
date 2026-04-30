@@ -3,11 +3,94 @@
 Runnable reference agents that use the IronMesh SDK. Each script is
 self-contained — `pip install ironmesh` and you can run any of them.
 
+> **First time?** Run `ironmesh demo` first — it spawns two agents
+> in subprocess on localhost, runs the handshake, exchanges a hello,
+> and tears down. Confirms your install works in 10 seconds without
+> touching any of these scripts. The examples below go further:
+> two-agent dialogue you can read, multi-agent coordination, LLM
+> bridges, capability routing, group broadcast, file transfer, LoRa
+> gateway.
+
 Every example expects `IRONMESH_PASSPHRASE` in the environment (12+
 characters). The passphrase must match across every peer in the mesh.
 
 ```bash
 export IRONMESH_PASSPHRASE='any-strong-passphrase-12-plus'
+```
+
+## Where to start
+
+Ordered by difficulty. Read the source — they're written to be read.
+
+| # | Example | What you learn |
+|---|---|---|
+| 1 | [`basic_chat.py`](basic_chat.py) | Two agents, send + receive. The "hello world." |
+| 2 | [`multi_agent.py`](multi_agent.py) | Three agents, simple coordination |
+| 3 | [`conv_multiturn.py`](conv_multiturn.py) | Multi-turn conversation envelope |
+| 4 | [`ai_to_ai_dialogue.py`](ai_to_ai_dialogue.py) | Two agents in structured back-and-forth |
+| 5 | [`file_transfer.py`](file_transfer.py) | Larger payloads + chunked delivery |
+| 6 | [`llm_bridge.py`](llm_bridge.py) | Bridge a peer to a local Ollama LLM |
+| 7 | [`ollama_swarm.py`](ollama_swarm.py) | Multiple Ollama agents talking |
+| 8 | [`persona_debate.py`](persona_debate.py) | Two LLM personas, one mediator |
+| 9 | [`capability_routing.py`](capability_routing.py) | `send_to_capability` with first/random/all (**v0.9.2+**) |
+| 10 | [`group_broadcast.py`](group_broadcast.py) | Mesh-wide shared-secret broadcast (**v0.9.2+**) |
+| 11 | [`cap_binding_workflow.py`](cap_binding_workflow.py) | Capability binding TOFU workflow |
+| 12 | [`rns_capability_client.py`](rns_capability_client.py) | RNS public capability RPC client |
+| 13 | [`lxmf_gateway.py`](lxmf_gateway.py) | Sideband / Nomadnet ↔ IronMesh bridge |
+| 14 | [`openclaw/`](openclaw/) | OpenClaw 2026.3.x integration recipes |
+
+If you only have time for one, read `basic_chat.py`. If you have time for two, read `basic_chat.py` then `llm_bridge.py`.
+
+---
+
+## capability_routing.py — capability-aware routing (chunk E, v0.9.2+)
+
+Two `provider` agents advertise the same capability glob (e.g.
+`echo:demo`); a `client` agent discovers them via the capability
+registry and dispatches via `Agent.send_to_capability` with a
+strategy of `first` (best-RTT match), `random` (load distribution),
+or `all` (parallel fan-out). The local node is never picked even if
+it satisfies the capability. Reference for: capability advertisement
+on Agent init, `on_message` handler, `send_to_capability` with each
+strategy, the result-dict shape per strategy.
+
+```bash
+export IRONMESH_PASSPHRASE='your-shared-passphrase-12-plus'
+
+# Terminal 1 (provider A)
+python examples/capability_routing.py --role provider \
+    --name provider-a --port 18890
+
+# Terminal 2 (provider B)
+python examples/capability_routing.py --role provider \
+    --name provider-b --port 18891
+
+# Terminal 3 (client)
+python examples/capability_routing.py --role client \
+    --name caller --port 18892 --strategy all
+```
+
+## group_broadcast.py — mesh-wide shared-secret broadcast (chunk B, v0.9.2+)
+
+Two agents on the same mesh passphrase independently derive the same
+HKDF-SHA256 group destination — no key exchange. The sender calls
+`broadcast_via_rns_group(payload)`; every peer that enabled
+`rns_group_broadcast` and shares the passphrase receives the bytes
+via the `on_group_broadcast` hook. Two-phase delivery (RNS GROUP
+packet + IronMesh `GROUP_BROADCAST` fan-out) handles both
+same-segment and cross-host cases; receivers dedup on payload
+SHA-256 so a peer reachable via both phases handles the bytes
+exactly once. Reference for: passphrase-derived group identity,
+two-phase delivery result dict, `on_group_broadcast` hook signature.
+
+```bash
+export IRONMESH_PASSPHRASE='your-shared-passphrase-12-plus'
+
+# Terminal 1 (receiver)
+python examples/group_broadcast.py --role receiver --port 18890
+
+# Terminal 2 (sender)
+python examples/group_broadcast.py --role sender --port 18891
 ```
 
 ## conv_multiturn.py — minimal ConvEnvelope walkthrough (no LLM)

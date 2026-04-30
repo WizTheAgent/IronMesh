@@ -1,0 +1,15 @@
+{
+  "name": "group.identity_material_derivation",
+  "description": "HKDF-SHA256 derivation of the 64-byte material fed into RNS.Identity.from_bytes() to construct the shared GROUP destination identity. Every peer in the mesh runs this same derivation against the daemon passphrase so they all land on the identical destination hash without exchanging keys.",
+  "spec_section": "PROTOCOL_SPEC.md \u00a78 feature flags / group broadcast key derivation",
+  "version": "ironmesh/0.8",
+  "input": {
+    "secret_utf8": "test-passphrase-conformance-vector-v1",
+    "hkdf_sha256": {
+      "salt_utf8": "ironmesh-group-identity-v1",
+      "info_utf8": "identity",
+      "length_bytes": 64
+    }
+  },
+  "expected_bytes_hex": "9891dca03c9b9e0da73b88018d4ffe5a9dc23a41747fad29ea39dc1cf1473a4d104303512170cf0deb85f8fdf2ce8a11aeb535d682cef133d0d0a0630ea46b3b"
+}

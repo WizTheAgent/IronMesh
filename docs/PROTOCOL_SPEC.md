@@ -75,12 +75,37 @@ IronMesh-layer passphrase is also unused on the skip path — Identity
 authentication via the Link replaces it. The passphrase remains the
 gate on every other transport.
 
-**Negotiation rule:** an `hskip`-aware peer MUST fall back to the
-full Stage 1 handshake when the remote's announce does not
-advertise `hskip`. The decision is taken at handshake start by
-checking the remote's last-seen announce; race conditions where
-the announce is in flight resolve by erring toward the full
-handshake.
+**Negotiation rule (v0.9.2 corrected design — server-driven).**
+The server is the active party and SPEAKS FIRST. After Stage 1 begins
+on an RNS Link, the server checks both peers' eligibility (RNS
+identity present + remote's last-seen announce advertises `hskip` +
+local opt-in). If eligible, the server emits `SKIP_OFFER` carrying
+the channel-binding sentinel; otherwise it emits the legacy
+`PASSPHRASE_CHALLENGE`. The client type-dispatches on the first
+server message — never decides skip unilaterally:
+
+```
+SKIP_OFFER          → use channel_binding sentinel, go straight to HELLO
+PASSPHRASE_CHALLENGE → full challenge / verify flow
+```
+
+This eliminates the asymmetric-decision race that would crash the
+handshake when announces propagated unevenly across the mesh.
+
+**Defense-in-depth.** The client MUST verify that the
+`channel_binding` field of `SKIP_OFFER` equals
+`SKIP_BINDING_SENTINEL` byte-for-byte (`hmac.compare_digest`). Any
+other value — including a missing field, non-hex string, or a
+32-byte alternative — MUST be rejected and the connection closed.
+This blocks a downgrade-to-attacker-chosen-sentinel attack.
+
+**Operator counters.** The reference implementation surfaces three
+Prometheus counters: `ironmesh_handshake_skips_offered_total`
+(server emitted SKIP_OFFER), `_activated_total` (client accepted),
+`_rejected_total` (client rejected for malformed or wrong binding).
+Healthy fleet sums of `offered` and `activated` should match;
+divergence reveals send failures or downgrade-rejects, and any
+non-zero `_rejected` rate is alert-worthy.
 
 ### Stage 2: Identity Exchange (HELLO)
 
@@ -217,6 +242,8 @@ previous hop, but cannot read the contents.
 | `ROUTE_ANNOUNCE` | Any → Mesh | Distance-vector routing update |
 | `GOODBYE` | Either | Graceful disconnect |
 | `CONV` (v0.8.2+) | Peer → Peer | Structured multi-turn conversation frame |
+| `SKIP_OFFER` (v0.9.2+) | Server → Client | Stage-1 skip offer carrying the channel-binding sentinel (only on identified RNS Links) |
+| `GROUP_BROADCAST` (v0.9.2+) | Peer → Peer | Phase-2 cross-host fan-out of a shared-secret group broadcast payload |
 
 ### 4.1 CONV envelope (v0.8.2+)
 
@@ -374,9 +401,51 @@ Feature flag values currently defined:
 | `resource` | Peer accepts large payloads via `RNS.Resource` (>32 KB auto-routed) |
 | `lxmf` | Peer hosts an LXMF gateway listener |
 | `hskip` | Peer agrees to skip Stage 1 handshake on identified RNS Links |
+| `group` | Peer participates in shared-secret mesh-wide broadcast (chunk B) |
 
 Unknown flags are ignored — both sides MUST tolerate flags they
 don't recognise.
+
+### Shared-secret group broadcast key derivation (v0.9.2+)
+
+A peer that advertises the `group` feature derives a shared
+`RNS.Destination.GROUP` from the daemon passphrase via two
+domain-separated HKDF-SHA256 expansions. Every peer on the mesh
+runs this same derivation and lands on the identical destination
+hash — no key exchange.
+
+```
+identity_material = HKDF-SHA256(
+    secret = passphrase,
+    salt   = b"ironmesh-group-identity-v1",
+    info   = b"identity",
+    length = 64,
+)                                          # → fed to RNS.Identity.from_bytes()
+
+group_key = HKDF-SHA256(
+    secret = passphrase,
+    salt   = b"ironmesh-group-key-v1",
+    info   = b"broadcast",
+    length = 32,
+)                                          # → loaded as the GROUP destination's symmetric key
+```
+
+The two derivations are domain-separated (different salt + info)
+so rotating one cannot leak material into the other. Cross-language
+implementations MUST byte-equal the reference values in
+`tests/conformance/vectors/group.identity_material_derivation.json`
+and `group.symmetric_key_derivation.json`.
+
+**Two-phase delivery.** Phase 1 sends a packet to the GROUP
+destination on the local RNS segment (O(1), reaches every peer on
+the same RNS Transport — e.g., one rnsd or one LoRa medium).
+Phase 2 fans out a per-peer `GROUP_BROADCAST` frame over every
+established IronMesh connection to peers that advertised the
+`group` feature (O(N), bridges the cross-host gap because RNS
+GROUP destinations cannot be `announce()`d). Receivers dedup on
+SHA-256 of the payload (60-second window, 10,000-entry hard cap)
+so a peer reachable via both phases handles the payload exactly
+once.
 
 ## 9. Implementing in Another Language
 
@@ -417,9 +486,9 @@ documented migration path until v1.0 ships.
 | Reticulum transport | v0.5 | Auto-discovery via announce: v0.9.1 |
 | Per-packet ratchets on RNS | v0.9.1 | Forward secrecy outside Links |
 | `RNS.Resource` for >32 KB | v0.9.1 | Auto-routed when peer advertises `resource` |
-| Public RNS RPC paths | v0.9.1 | `/im/info`, `/im/cap/list`, `/im/cap/find`, `/im/admin/*` |
+| Public RNS RPC paths | v0.9.1 | `/im/info`, `/im/cap/list`, `/im/cap/find` (admin paths `/im/admin/*` are operator interfaces, not part of the v1.0 stability promise) |
 | LXMF listener | v0.9.1 | Sideband / Nomadnet interop |
-| Stage 1 skip on RNS Links | v0.9.2 | Opt-in, requires both peers' `hskip` advertise |
-| Group destination broadcast | (deferred to v1.x) | Wire-protocol value not justified at current PING sizes |
+| Stage 1 skip on RNS Links | v0.9.2 | Opt-in, requires both peers' `hskip` advertise; server-driven `SKIP_OFFER` negotiation with sentinel-binding rejection |
+| Shared-secret group broadcast | v0.9.2 | Opt-in (`--rns-group-broadcast`); two-phase delivery (RNS GROUP packet + IronMesh `GROUP_BROADCAST` fan-out); SHA-256 dedup |
 | Capability-aware routing | v0.9.2 | `Agent.send_to_capability()` |
 | External security audit | v1.0 | Audit results published with the release |

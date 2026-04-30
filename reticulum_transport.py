@@ -9,6 +9,8 @@ optional dependency.
 """
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -16,6 +18,23 @@ import struct
 import threading
 import time
 from typing import Any, Dict, Optional, Tuple
+
+
+def _hkdf_sha256(secret: bytes, salt: bytes, info: bytes, length: int) -> bytes:
+    """HKDF-SHA256 per RFC 5869.
+
+    Minimal implementation (extract + expand) so the group-destination
+    derivation doesn't pull in `cryptography` just for one KDF call.
+    """
+    prk = hmac.new(salt, secret, hashlib.sha256).digest()
+    out = b""
+    t = b""
+    counter = 1
+    while len(out) < length:
+        t = hmac.new(prk, t + info + bytes([counter]), hashlib.sha256).digest()
+        out += t
+        counter += 1
+    return out[:length]
 
 import websockets  # only for ConnectionClosed exception
 
@@ -315,7 +334,7 @@ class RNSLinkAdapter:
                 # Deframe: [4-byte big-endian length][payload]
                 while len(self._recv_buf) >= 4:
                     msg_len = struct.unpack(">I", self._recv_buf[:4])[0]
-                    # Audit C-05: bound the length field to prevent
+                    # Bound the length field to prevent
                     # memory exhaustion from a malformed prefix.
                     if msg_len == 0 or msg_len > MAX_RNS_MSG:
                         logger.warning(
@@ -609,7 +628,9 @@ class ReticulumTransport:
                  ratchet_interval: float = 1800.0,
                  retained_ratchets: int = 8,
                  stats_poll_interval: float = 5.0,
-                 admin_identities: Optional[list] = None):
+                 admin_identities: Optional[list] = None,
+                 group_broadcast: bool = False,
+                 group_secret: Optional[bytes] = None):
         if not _HAS_RNS:
             raise RuntimeError("rns package is not installed — install with: pip install rns")
         self._daemon = daemon
@@ -627,6 +648,17 @@ class ReticulumTransport:
             if isinstance(h, str) and h.strip():
                 norm = h.strip().lower().replace(":", "").replace(" ", "")
                 self._admin_identities.add(norm)
+        # v0.9.2 chunk B: group broadcast destination. When enabled, the
+        # transport creates a second Destination of type GROUP keyed off
+        # a shared secret (typically the daemon passphrase) so every peer
+        # in the mesh derives the exact same destination hash + symmetric
+        # key. A single packet sent to this destination fans out to every
+        # listener — O(1) instead of O(N) for mesh-wide notifications.
+        self._group_broadcast_enabled = bool(group_broadcast)
+        self._group_secret = group_secret
+        self._group_identity = None
+        self._group_destination = None
+        self._group_dest_hash_hex: Optional[str] = None
         self._reticulum = None
         self._identity = None
         self._destination = None
@@ -645,6 +677,105 @@ class ReticulumTransport:
             return RNS.prettyhexrep(self._destination.hash)
         return "not-started"
 
+    def _maybe_seed_rns_config(self) -> None:
+        """Write a per-daemon RNS config with unique RPC ports.
+
+        OPT-IN via the ``IRONMESH_SEED_RNS_CONFIG`` env var. The seeder
+        addresses a niche scenario: two ironmesh daemons coexisting on
+        one host WITHOUT rnsd, where each tries to be its own RNS
+        shared-instance server and they collide on the default RPC port
+        with different authkeys.
+
+        It is OFF by default because turning it on prevents the daemon
+        from joining an existing rnsd shared-instance — the seeded
+        unique RPC ports stop the daemon from finding rnsd's RPC
+        socket, so the daemon starts its own RNS instance and conflicts
+        with rnsd's already-bound AutoInterface multicast.
+
+        Only enable when:
+          1. You're running multiple ironmesh daemons on one host, AND
+          2. There's no rnsd on that host, AND
+          3. You want each daemon's RNS to be isolated.
+
+        For the standard single-daemon-per-host or
+        multiple-daemons-via-rnsd cases, leave this off.
+
+        If the configdir already has a config file, never overwrite —
+        operator-tuned configs always win.
+        """
+        if not self._configdir:
+            return
+        # Opt-in gate. Anything truthy enables; default is off.
+        flag = os.environ.get("IRONMESH_SEED_RNS_CONFIG", "").lower()
+        if flag not in ("1", "true", "yes", "on"):
+            return
+        configdir = os.path.expanduser(self._configdir)
+        cfg_path = os.path.join(configdir, "config")
+        try:
+            if os.path.exists(cfg_path):
+                return  # respect existing operator config
+            os.makedirs(configdir, exist_ok=True)
+        except Exception as e:
+            logger.debug("Could not ensure RNS configdir %s: %s", configdir, e)
+            return
+
+        # Derive per-daemon unique RPC ports from node_id hash. These
+        # are LOCAL-ONLY (bound to 127.0.0.1) so different RPC ports
+        # per daemon eliminate the same-host authkey collision without
+        # touching cross-host mesh behavior.
+        #
+        #   [0:2]  shared_instance_port  (16000-16999)
+        #   [2:4]  instance_control_port (17000-17999)
+        #
+        # CRITICAL: do NOT override AutoInterface group_id, discovery_port,
+        # or data_port. Those govern the LAN multicast that lets ironmesh
+        # daemons across different hosts find each other. Setting them
+        # per-daemon FRAGMENTS the global mesh — two hosts with
+        # different group_ids cannot see each other's announces. Leaving
+        # AutoInterface to its defaults (group_id="reticulum",
+        # discovery_port=29716) preserves cross-host mesh; same-host
+        # multi-daemon AutoInterface conflict is a separate problem
+        # operators should solve with rnsd (the standard pattern).
+        tag = None
+        if self._daemon is not None:
+            tag = getattr(self._daemon, "node_id", None)
+        if not tag:
+            tag = f"pid{os.getpid()}"
+        import hashlib as _hashlib
+        h = _hashlib.sha256(str(tag).encode("utf-8")).digest()
+        shared_port  = 16000 + (int.from_bytes(h[:2],  "big") % 1000)
+        control_port = 17000 + (int.from_bytes(h[2:4], "big") % 1000)
+
+        cfg_contents = (
+            "# Auto-generated by IronMesh ReticulumTransport to avoid\n"
+            "# cross-process RPC port collisions on the same host. Only\n"
+            "# the local-only RPC ports are overridden; AutoInterface\n"
+            "# settings are inherited from RNS defaults so the global\n"
+            "# cross-host mesh keeps working. Delete this file to use\n"
+            "# RNS's defaults entirely.\n"
+            "[reticulum]\n"
+            "enable_transport = Yes\n"
+            "share_instance = Yes\n"
+            f"shared_instance_port = {shared_port}\n"
+            f"instance_control_port = {control_port}\n\n"
+            "[logging]\n"
+            "loglevel = 4\n\n"
+            "[interfaces]\n\n"
+            "  [[Default Interface]]\n"
+            "    type = AutoInterface\n"
+            "    enabled = yes\n"
+        )
+        try:
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                f.write(cfg_contents)
+            logger.info(
+                "Seeded RNS config %s (shared_port=%d control_port=%d) "
+                "to avoid cross-process RPC collisions",
+                cfg_path, shared_port, control_port,
+            )
+        except Exception as e:
+            logger.debug("Could not seed RNS config %s: %s", cfg_path, e)
+
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
         """Initialise RNS, create Identity + Destination, start announcing.
 
@@ -661,11 +792,41 @@ class ReticulumTransport:
         # initialised it, reuse the existing instance instead of trying
         # to start a second one (which raises). Discovered during testing — when
         # multiple Agent SDK instances ran in the same Python process.
+        # v0.9.2 bug fix: ALWAYS ensure the configdir exists before
+        # RNS init, even on the singleton-reuse path. RNS's per-
+        # destination ratchet writer expects the parent directory of the
+        # ratchet file (which lives inside configdir) to be present —
+        # and on the singleton-reuse path the first daemon may have
+        # used a different configdir. Live-test discovered when the
+        # second in-process daemon's destination tried to persist
+        # ratchets and crashed with FileNotFoundError.
+        if self._configdir:
+            try:
+                os.makedirs(os.path.expanduser(self._configdir), exist_ok=True)
+            except Exception as e:
+                logger.debug("Could not pre-create configdir %s: %s",
+                             self._configdir, e)
+
         existing = getattr(RNS.Reticulum, "_Reticulum__instance", None)
         if existing is not None:
             logger.info("Reusing existing RNS.Reticulum singleton in this process")
             self._reticulum = existing
         else:
+            # v0.9.2: when two ironmesh daemons run in separate processes
+            # on the same host, RNS's shared-instance RPC collides on
+            # default port 37428 (Windows/AF_INET) or the default AF_UNIX
+            # socket path. Each RNS process derives an rpc_key from its
+            # OWN Transport identity, so the second one's client gets
+            # "AuthenticationError: digest sent was rejected" when the
+            # first is already the server under a different authkey.
+            #
+            # Fix: if the configdir is provided AND doesn't already
+            # contain a config file, seed it with per-daemon unique
+            # shared_instance_port + instance_control_port derived from
+            # the daemon node_id hash. This guarantees each daemon gets
+            # its own isolated RPC endpoint and never collides. Daemons
+            # that point at the SAME configdir still share (rnsd-style).
+            self._maybe_seed_rns_config()
             self._reticulum = RNS.Reticulum(configdir=self._configdir)
 
         # Per-daemon persistent RNS identity. The previous single-file
@@ -794,6 +955,18 @@ class ReticulumTransport:
         # request_handler API does the encryption + identity gating;
         # the code just provide the response generators.
         self._register_public_request_handlers()
+
+        # v0.9.2 chunk B: optional shared-secret GROUP destination for
+        # O(1) mesh-wide broadcast. Derived deterministically from the
+        # daemon passphrase so every peer that enables group broadcast
+        # lands on the same destination hash and symmetric key.
+        if self._group_broadcast_enabled and self._group_secret:
+            try:
+                self._start_group_destination()
+            except Exception as e:
+                logger.warning("Group destination setup failed: %s", e)
+                self._group_destination = None
+                self._group_identity = None
 
         # Initial announce
         self._destination.announce(app_data=self._build_app_data())
@@ -1113,8 +1286,250 @@ class ReticulumTransport:
             features.append("lxmf")
         if getattr(daemon, "_rns_skip_handshake", False):
             features.append("hskip")
+        # `group` advertises that this node listens on the shared
+        # GROUP broadcast destination. Peers gate broadcast sends on
+        # the feature to avoid shouting at nodes that haven't opted in.
+        if (getattr(self, "_group_broadcast_enabled", False)
+                and getattr(self, "_group_destination", None) is not None):
+            features.append("group")
         return encode_app_data(name, ironmesh_version, node_id,
                                 capabilities, features)
+
+    # -- Group broadcast (v0.9.2 chunk B) ----------------------------------
+
+    @property
+    def group_destination_hash_hex(self) -> Optional[str]:
+        return self._group_dest_hash_hex
+
+    def _start_group_destination(self) -> None:
+        """Create the shared-secret GROUP destination.
+
+        Both the group Identity and the symmetric key are derived from
+        the shared secret via HKDF-SHA256 with distinct `info` labels,
+        so every peer on the mesh lands on the exact same destination
+        hash and can decrypt traffic sent to it.
+
+        RNS.Identity holds 32 bytes of X25519 + 32 bytes of Ed25519
+        material; the code derive 64 bytes and feed it via ``from_bytes``
+        so the hash is reproducible across hosts and restarts.
+
+        The GROUP destination's symmetric key is raw 32 bytes (256-bit
+        AES in RNS's Token); NOT base64-encoded despite what the
+        Reticulum docs in some places imply.
+        """
+        secret = self._group_secret
+        if not secret:
+            return
+        if not isinstance(secret, (bytes, bytearray)):
+            secret = str(secret).encode("utf-8")
+
+        # Domain-separated derivations so rotating one material doesn't
+        # leak into the other.
+        identity_material = _hkdf_sha256(
+            bytes(secret),
+            salt=b"ironmesh-group-identity-v1",
+            info=b"identity",
+            length=64,
+        )
+        group_key = _hkdf_sha256(
+            bytes(secret),
+            salt=b"ironmesh-group-key-v1",
+            info=b"broadcast",
+            length=32,
+        )
+
+        # Try RNS.Identity.from_bytes — present on modern RNS. If it
+        # returns None or raises, the code can't build a deterministic group
+        # destination and will skip broadcast.
+        try:
+            group_identity = RNS.Identity.from_bytes(identity_material)
+        except Exception as e:
+            logger.warning(
+                "RNS.Identity.from_bytes unavailable/failed: %s — "
+                "group broadcast disabled on this node", e,
+            )
+            return
+        if group_identity is None:
+            logger.warning("RNS.Identity.from_bytes returned None — group broadcast disabled")
+            return
+
+        self._group_identity = group_identity
+
+        # v0.9.2 bug fix: when multiple ironmesh daemons run in the
+        # same Python process and share the RNS singleton, only the
+        # FIRST one can register a given GROUP destination — RNS rejects
+        # the second with "Attempt to register an already registered
+        # destination". Detect that case and adopt the existing
+        # registration so this daemon can also send + receive on the
+        # shared GROUP. Live-test discovered.
+        dest = None
+        existing_dest = None
+        # Compute the destination hash deterministically (from identity
+        # + app + aspect) so we can match an already-registered one.
+        try:
+            expected_hash = RNS.Destination.hash_from_name_and_identity(
+                f"{_APP_NAME}.broadcast", group_identity,
+            )
+        except Exception:
+            expected_hash = None
+        if expected_hash is not None:
+            try:
+                # RNS.Transport.destinations is the singleton's master
+                # list. Match by raw hash — deterministic across daemons
+                # that share the singleton + the group identity.
+                for d in getattr(RNS.Transport, "destinations", []):
+                    try:
+                        if (getattr(d, "type", None) == RNS.Destination.GROUP
+                                and getattr(d, "hash", None) == expected_hash):
+                            existing_dest = d
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                existing_dest = None
+
+        if existing_dest is not None:
+            logger.info(
+                "Reusing existing in-process GROUP destination "
+                "(another ironmesh daemon registered it first)"
+            )
+            dest = existing_dest
+        else:
+            try:
+                dest = RNS.Destination(
+                    group_identity,
+                    RNS.Destination.IN,
+                    RNS.Destination.GROUP,
+                    _APP_NAME,
+                    "broadcast",
+                )
+            except Exception as e:
+                logger.warning("Failed to create GROUP destination: %s", e)
+                return
+
+        # When we adopted an existing in-process destination, the FIRST
+        # daemon already loaded the key + registered a callback. Don't
+        # touch those again — only the first daemon receives in-process
+        # broadcasts. (Multi-Agent-one-process in-process broadcast
+        # receive across daemons is a known limitation; the production
+        # case is one daemon per process.)
+        if existing_dest is None:
+            # Load the symmetric group key. RNS Token expects raw 256-bit
+            # material; passing anything else raises.
+            try:
+                dest.load_private_key(group_key)
+            except Exception as e:
+                logger.warning("load_private_key on GROUP destination failed: %s", e)
+                return
+
+            # Register a packet callback so incoming group packets land on
+            # the asyncio loop via the daemon hook.
+            try:
+                dest.set_packet_callback(self._on_group_packet)
+            except Exception:
+                logger.debug("GROUP destination has no set_packet_callback — receive disabled")
+
+        self._group_destination = dest
+        try:
+            self._group_dest_hash_hex = RNS.hexrep(dest.hash, delimit=False)
+        except Exception:
+            self._group_dest_hash_hex = None
+        logger.info(
+            "GROUP broadcast destination active — hash %s",
+            self._group_dest_hash_hex,
+        )
+
+    def _on_group_packet(self, data: bytes, packet) -> None:
+        """RNS callback fired for an inbound GROUP broadcast packet.
+
+        Runs on the RNS transport thread; bridge to asyncio via the
+        daemon's ``_on_rns_group_message`` hook if it exists. Self-sent
+        broadcasts can echo back on some RNS versions; the daemon hook
+        is expected to dedup on payload hash + sender.
+        """
+        try:
+            if self._loop is None or self._daemon is None:
+                return
+            cb = getattr(self._daemon, "_on_rns_group_message", None)
+            if cb is None:
+                return
+            payload = bytes(data) if data is not None else b""
+            self._loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(cb(payload)),
+            )
+        except Exception:
+            logger.exception("_on_group_packet failed")
+
+    def broadcast_via_group(self, payload: bytes) -> bool:
+        """Send a single packet to every peer on the group destination.
+
+        Returns True on a successful send, False if the group destination
+        is not active (feature disabled or derivation failed).
+
+        **EXPERIMENTAL — known limitation.** GROUP destinations cannot
+        be ``announce()``d in RNS (it raises "Only SINGLE destination
+        types can be announced"). Without an announce, the receiving
+        host's RNS Transport may not have a route to forward the packet
+        to remote registered listeners. This means cross-host group
+        broadcast works reliably only when:
+
+          * all participants share the same RNS shared-instance (rnsd
+            on a single host with multiple ironmesh daemons), OR
+          * RNS Transport on each host has a learned route to the
+            group identity via prior unicast traffic.
+
+        For pure cross-LAN broadcast without rnsd, the packet may not
+        reach all listeners. If the operator needs guaranteed
+        cross-host fan-out, use ``Agent.send_to_capability("*", ...)``
+        with a per-peer fan-out instead.
+
+        The OUT destination is created lazily on first call and cached
+        — RNS doesn't deduplicate per-call destination creation, and
+        cached construction is much cheaper for high-frequency senders.
+        """
+        if self._group_destination is None:
+            return False
+        if not isinstance(payload, (bytes, bytearray)):
+            payload = str(payload).encode("utf-8")
+        try:
+            # Cache the OUT destination across calls — fresh construction
+            # each call is wasteful and can confuse RNS routing caches.
+            out_dest = getattr(self, "_group_out_destination", None)
+            if out_dest is None:
+                out_dest = RNS.Destination(
+                    self._group_identity,
+                    RNS.Destination.OUT,
+                    RNS.Destination.GROUP,
+                    _APP_NAME,
+                    "broadcast",
+                )
+                try:
+                    out_dest.load_private_key(
+                        _hkdf_sha256(
+                            bytes(self._group_secret) if isinstance(self._group_secret, (bytes, bytearray))
+                            else str(self._group_secret).encode("utf-8"),
+                            salt=b"ironmesh-group-key-v1",
+                            info=b"broadcast",
+                            length=32,
+                        )
+                    )
+                except Exception as e:
+                    # Silent failure here would leave the OUT destination
+                    # without its symmetric key — packets would still be
+                    # constructed but receivers couldn't decrypt them.
+                    # Log at DEBUG so the failure is at least observable
+                    # without spamming healthy meshes.
+                    logger.debug(
+                        "Failed to load group destination private key: %s "
+                        "(broadcast packets may not be decryptable)", e,
+                    )
+                self._group_out_destination = out_dest
+            packet = RNS.Packet(out_dest, bytes(payload))
+            packet.send()
+            return True
+        except Exception:
+            logger.exception("broadcast_via_group failed")
+            return False
 
     # -- Announce-handler bridge to asyncio --------------------------------
 
@@ -1276,6 +1691,23 @@ class ReticulumTransport:
                 return None
             await asyncio.sleep(0.25)
 
+        # v0.9.2 chunk A live-test discovered: the OUTBOUND side must
+        # explicitly identify on the link or the SERVER's RNS Link sees
+        # remote_identity=None. Without an identified Link, the server's
+        # handshake-skip eligibility check (_peer_advertises_hskip)
+        # gets None for the identity hash, finds no announce match,
+        # and falls back to PASSPHRASE_CHALLENGE — silently disabling
+        # the skip even when both sides would otherwise be eligible.
+        # `link.identify(self._identity)` is the standard RNS pattern
+        # for this; the receiving side's _on_remote_identified callback
+        # will then populate the adapter's remote_identity_hash.
+        if self._identity is not None and hasattr(link, "identify"):
+            try:
+                link.identify(self._identity)
+            except Exception as e:
+                logger.debug("link.identify() on outbound to %s failed: %s",
+                             dest_hash_hex, e)
+
         # Create the client-side adapter (is_server=False swaps stream IDs).
         adapter = RNSLinkAdapter(link, self._loop, dest_hash_hex=dest_hash_hex,
                                  is_server=False)
@@ -1308,7 +1740,7 @@ class ReticulumTransport:
 
         Also prunes closed adapters from ``_active_adapters`` so the
         list doesn't grow unboundedly on a long-running node with many
-        connect/disconnect cycles (M1 audit fix).
+        connect/disconnect cycles.
         """
         if self._stats_poll_interval <= 0:
             return

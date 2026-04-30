@@ -57,6 +57,16 @@ class MessageType(str, Enum):
     PASSPHRASE_CHALLENGE = "PASSPHRASE_CHALLENGE"
     PASSPHRASE_VERIFIED = "PASSPHRASE_VERIFIED"
     PASSPHRASE_REJECTED = "PASSPHRASE_REJECTED"
+    # v0.9.2 chunk A — server-driven Stage-1 skip offer. The server
+    # emits this in place of PASSPHRASE_CHALLENGE when both sides are
+    # eligible to skip (RNS Link + both advertise hskip). The client
+    # type-dispatches on the first server message: SKIP_OFFER → use
+    # the channel binding sentinel + go straight to HELLO; the
+    # legacy PASSPHRASE_CHALLENGE → full challenge / verify flow.
+    # This server-driven design fixes the v0.9.2-pre-r1 unilateral-
+    # decision bug where client and server could disagree, sending
+    # crossed messages and breaking the handshake.
+    SKIP_OFFER = "SKIP_OFFER"
     KEY_ROTATE = "KEY_ROTATE"
     REKEY_REQUEST = "REKEY_REQUEST"
     REKEY_RESPONSE = "REKEY_RESPONSE"
@@ -94,6 +104,18 @@ class MessageType(str, Enum):
     # v0.8.2: Structured multi-turn conversations (LLM-to-LLM dialogue).
     # Payload is a JSON envelope: see docs/PROTOCOL_SPEC.md §4.
     CONV = "CONV"
+
+    # v0.9.2 chunk B (cross-host broadcast). The complement to the
+    # RNS GROUP destination: when peers are NOT on the same RNS
+    # Transport (e.g., separate LANs without rnsd shared instance),
+    # the sender fans out a per-peer GROUP_BROADCAST frame over each
+    # established IronMesh connection. Receivers route this to the
+    # `on_group_broadcast` hook (NOT the normal MSG pipeline) and
+    # dedup on payload SHA-256 so a peer that hears the same broadcast
+    # via both the local-segment GROUP packet AND the fan-out path
+    # processes it exactly once. The payload here is the same opaque
+    # bytes a caller passed to `broadcast_via_rns_group`; no envelope.
+    GROUP_BROADCAST = "GROUP_BROADCAST"
 
 
 class MessagePriority(str, Enum):
@@ -144,6 +166,13 @@ MESSAGE_SCHEMAS = {
     },
     MessageType.PASSPHRASE_VERIFIED: {
         "required": ["status"],
+        "optional": [],
+    },
+    MessageType.SKIP_OFFER: {
+        # The channel binding is the deterministic 32-byte sentinel
+        # from Handshake.skip_channel_binding(); the client uses it as
+        # the server_nonce in HELLO signature canonicalization.
+        "required": ["channel_binding"],
         "optional": [],
     },
     MessageType.PASSPHRASE_REJECTED: {
@@ -234,8 +263,8 @@ class Frame:
     ):
         self.msg_type = msg_type
         self.payload = payload
-        # Audit M-01: use a cryptographically strong RNG rather than
-        # uuid4 (which is also CSPRNG but msg_id is security-adjacent —
+        # Use a cryptographically strong RNG rather than uuid4 (which
+        # is also CSPRNG, but msg_id is security-adjacent —
         # explicit intent is clearer).
         self.msg_id = msg_id or nacl.utils.random(16).hex()
         self.source = source

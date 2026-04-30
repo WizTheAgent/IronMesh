@@ -4,7 +4,7 @@
 Protocol: Model Context Protocol (stdio transport by default).
 Client: any MCP host (Claude Desktop, Claude Code, VS Code MCP).
 
-Tools exposed (21 total as of v0.8.5):
+Tools exposed (25 total as of v0.9.2):
     Core:
         ironmesh_list_peers              — enumerate connected + known peers with live metrics
         ironmesh_send_message            — send a MSG to a named peer (by agent name or node_id)

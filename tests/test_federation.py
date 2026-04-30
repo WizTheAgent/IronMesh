@@ -35,6 +35,54 @@ class TestFederationPolicy:
         assert d["allow"] == ["llm:*"]
         assert d["deny"] == ["tool:fs"]
 
+    # v0.9.2: per-source rules
+    def test_per_source_match_overrides_global(self):
+        p = FederationPolicy(
+            allow=["llm:*"],
+            deny=["tool:filesystem"],
+            per_source=[
+                {"source": "ops-*", "allow": ["*"]},
+                {"source": "guest-*", "deny": ["*"]},
+            ],
+        )
+        # Global rule for unmatched source
+        assert p.should_forward("llm:any", source="other-1") is True
+        assert p.should_forward("tool:filesystem", source="other-1") is False
+        # ops-* override: everything allowed
+        assert p.should_forward("tool:filesystem", source="ops-blue") is True
+        assert p.should_forward("llm:any", source="ops-blue") is True
+        # guest-* override: everything denied
+        assert p.should_forward("llm:any", source="guest-1") is False
+        assert p.should_forward("tool:search", source="guest-1") is False
+
+    def test_per_source_first_match_wins(self):
+        p = FederationPolicy(
+            per_source=[
+                {"source": "trader-*", "allow": ["tool:trade:read"],
+                 "deny": ["tool:trade:write"]},
+                {"source": "*", "allow": ["*"]},
+            ],
+        )
+        assert p.should_forward("tool:trade:read", source="trader-1") is True
+        assert p.should_forward("tool:trade:write", source="trader-1") is False
+        # Falls to global catch-all
+        assert p.should_forward("anything", source="other") is True
+
+    def test_per_source_absent_source_uses_global(self):
+        p = FederationPolicy(allow=["llm:*"], per_source=[
+            {"source": "ops-*", "allow": ["*"]},
+        ])
+        assert p.should_forward("tool:x", source=None) is False  # global says no
+        assert p.should_forward("llm:x", source=None) is True
+
+    def test_to_dict_includes_per_source_when_present(self):
+        p = FederationPolicy(allow=["*"], per_source=[
+            {"source": "s-*", "allow": ["llm:*"]},
+        ])
+        d = p.to_dict()
+        assert "per_source" in d
+        assert d["per_source"][0]["source"] == "s-*"
+
 
 class TestFederationGateway:
     def test_init(self):

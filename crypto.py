@@ -78,9 +78,9 @@ def decrypt_message(shared_key: bytes, ciphertext: bytes) -> bytes:
     Raises:
         nacl.exceptions.CryptoError: On decryption failure.
     """
-    # Audit M-04: reject obviously-too-short ciphertext before handing
-    # to libsodium. A valid SecretBox ciphertext has a 24-byte nonce
-    # plus a 16-byte Poly1305 tag (40 bytes minimum).
+    # Reject obviously-too-short ciphertext before handing to libsodium.
+    # A valid SecretBox ciphertext has a 24-byte nonce plus a 16-byte
+    # Poly1305 tag (40 bytes minimum).
     if len(ciphertext) < 40:
         raise ValueError(f"Ciphertext too short ({len(ciphertext)} < 40 bytes)")
     box = SecretBox(shared_key)

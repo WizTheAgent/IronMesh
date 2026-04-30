@@ -301,7 +301,7 @@ class TestTrustStoreAgentMAC:
         assert len(store2._peers) == 0
 
     def test_short_agent_key_rejected(self, tmp_path):
-        """Audit C-03: agent_key must be at least 16 bytes."""
+        """agent_key must be at least 16 bytes."""
         from ironmesh.trust import TrustStore
         with pytest.raises(ValueError):
             TrustStore(agent_key=b"short", path=str(tmp_path / "trust.json"))

@@ -75,7 +75,7 @@ Response (server advertises capabilities + conformance profile):
 { "jsonrpc": "2.0", "id": 1, "result": {
     "protocolVersion": "0.3.0",
     "conformanceProfile": "acp-core-v1@0.3.0",
-    "serverInfo": { "name": "ironmesh-acp", "version": "0.9.0" },
+    "serverInfo": { "name": "ironmesh-acp", "version": "0.9.2" },
     "capabilities": {
       "session": { "new": true, "prompt": true, "cancel": true }
     } } }

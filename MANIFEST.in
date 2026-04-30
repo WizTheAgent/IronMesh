@@ -1,0 +1,75 @@
+# IronMesh sdist manifest.
+#
+# Setuptools' default sdist excludes everything not explicitly listed here
+# beyond pyproject.toml + README + LICENSE + the package code itself.
+# Without this file the conformance vector JSONs are silently absent
+# from the sdist, so downstream `pip install ironmesh.tar.gz && pytest`
+# collects ZERO conformance tests — a silent gate failure.
+#
+# Wheels are unaffected — they're built from the source tree directly
+# and use pyproject.toml's [tool.setuptools.packages] for inclusion.
+
+# Release-relevant docs at the repo root
+include CHANGELOG.md
+include CITATION.cff
+include CODE_OF_CONDUCT.md
+include CONTRIBUTING.md
+include GETTING_STARTED.md
+include NOTICE
+include SECURITY.md
+include WHATS_NEW.md
+include AGENTS.md
+include ARCHITECTURE.md
+
+# Container + ops artifacts (downstream rebuilders need these)
+include Dockerfile
+include docker-compose.yml
+include docker-compose.demo.yml
+include mkdocs.yml
+
+# Tests (so `pytest` works from a fresh sdist install)
+recursive-include tests *.py *.json *.md
+recursive-include tests/conformance *.json *.md
+
+# Documentation
+recursive-include docs *.md *.json *.yml *.yaml *.png
+
+# Operator examples
+recursive-include examples *.py *.md
+recursive-include examples/openclaw *
+
+# Operator scripts (release smoke + observability config)
+recursive-include scripts *.sh *.py *.yml *.yaml *.json
+recursive-include scripts/observability *
+
+# Operator skills
+recursive-include skills *.md *.sh
+
+# Cross-language client sources for non-Python consumers
+recursive-include clients *.go *.ts *.json *.md *.mod *.sum
+
+# Default excludes — never ship build/test detritus in the sdist.
+global-exclude __pycache__
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude .DS_Store
+global-exclude *.egg-info
+global-exclude .pytest_cache
+global-exclude .coverage
+global-exclude .vscode
+global-exclude .idea
+prune dist
+prune build
+prune .git
+prune .github
+prune .internal
+prune .venv
+prune coverage_html
+# `global-exclude node_modules` only matches a file named exactly
+# "node_modules" — not directories. Need explicit prunes for each
+# instance, otherwise a 25 MB JS dep tree silently inflates the sdist.
+prune clients/ts/node_modules
+prune clients/ts-channel/node_modules
+# Build output of TS clients — sdist consumers will rebuild from src/.
+prune clients/ts/dist
+prune clients/ts-channel/dist

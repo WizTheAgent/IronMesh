@@ -101,6 +101,16 @@ class IronMeshConfig:
     # the full handshake until operators opt in.
     rns_skip_handshake: bool = False
 
+    # v0.9.2: optional RNS Destination.GROUP for mesh-wide broadcast.
+    # Every peer in the mesh derives the same symmetric group key
+    # from the passphrase via HKDF, so a single packet sent to the
+    # group destination reaches every member — O(1) instead of O(N)
+    # for mesh-wide notifications. Useful when N grows and per-peer
+    # unicast HELLO/PING becomes a real bandwidth cost on LoRa.
+    # Peers advertise `group` in their announce features; both sides
+    # must advertise before any broadcast is used. Default off.
+    rns_group_broadcast: bool = False
+
     # v0.8.5: pending-trust message gate. When True, MSG/REQ/RESP frames
     # from peers that haven't been promoted to "trusted" are queued
     # instead of delivered to clients. Operator promotes via the

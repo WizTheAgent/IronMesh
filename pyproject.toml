@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ironmesh"
-version = "0.9.1"
+version = "0.9.2"
 description = "Local-first agent-to-agent mesh protocol with multi-hop routing, end-to-end encryption, and capability discovery"
 readme = "README.md"
 license = {text = "MIT"}
@@ -111,6 +111,11 @@ extend-exclude = [
     "examples",
     "ironmesh_mcp/__pycache__",
     "scripts/test_harness.py",
+    # Operator-run stress harnesses. Terse semicolon-chained style is
+    # intentional (read once, not maintained); not part of the wheel.
+    "scripts/stress_e2e_comprehensive.py",
+    "scripts/stress_e2e_round4.py",
+    "scripts/stress_scale_100.py",
 ]
 
 [tool.ruff.lint]

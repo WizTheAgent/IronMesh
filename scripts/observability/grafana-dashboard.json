@@ -109,12 +109,16 @@
     },
     {
       "id": 8,
-      "title": "Handshake skip activations (when both peers advertise hskip)",
+      "title": "Handshake skip — offered / activated / rejected",
       "type": "timeseries",
       "gridPos": {"x": 18, "y": 16, "w": 6, "h": 8},
       "targets": [
-        {"expr": "rate(ironmesh_handshake_skip_attempts_total{instance=\"$instance\"}[5m])",
-         "legendFormat": "skip attempts/s"}
+        {"expr": "rate(ironmesh_handshake_skips_offered_total{instance=\"$instance\"}[5m])",
+         "legendFormat": "offered/s"},
+        {"expr": "rate(ironmesh_handshake_skips_activated_total{instance=\"$instance\"}[5m])",
+         "legendFormat": "activated/s"},
+        {"expr": "rate(ironmesh_handshake_skips_rejected_total{instance=\"$instance\"}[5m])",
+         "legendFormat": "rejected/s"}
       ]
     },
     {

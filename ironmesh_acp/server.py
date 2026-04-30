@@ -586,8 +586,10 @@ def main() -> int:
                    help="WebSocket bind port for the embedded daemon")
     p.add_argument("--bind", default="127.0.0.1",
                    help="WebSocket bind interface")
-    p.add_argument("--passphrase-env", default="IRONMESH_PASSPHRASE")
-    p.add_argument("--passphrase-file", default=None)
+    p.add_argument("--passphrase-env", default="IRONMESH_PASSPHRASE",
+                   help="env var holding the mesh passphrase (default: IRONMESH_PASSPHRASE)")
+    p.add_argument("--passphrase-file", default=None,
+                   help="file containing the mesh passphrase (alternative to --passphrase-env)")
     p.add_argument("--peer", action="append", default=None,
                    metavar="HOST:PORT",
                    help="bootstrap peer (repeatable, or comma-separated). "
@@ -595,8 +597,10 @@ def main() -> int:
     p.add_argument("--default-peer", default=None, metavar="NODE_ID",
                    help="32-hex node id to bind sessions to when "
                         "session/new omits meta.peer")
-    p.add_argument("--allow-plaintext-ws", action="store_true", default=True)
-    p.add_argument("--open-discovery", action="store_true")
+    p.add_argument("--allow-plaintext-ws", action="store_true", default=True,
+                   help="allow plaintext ws:// fallback for mesh connections (default on for embedded daemon)")
+    p.add_argument("--open-discovery", action="store_true",
+                   help="allow mDNS auto-connect to any peer (insecure; localhost testing only)")
     p.add_argument(
         "--state-dir",
         default="~/.ironmesh-acp",
