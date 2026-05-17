@@ -95,13 +95,16 @@ class TestKeyPersistence:
             load_keys("/nonexistent/path/keys.json")
 
     def test_save_format_is_json(self, keys_path):
+        # v0.9.4 (Phase 1) default-generated keys ship in the v3
+        # master-seed envelope. Legacy v2 envelopes remain readable but
+        # are no longer the default write target.
         keys = generate_keypair()
         save_keys(keys, keys_path, allow_plaintext=True)
         with open(keys_path) as f:
             data = json.load(f)
         assert "ed25519_public" in data
         assert "version" in data
-        assert data["version"] == 2
+        assert data["version"] in (2, 3)
 
     def test_load_validates_key_length(self, keys_path):
         # Write invalid key data

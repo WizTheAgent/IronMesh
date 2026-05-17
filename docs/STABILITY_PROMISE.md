@@ -46,6 +46,13 @@ path.**
 | `--mesh-routing`, `--max-hops`, `--route-announce-interval`, `--route-ttl` | **Stable** | |
 | `--reticulum`, `--rns-*` family | **Stable** | Including `--rns-skip-handshake` and `--rns-group-broadcast` added in v0.9.2 |
 | `--lxmf`, `--lxmf-*` family | **Stable** | |
+| `--strict-tls`, `--pinned-ca`, `--max-msgs-per-sec` | **Stable** | Added in v0.9.3. Default behaviors of all three are off / preserve historical posture. |
+| `capability_announce_max_age` (config field) | **Stable** | Added in v0.9.4 with signed capability advertisements. Default 300 s. Bounds the replay window for stolen origin signatures on CAPABILITY_ANNOUNCE. |
+| `CAPABILITY_ANNOUNCE_BAD_SIG` audit event name | **Stable** | Added in v0.9.4 with signed capability advertisements. Reasons field carries `missing-sig`, `unknown-origin`, `stale`, or `bad-sig`. |
+| `capability_announce_bad_signature_total` Prometheus metric | **Stable** | Added in v0.9.4 with signed capability advertisements. |
+| `SIG_CTX_*` Ed25519 domain-separation context labels (`crypto`) | **Stable** | Added in v0.9.4. Labels are wire-stable; the loader rejects label changes via the NUL terminator + exact-bytes match. v0.9.4 adds `SIG_CTX_X25519_BINDING`. |
+| HELLO `x25519_public_b64` field | **Stable** | Added in v0.9.4 (Phase 2). Field name formally reserved by `PROTOCOL_SPEC.md` §2.2. Future versions MUST NOT repurpose. Sits outside the signed HELLO canonical body — adding it does not affect HELLO signature verification. |
+| HELLO `x25519_binding_signature_b64` field | **Stable** | Added in v0.9.4 (Phase 2). Field name formally reserved. Carries an Ed25519 detached signature of the X25519 public under `SIG_CTX_X25519_BINDING`. |
 | Environment variables documented in `CONFIGURATION.md` | **Stable** | |
 
 ### Config file
@@ -53,8 +60,8 @@ path.**
 | Surface | Stability | Notes |
 |---|---|---|
 | `~/.ironmesh/config.json` schema (`IronMeshConfig` dataclass) | **Stable** | New fields additive with safe defaults |
-| `~/.ironmesh/keys.json` format | **Stable** | Encrypted + plaintext variants |
-| `~/.ironmesh/known_peers.json` format | **Stable** | Trust store |
+| `~/.ironmesh/keys.json` format | **Stable** | Versions 1, 2, and 3 all readable. v3 (`format: "master-seed-v1"`, added v0.9.4) carries an additional HKDF-derived X25519 subkey; legacy v1/v2 keep working unchanged. The loader continues to accept all prior versions. `ironmesh keys migrate` converts v1/v2 to v3 in place + preserves `.legacy.bak`. |
+| `~/.ironmesh/known_peers.json` envelope versions | **Stable** | v1 (legacy plaintext) and v2 (encrypted v0.9.3+) both readable. New envelope versions roll forward additively; the loader continues to accept all prior versions. |
 | `~/.ironmesh/routes.json` format | **Stable** | |
 | `~/.ironmesh/data.db` SQLite schema | **Stable** | Migrations ship in release notes when schema evolves |
 | Audit log line format | **Stable** | Append-only chained HMAC record; format frozen |
@@ -68,6 +75,7 @@ path.**
 | JSON metric shape from `--metrics-format json` | **Stable** | Field names mirror Prometheus counter stems (e.g., `handshake_skips_offered`); same add/never-rename rule applies |
 | OpenTelemetry span names for public Agent surfaces | **Stable** | |
 | `/im/info`, `/im/cap/list`, `/im/cap/find` RNS RPC paths | **Stable** | |
+| Audit event type names | **Stable** | New event types may be added; existing event-type strings (e.g. `TOFU_NEW_PEER`, `STRICT_TLS_ENABLED`, `GLOBAL_RATE_LIMIT_TRIGGERED`, `TRUST_STORE_ENCRYPTED`) will not be renamed without a deprecation cycle so external tooling can alert on them safely. |
 
 ## 2. Scope: what this promise does NOT cover
 

@@ -39,12 +39,21 @@ from typing import Dict, Optional
 
 import websockets
 
+from ironmesh.protocol import MAX_FRAME_BYTES
+
 logger = logging.getLogger("ironmesh.nat_relay")
 
 # Bounds on the relay's per-peer connection + forward rates so one
 # misbehaving client can't starve the rest of the mesh. Chosen to be
 # far above what any honest peer needs for agent messaging.
-MAX_FRAME_BYTES = 2 * 1024 * 1024           # 2 MB — matches bridge.py
+#
+# MAX_FRAME_BYTES is imported from ironmesh.protocol as the single
+# source of truth for the wire-level frame ceiling. The relay enforces
+# the same cap so a misbehaving client cannot trick the relay into
+# buffering frames larger than peers will ever legitimately produce —
+# previously the relay carried its own 2 MiB constant which diverged
+# from the protocol's 1 MiB ceiling, producing inconsistent acceptance
+# across code paths. Audit finding (pre-audit hardening, 2026-05).
 MAX_FORWARDS_PER_MINUTE = 6000              # 100/s sustained
 MAX_REGISTERED_PEERS = 10_000               # per relay instance
 

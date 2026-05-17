@@ -3,7 +3,7 @@
 ## Verified on 2026-04-14
 
 A LoRa-only E2E round-trip was measured by temporarily disabling
-`AutoInterface` and `TCPServerInterface` on the Wiz test node, forcing
+`AutoInterface` and `TCPServerInterface` on the test node, forcing
 every probe through the `RNodeInterface[RNode LoRa]` link (915 MHz,
 SF8, BW125, CR5, 17 dBm TX). Probes targeted a Pixel running Sideband
 with its own RNode hardware, 1 hop away.
@@ -37,7 +37,7 @@ with its own RNode hardware, 1 hop away.
 
 ### Known good hardware
 
-- **Wiz end**: original RNode on COM3 (CP2102 bridge, SX1276 modem,
+- **Workstation end**: original RNode on COM3 (CP2102 bridge, SX1276 modem,
   firmware 1.85)
 - **Pixel end**: built-in or external RNode paired with Sideband;
   appears as a standard LXMF delivery destination on the RNS path

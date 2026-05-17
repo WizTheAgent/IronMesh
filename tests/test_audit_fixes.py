@@ -289,14 +289,18 @@ class TestTrustStoreAgentMAC:
         pubkey = base64.b64encode(os.urandom(32)).decode()
         store.pin_peer("peer1", pubkey)
 
-        # Tamper with file
+        # v0.9.3+: tamper the encrypted v2 envelope's ciphertext while
+        # preserving the original _mac. Load must detect the mismatch.
         with open(str(tmp_path / "trust.json")) as f:
             data = json.load(f)
-        data["peers"]["evil"] = {"pubkey": "x"}
+        assert data.get("version") == 2 and "ciphertext" in data
+        tampered = bytearray(base64.b64decode(data["ciphertext"]))
+        tampered[0] ^= 0xFF
+        data["ciphertext"] = base64.b64encode(bytes(tampered)).decode()
         with open(str(tmp_path / "trust.json"), "w") as f:
             json.dump(data, f)
 
-        # Load with same key — tampered, detected by MAC mismatch
+        # Load with same key — tampered, detected by MAC mismatch.
         store2 = TrustStore(agent_key=key_a, path=str(tmp_path / "trust.json"))
         assert len(store2._peers) == 0
 

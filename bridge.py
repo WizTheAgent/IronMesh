@@ -14,8 +14,10 @@ import logging
 import os
 import signal
 import ssl
+import sys
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -40,6 +42,7 @@ from ironmesh import (
 from ironmesh.audit import (
     EVENT_AUTH_BLOCKED,
     EVENT_AUTH_FAILURE,
+    EVENT_CAPABILITY_ANNOUNCE_BAD_SIG,
     EVENT_CAPABILITY_LEARNED,
     EVENT_MSG_GATED_DROP,
     EVENT_MSG_GATED_QUEUE,
@@ -66,9 +69,38 @@ from ironmesh.telemetry import (
 
 logger = logging.getLogger("ironmesh.bridge")
 
-PROTOCOL_VERSION = "ironmesh/0.6"
+PROTOCOL_VERSION = "ironmesh/0.8"
 MIN_MESH_VERSION = "ironmesh/0.4"  # Peers below this version cannot relay
 MAX_MESSAGE_SIZE = 1_048_576  # 1 MB default
+
+# CVE-2020-10735 / PEP 686 — large int string conversion DoS. Python 3.11+
+# defaults `int(s)` parsing to a 4300-digit string ceiling. Python 3.10 has
+# no default cap until 3.10.7, and even then a library that touches large
+# int parsing via untrusted JSON input is at risk on older patch releases.
+# Apply the cap at daemon bootstrap so behaviour is uniform across 3.10/3.11/
+# 3.12/3.13. `set_int_max_str_digits` is a no-op on interpreters that already
+# enforce the cap; the getattr guard handles the (rare) sub-3.10.7 case where
+# the function is absent entirely.
+def _enforce_int_str_digits_cap(limit: int = 4300) -> None:
+    """Apply the CPython int-string-conversion cap at daemon bootstrap."""
+    fn = getattr(sys, "set_int_max_str_digits", None)
+    if fn is None:
+        # Interpreter predates PEP 686 backport — there is nothing the
+        # daemon can do beyond logging the gap. Callers should upgrade.
+        logger.warning(
+            "sys.set_int_max_str_digits unavailable (Python %s); large-int "
+            "JSON parsing DoS not mitigated. Upgrade to 3.10.7+ / 3.11+.",
+            sys.version.split()[0],
+        )
+        return
+    try:
+        fn(limit)
+    except ValueError:
+        # Already set lower than `limit` (e.g. operator env). Leave it.
+        pass
+
+
+_enforce_int_str_digits_cap()
 
 
 def _parse_protocol_version(v: str) -> tuple:
@@ -154,6 +186,11 @@ class _DaemonConfig:
     capabilities: List[str] = field(default_factory=list)
     capabilities_path: str = "~/.ironmesh/capabilities.json"
     capability_announce_interval: float = 60.0
+    # v0.9.4 (signed capability announcement): max age (seconds) of a signed CAPABILITY_ANNOUNCE
+    # the receiver will accept. Bounds the replay window for a stolen
+    # origin signature; tolerant of NTP-grade clock skew + slow multi-hop
+    # relays. 300 s is the established replay-window upper bound.
+    capability_announce_max_age: float = 300.0
     metrics_format: str = "prometheus"
     log_format: str = "text"
     audit_log_max_bytes: int = 10_485_760
@@ -192,6 +229,39 @@ async def ensure_agent_keys(keys_path: str, passphrase: Optional[str] = None) ->
                     logger.warning("Migrating plaintext key file to encrypted: %s", path)
                     ew_keys.save_keys(keys, str(path), passphrase=passphrase)
                     logger.info("Key file migration complete — now encrypted with Argon2id")
+
+            # v0.9.4 Phase 2 auto-migration: a daemon running v0.9.4 that
+            # loads a legacy v1/v2 keystore (no master-seed envelope)
+            # silently migrates it forward on first start. The Ed25519
+            # seed is preserved byte-for-byte — every TOFU pin in the
+            # mesh remains valid. A .legacy.bak is written next to the
+            # original so an operator can roll back to a pre-v0.9.4
+            # daemon within one release cycle if needed.
+            #
+            # The migration is best-effort: if it fails (permissions,
+            # disk-full, etc.) the daemon still starts on the legacy
+            # keys, just without the new HELLO advertisement.
+            if not keys.is_master_seed_format():
+                try:
+                    keys = ew_keys.migrate_keys_to_master_seed(
+                        str(path),
+                        passphrase=passphrase,
+                        allow_plaintext=not passphrase,
+                    )
+                    logger.warning(
+                        "v0.9.4 Phase 2 auto-migration: legacy keys "
+                        "rewritten to master-seed envelope (%s). Legacy "
+                        "backup at %s.legacy.bak. Ed25519 identity "
+                        "unchanged — every TOFU pin remains valid.",
+                        path, path,
+                    )
+                except (OSError, ValueError, RuntimeError) as e:
+                    logger.warning(
+                        "v0.9.4 Phase 2 auto-migration FAILED for %s "
+                        "(%s) — continuing on legacy keys without "
+                        "HELLO X25519 advertisement",
+                        path, e,
+                    )
 
             return keys
         except Exception as e:
@@ -289,6 +359,20 @@ class Metrics:
         self.group_broadcasts_sent = 0
         self.group_broadcasts_received = 0
         self.group_broadcasts_deduped = 0
+        # v0.9.3: posture + at-rest gauges and global-cap counter.
+        # ``trust_store_version`` reflects the on-disk envelope version
+        # the daemon is reading: 1 = legacy plaintext (auto-migrating),
+        # 2 = encrypted at rest, 0 = no file yet.
+        # ``strict_tls_enabled`` is 1 when --strict-tls is set, else 0.
+        # ``global_msg_rate_limit_total`` increments each time the
+        # global daemon-wide cap rejects an inbound message.
+        self.trust_store_version = 0
+        self.strict_tls_enabled = 0
+        self.global_msg_rate_limit_total = 0
+        # v0.9.4 (signed capability announcement): signed CAPABILITY_ANNOUNCE — counts rejected
+        # announces (missing inner sig where required, bad sig, stale,
+        # replay-dedup hit). Healthy fleets sum near zero.
+        self.capability_announce_bad_signature_total = 0
 
     def to_dict(self) -> dict:
         return {
@@ -315,6 +399,9 @@ class Metrics:
             "msg_replay_cross_transport": self.msg_replay_cross_transport,
             "peer_revoked_local": self.peer_revoked_local,
             "peer_state_changed": self.peer_state_changed,
+            "trust_store_version": self.trust_store_version,
+            "strict_tls_enabled": self.strict_tls_enabled,
+            "global_msg_rate_limit_total": self.global_msg_rate_limit_total,
             "peer_promoted": self.peer_promoted,
             "peer_blocked": self.peer_blocked,
             "capability_routes_attempted": self.capability_routes_attempted,
@@ -326,6 +413,7 @@ class Metrics:
             "group_broadcasts_sent": self.group_broadcasts_sent,
             "group_broadcasts_received": self.group_broadcasts_received,
             "group_broadcasts_deduped": self.group_broadcasts_deduped,
+            "capability_announce_bad_signature_total": self.capability_announce_bad_signature_total,
         }
 
 
@@ -1323,6 +1411,9 @@ class BridgeDaemon:
                  allowed_peers: Optional[list] = None,
                  open_discovery: bool = False,
                  allow_plaintext_ws: bool = False,
+                 strict_tls: bool = False,
+                 pinned_ca_path: Optional[str] = None,
+                 max_msgs_per_sec: Optional[float] = None,
                  mesh_routing: str = "relay",
                  max_hops: int = 5,
                  route_announce_interval: float = 30.0,
@@ -1421,6 +1512,23 @@ class BridgeDaemon:
         self._ip_rate_limiters: Dict[str, ew_protocol.TokenBucket] = {}
         self._connection_rate_limiter = ew_protocol.TokenBucket(rate=0.167, burst=10)  # 10/min
 
+        # Global daemon-wide message rate cap (defense-in-depth on top
+        # of the per-peer caps). Off by default — per-peer limits are
+        # sufficient when peers are mutually trusted. Operators that
+        # expose the mesh to potentially-hostile peers should pass
+        # ``--max-msgs-per-sec`` to enable a daemon-level token bucket
+        # that bounds total inbound message throughput across all peers.
+        # Burst defaults to one second of sustained rate so short
+        # legitimate spikes don't trip the limiter.
+        self._max_msgs_per_sec: Optional[float] = max_msgs_per_sec
+        if max_msgs_per_sec is not None and max_msgs_per_sec > 0:
+            burst = max(1, int(max_msgs_per_sec))
+            self._global_msg_rate_limiter: Optional[ew_protocol.TokenBucket] = (
+                ew_protocol.TokenBucket(rate=float(max_msgs_per_sec), burst=burst)
+            )
+        else:
+            self._global_msg_rate_limiter = None
+
         # v0.7.2: per-peer bandwidth throttle (bytes/sec). Prevents a single
         # noisy peer from starving bandwidth for the rest of the mesh.
         # 0 disables the throttle; default ~1 MB/s with 1 MB burst allows
@@ -1456,6 +1564,13 @@ class BridgeDaemon:
         self._open_discovery: bool = open_discovery
         # TLS preference for outbound connections
         self._allow_plaintext_ws: bool = allow_plaintext_ws
+        # Outbound TLS validation. Default mirrors historical mesh behavior:
+        # WSS is line-level confidentiality only; peer authentication runs at
+        # the application layer (passphrase HMAC + Ed25519 + TOFU). Set
+        # strict_tls=True to require CA-validated certs (pinned_ca_path
+        # supplies a private CA bundle when present).
+        self._strict_tls: bool = strict_tls
+        self._pinned_ca_path: Optional[str] = pinned_ca_path
 
         # Audit log — initialized after keys are loaded
         self._audit: Optional[AuditLog] = None
@@ -1535,6 +1650,27 @@ class BridgeDaemon:
         )
         self._mesh = None  # MeshRouter, instantiated in _start() after keypair load
         self._capabilities = None  # CapabilityRegistry, instantiated in _start()
+
+        # v0.9.4 (signed capability announcement): cached signed CAPABILITY_ANNOUNCE envelope bytes,
+        # keyed by remote origin. Populated when a signed announce for
+        # ``origin`` arrives and verifies; replayed verbatim by the
+        # announce loop when re-gossiping that origin's caps to neighbors.
+        # Without the cache, a relay cannot meaningfully re-broadcast a
+        # third-party origin's caps under the signed-announce contract (the relay has no access
+        # to the origin's signing key). With the cache, gossip continues
+        # to converge across multi-hop meshes — the cached envelope is
+        # fresh as long as the freshness window permits.
+        # ``OrderedDict`` for LRU eviction semantics; sized generously
+        # because cached entries are bounded by known-origin count.
+        self._signed_announce_cache: "OrderedDict[str, dict]" = OrderedDict()
+        # Per-origin replay-dedup LRU for ``(origin, announced_at)`` —
+        # second copy of the same signed envelope is a no-op (does not
+        # crash, does not double-emit audit / metric / observe). Bounded
+        # at 4096 entries — plenty for a mesh of thousands of peers
+        # cycling at 60s announce intervals.
+        self._announce_dedup: "OrderedDict[str, float]" = OrderedDict()
+        self._SIGNED_ANNOUNCE_CACHE_MAX = 4096
+        self._ANNOUNCE_DEDUP_MAX = 4096
 
         # v0.5: Reticulum transport
         self._rns_enabled = rns_enabled
@@ -1703,6 +1839,49 @@ class BridgeDaemon:
         self._audit.log(EVENT_STARTUP, {
             "node_id": self.node_id, "name": self.name, "port": self.port,
         })
+        # v0.9.3: prime the posture gauges so a fresh `/metrics` scrape
+        # reflects strict_tls + trust-store-envelope state without
+        # waiting for first-message activity.
+        self.metrics.strict_tls_enabled = 1 if self._strict_tls else 0
+        try:
+            ts_path = os.path.expanduser(
+                getattr(self, "trust_path", None) or "~/.ironmesh/known_peers.json"
+            )
+            if os.path.exists(ts_path):
+                import json as _json
+                with open(ts_path) as _f:
+                    _envelope = _json.load(_f)
+                if isinstance(_envelope, dict):
+                    if _envelope.get("version") == 2:
+                        self.metrics.trust_store_version = 2
+                    elif "_mac" in _envelope or "peers" in _envelope:
+                        self.metrics.trust_store_version = 1
+        except (OSError, ValueError):
+            pass
+        # v0.9.3: surface posture-changing flags as their own audit events
+        # so forensic review can pinpoint when a daemon was started in a
+        # stricter mode without grepping for free-form startup args.
+        if self._strict_tls:
+            try:
+                from ironmesh.audit import EVENT_STRICT_TLS_ENABLED
+                self._audit.log(EVENT_STRICT_TLS_ENABLED, {
+                    "node_id": self.node_id,
+                    "trust_anchor": (
+                        self._pinned_ca_path or "system_trust_store"
+                    ),
+                })
+            except ImportError:
+                pass
+        if self._global_msg_rate_limiter is not None:
+            try:
+                from ironmesh.audit import EVENT_STARTUP as _e
+                self._audit.log("GLOBAL_RATE_CAP_CONFIGURED", {
+                    "node_id": self.node_id,
+                    "max_msgs_per_sec": self._max_msgs_per_sec,
+                })
+                _ = _e  # quiet linters that flag the import-as-binding
+            except ImportError:
+                pass
 
         # Open database
         await self._db.open()
@@ -1822,8 +2001,16 @@ class BridgeDaemon:
             self._capabilities.set_local(self.config.capabilities)
             try:
                 self._capabilities.save()
-            except Exception:
-                pass
+            except OSError as e:
+                # Disk write failed (permissions, full FS, network mount
+                # gone). The in-memory registry is still valid for the
+                # session; the announce loop also calls save() each
+                # cycle so a transient FS error self-heals. Logged for
+                # operator visibility.
+                logger.warning(
+                    "Capability registry initial save failed: %s — "
+                    "will retry on next announce loop", e,
+                )
             logger.info("Advertising %d local capability/ies: %s",
                         len(self.config.capabilities),
                         ", ".join(self.config.capabilities))
@@ -1938,7 +2125,13 @@ class BridgeDaemon:
                     "type": ew_protocol.MessageType.RATE_LIMITED,
                     "error": "Too many connections",
                 }))
-            except Exception:
+            except (websockets.exceptions.ConnectionClosed, OSError, RuntimeError):
+                # Best-effort error notification to a misbehaving peer:
+                # ConnectionClosed = peer already gave up; OSError =
+                # socket-level failure mid-send; RuntimeError = event
+                # loop shutting down. None of these block the local
+                # control-flow goal (refuse the connection); silently
+                # drop and let the outer `return` close it out.
                 pass
             return
 
@@ -1954,7 +2147,8 @@ class BridgeDaemon:
                     "type": ew_protocol.MessageType.RATE_LIMITED,
                     "error": "Too many connections from your IP",
                 }))
-            except Exception:
+            except (websockets.exceptions.ConnectionClosed, OSError, RuntimeError):
+                # Same pattern as the connection-cap notify above.
                 pass
             return
 
@@ -1967,7 +2161,9 @@ class BridgeDaemon:
                         "type": ew_protocol.MessageType.PASSPHRASE_REJECTED,
                         "error": "Too many authentication failures. Try again later.",
                     }))
-                except Exception:
+                except (websockets.exceptions.ConnectionClosed, OSError, RuntimeError):
+                    # Best-effort auth-blocked notification — see
+                    # rate-limit comments above for rationale.
                     pass
                 return
 
@@ -2157,7 +2353,16 @@ class BridgeDaemon:
             ew_crypto.secure_wipe(my_ephemeral_private)
             del my_ephemeral_private
 
-            # Send the HELLO, signed with Ed25519 + channel binding via server_nonce
+            # Send the HELLO, signed with Ed25519 + channel binding via server_nonce.
+            # v0.9.4 Phase 2: HELLO MAY carry x25519_public_b64 +
+            # x25519_binding_signature_b64 advertising the master-seed X25519
+            # subkey for E2E sealing. The fields are OUTSIDE the signed
+            # canonical body (which stays at the v0.9.4 shape so pre-v0.9.4
+            # receivers verify the sig identically); the binding signature
+            # is itself an Ed25519 signature over the X25519 public under
+            # SIG_CTX_X25519_BINDING, so receivers that DO understand the
+            # advertisement get cryptographic binding without breaking the
+            # mixed-mesh sig-verify path.
             hello_payload = json.dumps({
                 "channel_binding": server_nonce.hex(),
                 "ephemeral_public": base64.b64encode(bytes(my_ephemeral_public)).decode(),
@@ -2168,7 +2373,7 @@ class BridgeDaemon:
             signature = ew_crypto.sign_message(
                 self._keypair.get_signing_key(), hello_payload.encode()
             )
-            await websocket.send(json.dumps({
+            outgoing_hello = {
                 "type": ew_protocol.MessageType.HELLO,
                 "from": self.node_id,
                 "name": self.name,
@@ -2177,7 +2382,9 @@ class BridgeDaemon:
                 "protocol_version": PROTOCOL_VERSION,
                 "channel_binding": server_nonce.hex(),
                 "signature": base64.b64encode(signature).decode(),
-            }))
+            }
+            outgoing_hello.update(self._hello_x25519_advertisement())
+            await websocket.send(json.dumps(outgoing_hello))
 
             # TOFU check BEFORE adding peer to dicts.
             await self._check_tofu(peer_id, peer_identity_b64)
@@ -2191,6 +2398,15 @@ class BridgeDaemon:
             peer_state.ephemeral_public = base64.b64decode(peer_ephemeral_b64)
             peer_state.identity_public = base64.b64decode(peer_identity_b64) if peer_identity_b64 else None
             peer_state.verified = True
+            # v0.9.4 Phase 2: capture the peer's advertised X25519 identity
+            # public ONLY if the binding signature verifies under their
+            # pinned Ed25519. Receiver-prefer / legacy-fallback semantics
+            # live at the E2E sealing call sites in mesh_crypto.py.
+            peer_state.x25519_identity_public = self._verify_peer_x25519_binding(
+                peer_identity_b64,
+                msg.get("x25519_public_b64"),
+                msg.get("x25519_binding_signature_b64"),
+            )
 
             # v0.4: protocol version negotiation
             peer_protocol = msg.get("protocol_version", "ironmesh/0.3")
@@ -2232,7 +2448,11 @@ class BridgeDaemon:
                         if old_ws:
                             try:
                                 await old_ws.close()
-                            except Exception:
+                            except (websockets.exceptions.ConnectionClosed, OSError, RuntimeError):
+                                # Closing a held-but-replaced connection.
+                                # If the underlying socket is already gone
+                                # (peer dropped, OS reaped), close() raises
+                                # and we proceed to the upgrade either way.
                                 pass
                         # Fall through to establish WebSocket connection
                     else:
@@ -2358,7 +2578,11 @@ class BridgeDaemon:
             # was never established (early handshake failure).
             try:
                 await websocket.close()
-            except Exception:
+            except (websockets.exceptions.ConnectionClosed, OSError, RuntimeError):
+                # Already-closed / socket-dead / loop-shutting-down
+                # are all valid outcomes of `close()` in the finally
+                # path. We've already decided to drop the connection;
+                # the close attempt is purely cleanup.
                 pass
             if peer_id:
                 # v0.8.1: scope the teardown to the owning connection.
@@ -2385,8 +2609,17 @@ class BridgeDaemon:
                             await self._hooks.fire(
                                 "on_peer_disconnect", {"peer_id": peer_id},
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:  # noqa: BLE001
+                            # User-supplied hook callbacks can raise
+                            # any exception class — pinning to a
+                            # narrow set would silently drop a hook
+                            # that raised a custom exception type.
+                            # Best-effort dispatch with a logged note
+                            # is the documented contract.
+                            logger.warning(
+                                "on_peer_disconnect hook raised: %s: %s",
+                                type(e).__name__, e,
+                            )
                     asyncio.ensure_future(self._try_transport_failover(peer_id))
 
     async def _try_transport_failover(self, peer_id: str):
@@ -2625,7 +2858,11 @@ class BridgeDaemon:
             if ws:
                 try:
                     await ws.close()
-                except Exception:
+                except (websockets.exceptions.ConnectionClosed, OSError, RuntimeError):
+                    # Revocation cleanup path — same pattern as the
+                    # finally-block close. The connection is being
+                    # forcibly terminated; transient close failures
+                    # don't change the outcome.
                     pass
             if target in self.peers:
                 self.peers[target].transition(ew_protocol.PeerState.Status.OFFLINE)
@@ -2841,7 +3078,12 @@ class BridgeDaemon:
         try:
             mac_key = self._keypair.ed25519_secret[:32]
             ts = TrustStore(agent_key=mac_key, path=self.trust_path)
-        except Exception:
+        except (OSError, ValueError, RuntimeError) as e:
+            # Trust store unreadable: filesystem error, corrupt
+            # envelope, missing keypair. The GUI/MCP caller gets an
+            # empty list rather than a crash — same defensive posture
+            # the rest of these helpers carry.
+            logger.debug("Pending-peers summary trust store open failed: %s", e)
             return []
         # Union: peers in trust store with state=pending + peers with
         # queued messages even if missing from store (defensive).
@@ -2959,8 +3201,13 @@ class BridgeDaemon:
                                 "capability set; operator action still "
                                 "required to re-promote",
                     })
-                except Exception:
-                    pass
+                except (RuntimeError, AttributeError) as e:
+                    # GUI broadcast best-effort: RuntimeError from a
+                    # closed event loop during shutdown; AttributeError
+                    # if _gui_broadcast was never wired. The capability
+                    # revert outcome doesn't depend on whether the GUI
+                    # received the heads-up.
+                    logger.debug("GUI cap-revert broadcast skipped: %s", e)
             logger.info(
                 "Peer %s reverted to baseline capability set — "
                 "pending stash cleared, trust state unchanged",
@@ -3048,8 +3295,10 @@ class BridgeDaemon:
                         "old_hash": result.get("old_hash"),
                         "new_hash": result.get("new_hash"),
                     }))
-                except Exception:
-                    pass  # broadcast is best-effort
+                except (RuntimeError, AttributeError) as e:
+                    # GUI cap-change broadcast best-effort — same
+                    # rationale as the revert case above.
+                    logger.debug("GUI cap-change broadcast skipped: %s", e)
             if fully_applied:
                 logger.warning(
                     "Peer %s demoted to pending-cap-change: "
@@ -3168,7 +3417,11 @@ class BridgeDaemon:
                             "code": ew_protocol.ErrorCode.AUTH_FAILED,
                         }))
                         await ws.close()
-                    except Exception:
+                    except (websockets.exceptions.ConnectionClosed, OSError, RuntimeError):
+                        # TOFU-mismatch tear-down: refusal is already
+                        # decided. The notify-and-close is courtesy;
+                        # transport failures here don't change the
+                        # security outcome.
                         pass
                 self.peers.pop(peer_id, None)
                 self._peer_rate_limiters.pop(peer_id, None)
@@ -3176,9 +3429,25 @@ class BridgeDaemon:
         except ImportError:
             pass  # trust module not yet available
         except ConnectionError:
-            raise  # Re-raise TOFU mismatch
-        except Exception as e:
-            logger.debug("TOFU check failed: %s", e)
+            raise  # Re-raise TOFU mismatch (intentional fail-closed)
+        except ValueError as e:
+            # Malformed input data reached the TOFU check (e.g. bad
+            # base64 identity key). Log at WARNING — this is a security
+            # event surface, not a debug-level curiosity — and refuse
+            # the connection. Fail-closed: a peer whose identity we
+            # cannot evaluate must not be trusted. The previous
+            # `except Exception as e: logger.debug(...)` here let any
+            # non-ConnectionError pass silently, which is too permissive
+            # for the TOFU pinning code path. Programmer errors,
+            # OSError on the trust-store backing file, RuntimeError on
+            # missing keypair bootstrap, etc. now propagate so the
+            # daemon surfaces them at the caller instead of treating
+            # them as "trust verified".
+            logger.warning(
+                "TOFU check failed for %s (%s) — refusing connection",
+                peer_id, e,
+            )
+            raise ConnectionError(f"TOFU check failed for peer {peer_id}: {e}")
 
     # ------------------------------------------------------------------
     # Message handling (encrypted)
@@ -3199,7 +3468,50 @@ class BridgeDaemon:
             logger.warning("No session key for peer %s — dropping message", peer_id)
             return
 
-        # Rate limiting
+        # Rate limiting — global daemon-wide cap first (defense in depth
+        # for hostile-peer exposure), then per-peer cap.
+        if (
+            self._global_msg_rate_limiter is not None
+            and not self._global_msg_rate_limiter.consume()
+        ):
+            self.metrics.rate_limits_triggered += 1
+            self.metrics.global_msg_rate_limit_total += 1
+            logger.warning(
+                "Global message rate cap exceeded (%.1f msg/s); "
+                "dropping inbound from %s",
+                self._max_msgs_per_sec,
+                peer_id,
+            )
+            # v0.9.3: emit a sampled audit event (≤ one per 10 s) so a
+            # flood doesn't dominate the chain. The aggregate dropped-
+            # message count is still visible via the Prometheus counter.
+            try:
+                from ironmesh.audit import EVENT_GLOBAL_RATE_LIMIT_TRIGGERED
+                now = time.monotonic()
+                last = getattr(self, "_global_cap_audit_last_ts", 0.0)
+                if now - last >= 10.0:
+                    self._global_cap_audit_last_ts = now
+                    if self._audit is not None:
+                        self._audit.log(EVENT_GLOBAL_RATE_LIMIT_TRIGGERED, {
+                            "peer_id": peer_id,
+                            "max_msgs_per_sec": self._max_msgs_per_sec,
+                            "node_id": self.node_id,
+                        })
+            except ImportError:
+                pass
+            try:
+                await self._send_encrypted_control(
+                    peer_id, ew_protocol.MessageType.RATE_LIMITED
+                )
+            except (websockets.exceptions.ConnectionClosed, OSError, RuntimeError, ValueError):
+                # Best-effort RATE_LIMITED notify to a global-cap
+                # offender. ValueError covers the encrypted-control
+                # send path's input-validation raises (no session
+                # key, malformed peer state, etc.) — same drop-and-
+                # return outcome regardless.
+                pass
+            return
+
         rate_limiter = self._peer_rate_limiters.get(peer_id)
         if rate_limiter and not rate_limiter.consume():
             self.metrics.rate_limits_triggered += 1
@@ -3208,7 +3520,9 @@ class BridgeDaemon:
                 await self._send_encrypted_control(
                     peer_id, ew_protocol.MessageType.RATE_LIMITED
                 )
-            except Exception:
+            except (websockets.exceptions.ConnectionClosed, OSError, RuntimeError, ValueError):
+                # Per-peer rate-limit notify — same pattern as the
+                # global-cap notify above.
                 pass
             return
 
@@ -3392,7 +3706,7 @@ class BridgeDaemon:
                             peer_id, len(payload),
                         )
                         return
-                    data = json.loads(payload)
+                    data = ew_protocol.safe_json_loads(payload)
                     if not isinstance(data, dict):
                         return
                     origin = data.get("origin", peer_id)
@@ -3413,6 +3727,170 @@ class BridgeDaemon:
                             peer_id, len(caps),
                         )
                         caps = caps[:1024]
+
+                    # Signed-envelope verification. An announce body
+                    # whose ``origin`` differs from the sending peer MUST
+                    # carry an inner Ed25519 signature from ``origin`` over
+                    # the canonical bytes; otherwise the announce is dropped
+                    # (audit-logged + metric incremented). Direct-from-peer
+                    # announces (``origin == peer_id``) without a signature
+                    # remain accepted for back-compat with the pre-signing announce shape.
+                    signature_b64 = data.get("signature")
+                    has_sig = isinstance(signature_b64, str) and signature_b64
+                    if origin != peer_id and not has_sig:
+                        logger.warning(
+                            "CAPABILITY_ANNOUNCE from %s about %s lacks "
+                            "inner signature — dropping (relay impersonation "
+                            "guard)",
+                            peer_id, origin,
+                        )
+                        if self._audit:
+                            try:
+                                self._audit.log(
+                                    EVENT_CAPABILITY_ANNOUNCE_BAD_SIG,
+                                    {
+                                        "peer_id": peer_id,
+                                        "origin": origin,
+                                        "reason": "missing-sig",
+                                    },
+                                )
+                            except Exception:
+                                pass
+                        self.metrics.capability_announce_bad_signature_total += 1
+                        return
+                    if has_sig:
+                        # Verify the inner signature using origin's
+                        # pinned Ed25519 identity key. Unknown origin →
+                        # drop (we don't TOFU-pin third-party origins
+                        # from announce bodies; the origin must first be
+                        # known via its own direct connection).
+                        origin_pub_b64 = self._get_peer_identity_key(origin)
+                        if not origin_pub_b64:
+                            logger.warning(
+                                "CAPABILITY_ANNOUNCE from %s about %s — "
+                                "origin identity key not pinned; dropping",
+                                peer_id, origin,
+                            )
+                            if self._audit:
+                                try:
+                                    self._audit.log(
+                                        EVENT_CAPABILITY_ANNOUNCE_BAD_SIG,
+                                        {
+                                            "peer_id": peer_id,
+                                            "origin": origin,
+                                            "reason": "unknown-origin",
+                                        },
+                                    )
+                                except Exception:
+                                    pass
+                            self.metrics.capability_announce_bad_signature_total += 1
+                            return
+                        announced_at = data.get("announced_at")
+                        version = data.get("version")
+                        if (not isinstance(announced_at, (int, float))
+                                or not isinstance(version, int)):
+                            logger.warning(
+                                "CAPABILITY_ANNOUNCE from %s about %s — "
+                                "malformed announced_at/version; dropping",
+                                peer_id, origin,
+                            )
+                            self.metrics.capability_announce_bad_signature_total += 1
+                            return
+
+                        # Freshness window — bounds the replay window of
+                        # a stolen signed announce. Default 300s, tunable
+                        # via config.capability_announce_max_age.
+                        max_age = float(getattr(
+                            self.config, "capability_announce_max_age", 300.0,
+                        ))
+                        age = time.time() - float(announced_at)
+                        if age > max_age:
+                            logger.info(
+                                "CAPABILITY_ANNOUNCE from %s about %s "
+                                "stale (%.1fs > %.1fs); dropping",
+                                peer_id, origin, age, max_age,
+                            )
+                            if self._audit:
+                                try:
+                                    self._audit.log(
+                                        EVENT_CAPABILITY_ANNOUNCE_BAD_SIG,
+                                        {
+                                            "peer_id": peer_id,
+                                            "origin": origin,
+                                            "reason": "stale",
+                                            "age": age,
+                                        },
+                                    )
+                                except Exception:
+                                    pass
+                            self.metrics.capability_announce_bad_signature_total += 1
+                            return
+
+                        # Replay-dedup — second copy of the same
+                        # ``(origin, announced_at)`` is a no-op.
+                        dedup_key = f"{origin}|{float(announced_at):.6f}"
+                        if dedup_key in self._announce_dedup:
+                            self._announce_dedup.move_to_end(dedup_key)
+                            return
+                        self._announce_dedup[dedup_key] = time.time()
+                        while len(self._announce_dedup) > self._ANNOUNCE_DEDUP_MAX:
+                            self._announce_dedup.popitem(last=False)
+
+                        # Verify signature against origin's pinned key.
+                        try:
+                            from nacl.signing import VerifyKey
+                            vk = VerifyKey(base64.b64decode(origin_pub_b64))
+                            try:
+                                signature = base64.b64decode(signature_b64)
+                            except (ValueError, TypeError) as e:
+                                raise ValueError(f"malformed signature b64: {e}")
+                            canonical = ew_protocol.canonical_capability_announce_bytes(
+                                origin=origin,
+                                capabilities=caps,
+                                announced_at=float(announced_at),
+                                version=int(version),
+                            )
+                            ew_crypto.verify_detached_with_context(
+                                vk,
+                                ew_crypto.SIG_CTX_CAPABILITY_ANNOUNCE,
+                                canonical,
+                                signature,
+                            )
+                        except (nacl_exceptions.BadSignatureError, ValueError, TypeError) as e:
+                            logger.warning(
+                                "CAPABILITY_ANNOUNCE from %s about %s — "
+                                "signature verification FAILED (%s)",
+                                peer_id, origin, e,
+                            )
+                            if self._audit:
+                                try:
+                                    self._audit.log(
+                                        EVENT_CAPABILITY_ANNOUNCE_BAD_SIG,
+                                        {
+                                            "peer_id": peer_id,
+                                            "origin": origin,
+                                            "reason": "bad-sig",
+                                        },
+                                    )
+                                except Exception:
+                                    pass
+                            self.metrics.capability_announce_bad_signature_total += 1
+                            return
+
+                        # Signature verified. Cache the envelope verbatim so
+                        # the announce loop can replay it to other neighbors
+                        # within the freshness window.
+                        try:
+                            self._signed_announce_cache[origin] = {
+                                "payload": bytes(payload) if isinstance(payload, (bytes, bytearray)) else payload.encode("utf-8"),
+                                "announced_at": float(announced_at),
+                            }
+                            self._signed_announce_cache.move_to_end(origin)
+                            while len(self._signed_announce_cache) > self._SIGNED_ANNOUNCE_CACHE_MAX:
+                                self._signed_announce_cache.popitem(last=False)
+                        except Exception as e:
+                            logger.debug("signed-announce cache update failed: %s", e)
+
                     if origin != self.node_id:
                         delta = self._capabilities.learn_remote(origin, caps)
                         if delta:
@@ -3479,8 +3957,15 @@ class BridgeDaemon:
         if frame.e2e_payload is not None and self._keypair is not None:
             try:
                 from ironmesh import mesh_crypto
+                # v0.9.4 Phase 2: prefer the master-seed X25519 secret
+                # when available; falls back to legacy derivation on
+                # legacy v1/v2 keystores.
                 plaintext = mesh_crypto.unseal_from_source(
-                    frame.e2e_payload, self._keypair.ed25519_secret
+                    frame.e2e_payload,
+                    self._keypair.ed25519_secret,
+                    my_x25519_secret=self._keypair.get_x25519_secret()
+                        if self._keypair.x25519_seed is not None
+                        else None,
                 )
                 frame.payload = plaintext
                 payload = plaintext
@@ -3670,7 +4155,19 @@ class BridgeDaemon:
         if dest_pubkey is not None and to_node != self.node_id:
             try:
                 from ironmesh import mesh_crypto
-                e2e_payload = mesh_crypto.seal_to_destination(payload, dest_pubkey)
+                # v0.9.4 Phase 2: prefer the peer's advertised X25519
+                # identity public when their HELLO binding verified;
+                # otherwise legacy ed25519_to_curve25519 derivation
+                # runs inside seal_to_destination.
+                dest_x25519 = None
+                peer_state_lookup = self.peers.get(to_node)
+                if peer_state_lookup is not None:
+                    dest_x25519 = getattr(
+                        peer_state_lookup, "x25519_identity_public", None,
+                    )
+                e2e_payload = mesh_crypto.seal_to_destination(
+                    payload, dest_pubkey, dest_x25519_pub=dest_x25519,
+                )
             except Exception as e:
                 logger.debug("E2E seal failed for %s: %s — falling back to per-hop only",
                              to_node, e)
@@ -3771,6 +4268,100 @@ class BridgeDaemon:
             )
         return msg_id
 
+    def _hello_x25519_advertisement(self) -> dict:
+        """v0.9.4 Phase 2: return the dict fragment to merge into outgoing
+        HELLO frames. Empty dict when the daemon's keypair is in the
+        legacy v1/v2 shape (no master-seed format). Both fields
+        published unsigned-in-canonical-HELLO but cryptographically
+        bound via the Ed25519-signed ``x25519_binding_signature`` —
+        receivers verify the binding under the peer's pinned Ed25519
+        identity before trusting the advertised X25519 public.
+        """
+        if (self._keypair is None
+                or self._keypair.x25519_public is None
+                or self._keypair.x25519_binding_signature is None):
+            return {}
+        return {
+            "x25519_public_b64": base64.b64encode(
+                self._keypair.x25519_public,
+            ).decode("ascii"),
+            "x25519_binding_signature_b64": base64.b64encode(
+                self._keypair.x25519_binding_signature,
+            ).decode("ascii"),
+        }
+
+    def _verify_peer_x25519_binding(
+        self,
+        peer_identity_b64: Optional[str],
+        peer_x25519_public_b64: Optional[str],
+        peer_x25519_binding_b64: Optional[str],
+    ) -> Optional[bytes]:
+        """Verify a peer's advertised X25519 binding (Phase 2).
+
+        Returns the verified ``x25519_public`` bytes when both fields
+        are present AND the binding signature verifies under
+        ``peer_identity_b64`` with ``SIG_CTX_X25519_BINDING``. Returns
+        None otherwise — caller's contract is to fall back to the
+        legacy ``ed25519_to_curve25519`` derivation. A return of None
+        is NOT a security incident; it's the expected path for
+        pre-v0.9.4 peers.
+        """
+        if not peer_identity_b64:
+            return None
+        if not peer_x25519_public_b64 or not peer_x25519_binding_b64:
+            return None
+        try:
+            from nacl.signing import VerifyKey
+
+            from ironmesh.crypto import (
+                SIG_CTX_X25519_BINDING,
+                verify_detached_with_context,
+            )
+            vk = VerifyKey(base64.b64decode(peer_identity_b64))
+            pub = base64.b64decode(peer_x25519_public_b64)
+            sig = base64.b64decode(peer_x25519_binding_b64)
+            if len(pub) != 32 or len(sig) != 64:
+                return None
+            verify_detached_with_context(vk, SIG_CTX_X25519_BINDING, pub, sig)
+            return pub
+        except (nacl_exceptions.BadSignatureError, ValueError, TypeError) as e:
+            logger.warning(
+                "X25519 binding verification FAILED — advertised key "
+                "ignored, falling back to legacy derivation (%s)", e,
+            )
+            return None
+
+    def _get_peer_identity_key(self, node_id: str) -> Optional[str]:
+        """Return base64 Ed25519 identity public key for ``node_id``, or None.
+
+        Used by signed CAPABILITY_ANNOUNCE verification — needs the
+        base64 form so we can pass it through nacl `VerifyKey(base64.b64decode(...))`.
+        Consults the live peer registry first (live `identity_public` is
+        already decoded bytes — re-encode for the caller); falls back to
+        the on-disk trust store, where the pubkey is stored base64. Returns
+        None if neither source has the origin pinned — caller's contract
+        is to drop the unverifiable announce.
+        """
+        peer = self.peers.get(node_id)
+        if peer is not None and getattr(peer, "identity_public", None):
+            try:
+                return base64.b64encode(peer.identity_public).decode("ascii")
+            except (TypeError, ValueError):
+                pass
+        try:
+            ts = self._open_trust_store()
+            if ts is not None:
+                record = ts.get_peer(node_id)
+                if isinstance(record, dict):
+                    pub = record.get("pubkey")
+                    if isinstance(pub, str) and pub:
+                        return pub
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.debug(
+                "trust-store lookup for %s failed: %s", node_id, e,
+            )
+        return None
+
     def _lookup_dest_identity(self, node_id: str) -> Optional[bytes]:
         """Return the destination's Ed25519 identity public key, or None.
 
@@ -3783,8 +4374,15 @@ class BridgeDaemon:
             return peer.identity_public
         # TOFU pinned peers — keyed by agent name, value carries fingerprint
         # which is the same identifier as node_id when the code look up by name.
+        # Use constant-time comparison even though both sides are public data:
+        # auditors flag plain `==` on identity-comparison surfaces uniformly,
+        # and using `compare_digest` here keeps the trust-evaluation paths
+        # internally consistent (the rest of the file already uses it).
         for name, info in self._pinned_peers.items():
-            if info.get("fingerprint") == node_id:
+            stored_fp = info.get("fingerprint")
+            if not isinstance(stored_fp, str):
+                continue
+            if hmac.compare_digest(stored_fp, node_id):
                 pub = info.get("identity_public")
                 if pub:
                     return pub
@@ -4071,7 +4669,7 @@ class BridgeDaemon:
         signature = ew_crypto.sign_message(
             self._keypair.get_signing_key(), hello_payload.encode()
         )
-        await ws.send(json.dumps({
+        outgoing_hello = {
             "type": ew_protocol.MessageType.HELLO,
             "from": self.node_id,
             "name": self.name,
@@ -4080,7 +4678,12 @@ class BridgeDaemon:
             "protocol_version": PROTOCOL_VERSION,
             "channel_binding": server_nonce.hex(),
             "signature": base64.b64encode(signature).decode(),
-        }))
+        }
+        # v0.9.4 Phase 2 advertisement — same shape as the server-side
+        # HELLO. See _hello_x25519_advertisement docstring for compat
+        # rationale.
+        outgoing_hello.update(self._hello_x25519_advertisement())
+        await ws.send(json.dumps(outgoing_hello))
 
         # Receive server's HELLO
         raw = await asyncio.wait_for(ws.recv(), timeout=30)
@@ -4149,6 +4752,13 @@ class BridgeDaemon:
         peer_state.ephemeral_public = base64.b64decode(peer_ephemeral_b64)
         peer_state.identity_public = base64.b64decode(peer_identity_b64) if peer_identity_b64 else None
         peer_state.verified = True
+        # v0.9.4 Phase 2: capture peer's advertised X25519 identity public
+        # iff the binding signature verifies under their pinned Ed25519.
+        peer_state.x25519_identity_public = self._verify_peer_x25519_binding(
+            peer_identity_b64,
+            msg.get("x25519_public_b64"),
+            msg.get("x25519_binding_signature_b64"),
+        )
 
         # v0.4: protocol version negotiation
         peer_protocol = msg.get("protocol_version", "ironmesh/0.3")
@@ -4278,6 +4888,39 @@ class BridgeDaemon:
 
         return peer_id
 
+    def _build_client_ssl_context(self) -> ssl.SSLContext:
+        """Build the outbound WSS context based on operator settings.
+
+        Two modes:
+
+        - **Default (mesh mode):** ``check_hostname=False``, ``CERT_NONE``.
+          TLS provides line-level confidentiality; peer authentication runs
+          at the application layer (passphrase HMAC + Ed25519 + TOFU). This
+          matches how mesh peers historically interoperate without a shared
+          CA, but it does not authenticate the WSS endpoint itself.
+        - **Strict mode** (``strict_tls=True``): ``check_hostname=True``,
+          ``CERT_REQUIRED``. If ``pinned_ca_path`` is set, that bundle is
+          loaded as the trust anchor; otherwise the system trust store is
+          used. Use this when WSS endpoints are issued real certificates
+          (operator CA, public ACME, etc.) and the operator wants the
+          transport-level identity check on top of the application-layer
+          handshake.
+        """
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        if self._strict_tls:
+            ctx.check_hostname = True
+            ctx.verify_mode = ssl.CERT_REQUIRED
+            if self._pinned_ca_path:
+                ctx.load_verify_locations(cafile=self._pinned_ca_path)
+            else:
+                ctx.load_default_certs()
+        else:
+            # Mesh-default: peers verify each other at the application layer.
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
     async def connect_to_peer(self, host: str, port: int) -> Optional[str]:
         """Connect to a remote peer as client, performing full handshake.
 
@@ -4290,11 +4933,7 @@ class BridgeDaemon:
         # Try TLS first
         try:
             uri = f"wss://{host}:{port}"
-            client_ssl = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            # Allow self-signed certs in mesh networks (peers verify via TOFU)
-            client_ssl.check_hostname = False
-            client_ssl.verify_mode = ssl.CERT_NONE
-            client_ssl.minimum_version = ssl.TLSVersion.TLSv1_2
+            client_ssl = self._build_client_ssl_context()
             ws = await asyncio.wait_for(
                 websockets.connect(uri, ssl=client_ssl, max_size=self.max_message_size, ping_interval=20, ping_timeout=10),
                 timeout=10,
@@ -5707,37 +6346,96 @@ class BridgeDaemon:
     # v0.4: Capability discovery
     # ------------------------------------------------------------------
 
+    def _build_signed_announce_payload(self, origin: str, caps: list) -> bytes:
+        """Build the wire body for a signed CAPABILITY_ANNOUNCE.
+
+        Only valid for ``origin == self.node_id`` — the node has no
+        signing key for any other origin. Callers are expected to gate
+        on that condition (the announce loop does so explicitly).
+        """
+        announced_at = time.time()
+        canonical = ew_protocol.canonical_capability_announce_bytes(
+            origin=origin,
+            capabilities=caps,
+            announced_at=announced_at,
+            version=ew_protocol.CAPABILITY_ANNOUNCE_SIGNED_VERSION,
+        )
+        sig = ew_crypto.sign_detached_with_context(
+            self._keypair.signing_key,
+            ew_crypto.SIG_CTX_CAPABILITY_ANNOUNCE,
+            canonical,
+        )
+        body = {
+            "origin": origin,
+            "capabilities": list(caps),
+            "announced_at": announced_at,
+            "version": ew_protocol.CAPABILITY_ANNOUNCE_SIGNED_VERSION,
+            "signature": base64.b64encode(sig).decode("ascii"),
+        }
+        return json.dumps(body, separators=(",", ":")).encode("utf-8")
+
     async def _capability_announce_loop(self):
         """Periodically gossip capabilities to direct neighbors.
 
-        Each iteration sends one CAPABILITY_ANNOUNCE per known origin node:
-        the local node's own capabilities, plus a re-broadcast of every
-        remote node the code have learned about. Re-broadcast preserves the
-        original ``origin`` field so receivers attribute capabilities to
-        the correct node, and the code never send a node's announcement back to
-        itself. This is a simple gossip flood that converges within a few
-        iterations on a multi-hop topology.
+        v0.9.4 (signed capability announcement): each iteration emits ONE signed announce for the
+        local node's own capabilities (signed with the daemon's identity
+        Ed25519 key + ``SIG_CTX_CAPABILITY_ANNOUNCE``), then re-broadcasts
+        cached signed envelopes for remote origins this node has already
+        verified. Remote-origin re-broadcast is a verbatim replay of the
+        cached envelope bytes — the receiver re-verifies the origin's
+        signature, so a relay cannot tamper en-route. Cached envelopes
+        outside the freshness window are skipped; convergence resumes on
+        origin's next direct announce.
         """
         # Stagger initial announce so peers handshake first
         await asyncio.sleep(10)
+        max_age = float(getattr(
+            self.config, "capability_announce_max_age", 300.0,
+        ))
         while self._running:
             try:
                 if self._capabilities is not None:
                     all_caps = self._capabilities.all()
                     announcements: list = []
-                    for origin, caps in all_caps.items():
-                        if not caps:
-                            continue
-                        announcements.append({
-                            "origin": origin,
-                            "capabilities": list(caps),
-                        })
+                    now = time.time()
 
-                    for announcement in announcements:
-                        payload_bytes = json.dumps(
-                            announcement, separators=(",", ":")
-                        ).encode()
-                        origin = announcement["origin"]
+                    # 1) Own caps — sign fresh every loop.
+                    own_caps = all_caps.get(self.node_id) or []
+                    if own_caps:
+                        own_payload = self._build_signed_announce_payload(
+                            self.node_id, list(own_caps),
+                        )
+                        announcements.append((self.node_id, own_payload))
+                        # Cache our own announce too so the dedup/freshness
+                        # semantics are uniform across origin types if we
+                        # later add self-loopback checks.
+                        self._signed_announce_cache[self.node_id] = {
+                            "payload": own_payload,
+                            "announced_at": now,
+                        }
+                        self._signed_announce_cache.move_to_end(self.node_id)
+
+                    # 2) Remote origins — replay cached signed envelope verbatim
+                    #    if it's within the freshness window. Without signed envelopes we
+                    #    re-generated the body each loop; that path is now
+                    #    invalid because we cannot sign on behalf of a remote
+                    #    origin. Cached entries older than max_age are evicted
+                    #    so receivers never see a stale envelope from us.
+                    stale_keys = []
+                    for origin, entry in list(self._signed_announce_cache.items()):
+                        if origin == self.node_id:
+                            continue
+                        announced_at = entry.get("announced_at", 0.0)
+                        if (now - announced_at) > max_age:
+                            stale_keys.append(origin)
+                            continue
+                        if not all_caps.get(origin):
+                            continue
+                        announcements.append((origin, entry["payload"]))
+                    for k in stale_keys:
+                        self._signed_announce_cache.pop(k, None)
+
+                    for origin, payload_bytes in announcements:
                         for pid, state in list(self.peers.items()):
                             if not state.is_online:
                                 continue
@@ -6013,6 +6711,13 @@ class BridgeDaemon:
              "counter", "Inbound packets from the RNS GROUP broadcast destination (post-dedup)"),
             ("group_broadcasts_deduped", "ironmesh_group_broadcasts_deduped_total",
              "counter", "GROUP broadcast packets suppressed by the payload-hash dedup cache"),
+            # v0.9.3: at-rest + transport-auth + global-cap surface
+            ("trust_store_version", "ironmesh_trust_store_version", "gauge",
+             "Trust-store envelope version on disk: 0=absent, 1=legacy plaintext, 2=encrypted at rest"),
+            ("strict_tls_enabled", "ironmesh_strict_tls_enabled", "gauge",
+             "1 when --strict-tls is set on this daemon, else 0. Outbound WSS requires CA-validated certs in strict mode."),
+            ("global_msg_rate_limit_total", "ironmesh_global_msg_rate_limit_total", "counter",
+             "Inbound messages dropped by the daemon-wide --max-msgs-per-sec cap"),
         ]
         lines = []
         for key, name, kind, help_text in spec:

@@ -146,6 +146,100 @@ def verify_detached(verify_key: VerifyKey, message: bytes, signature: bytes) -> 
 
 
 # ---------------------------------------------------------------------------
+# Domain-separated Ed25519 signing (Option C — dual-use mitigation)
+# ---------------------------------------------------------------------------
+#
+# All NEW signing operations should sign over ``context + message`` rather
+# than ``message`` directly. Each protocol surface that needs a signature
+# picks a stable, unique context label below. Domain separation:
+#
+#   1. Prevents an attacker from coercing the daemon to sign data in
+#      "purpose A" and replaying it as a valid "purpose B" signature.
+#   2. Bounds the signing surface per role, so a future cryptanalytic
+#      win against a specific signature shape (e.g. announce bodies)
+#      does not cascade into other roles (e.g. HELLO challenge).
+#   3. Documents intent — auditors see each signing surface labeled.
+#
+# The label is the ASCII prefix below + a NUL terminator. Constants live
+# here, not at call sites, so a future version bump or HKDF key-derivation
+# scheme can change every label in one place. The NUL terminator prevents
+# any future label from being a prefix of another label (e.g. "frame"
+# vs "frame-outer").
+#
+# Wire compat note: existing signing operations (Frame outer + inner,
+# HELLO sig, REVOCATION) MUST NOT switch to context-signing until a
+# protocol version bump synchronises sender + receiver. See
+# ``docs/PROTOCOL_SPEC.md`` for the migration window.
+
+# Stable signing context labels. Append a NUL byte so labels cannot
+# accidentally prefix-collide.
+SIG_CTX_CAPABILITY_ANNOUNCE: bytes = b"ironmesh-sig-v1/capability-announce\x00"
+SIG_CTX_TRUST_PIN_EXPORT: bytes = b"ironmesh-sig-v1/trust-pin-export\x00"
+# v0.9.4 Phase 2 — binds an X25519 KEX subkey to the Ed25519 identity
+# that holds it. Signed once at master-seed generation / migration, then
+# advertised verbatim in HELLO so receivers can verify that the
+# advertised X25519 public actually belongs to the peer whose Ed25519
+# identity they have pinned.
+SIG_CTX_X25519_BINDING: bytes = b"ironmesh-sig-v1/x25519-identity-binding\x00"
+SIG_CTX_FUTURE_FRAME_OUTER: bytes = b"ironmesh-sig-v1/frame-outer\x00"
+SIG_CTX_FUTURE_FRAME_INNER_SOURCE: bytes = b"ironmesh-sig-v1/frame-inner-source\x00"
+SIG_CTX_FUTURE_HELLO: bytes = b"ironmesh-sig-v1/hello\x00"
+SIG_CTX_FUTURE_REVOCATION: bytes = b"ironmesh-sig-v1/revocation\x00"
+
+
+def sign_detached_with_context(
+    signing_key: SigningKey,
+    context: bytes,
+    message: bytes,
+) -> bytes:
+    """Ed25519 detached signature over ``context || message``.
+
+    Use for NEW signing operations only — see module-level note on
+    wire-compat for existing surfaces.
+
+    Args:
+        signing_key: Ed25519 signing key.
+        context: Stable per-purpose label (one of the ``SIG_CTX_*``
+            constants in this module).
+        message: The exact bytes the signature should bind to.
+
+    Returns:
+        64-byte detached signature.
+    """
+    if not isinstance(context, (bytes, bytearray)) or not context:
+        raise ValueError("context must be non-empty bytes")
+    signed = signing_key.sign(bytes(context) + message)
+    return bytes(signed.signature)
+
+
+def verify_detached_with_context(
+    verify_key: VerifyKey,
+    context: bytes,
+    message: bytes,
+    signature: bytes,
+) -> bool:
+    """Verify a domain-separated Ed25519 detached signature.
+
+    Args:
+        verify_key: Ed25519 verify key.
+        context: The same per-purpose label used at sign time.
+        message: The exact message bytes.
+        signature: 64-byte detached signature.
+
+    Returns:
+        True on success.
+
+    Raises:
+        nacl.exceptions.BadSignatureError: If verification fails.
+        ValueError: If ``context`` is empty / non-bytes.
+    """
+    if not isinstance(context, (bytes, bytearray)) or not context:
+        raise ValueError("context must be non-empty bytes")
+    verify_key.verify(bytes(context) + message, signature)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Secure memory wiping
 # ---------------------------------------------------------------------------
 

@@ -248,6 +248,44 @@ independent of E2E SealedBox for relay traffic.
 
 ## 7. Change Log
 
+- **v0.9.4 (in flight)**: Phase 2 of the Ed25519/X25519 dual-use migration.
+    - **HELLO advertises master-seed X25519 public** with an Ed25519
+      binding signature under `SIG_CTX_X25519_BINDING`. Receivers
+      that recognize the fields verify the binding under the peer's
+      pinned Ed25519 identity and switch E2E SealedBox sealing to
+      the advertised X25519. Mixed v0.9.4 ⇄ v0.9.4 meshes interop
+      via the legacy `ed25519_to_curve25519` fallback path.
+    - **Auto-migration on first start**: a v0.9.4 daemon loading a
+      legacy v1/v2 keystore silently writes the master-seed envelope
+      forward (preserves Ed25519 seed byte-for-byte → every TOFU pin
+      stays valid). `.legacy.bak` is preserved for one full release
+      cycle.
+    - **Residual dual-use exposure during phase 2**: a v0.9.4 daemon
+      that hasn't yet auto-migrated (best-effort failure, e.g. read-
+      only filesystem) continues using the legacy `ed25519_to_curve25519`
+      derivation, leaving the dual-use property of the secret unchanged
+      for that node. Operators see a WARNING in the log when this
+      happens.
+- **v0.9.4 (in flight)**: Pre-audit hardening pass.
+    - **Master-seed key envelope (Option A Phase 1)** — `keys.json` v3
+      adds an HKDF-derived X25519 subkey + per-node salt while preserving
+      the Ed25519 seed byte-for-byte (TOFU pin survival). Phase 1 is a
+      disk-format upgrade only; wire path unchanged. Reduces audit
+      severity of the Ed25519/X25519 dual-use finding by establishing
+      the storage layer that Phase 2 (v0.9.4) will switch to. Migration
+      is opt-in via `ironmesh keys migrate`; legacy v1/v2 envelopes
+      continue to load. Tamper-on-disk of the encrypted X25519 subkey
+      is detected at load time via the HKDF redrive check.
+    - **Signed `CAPABILITY_ANNOUNCE` frames** — closes the prior "relay-impersonation poisons trust binding" gap. Announces whose `origin` differs from the delivering peer require an inner Ed25519 signature from `origin`. 300 s freshness window + per-`(origin, announced_at)` replay-dedup LRU. New audit event `CAPABILITY_ANNOUNCE_BAD_SIG`, new metric `capability_announce_bad_signature_total`, new config `capability_announce_max_age` (default 300 s).
+    - **Known limitation, accepted with mitigation:** the announce signature has no perfect-forward-secrecy property. If `origin`'s long-term Ed25519 key is later compromised, historical signed announces remain replayable inside the 300 s freshness window. Mitigated by the existing revocation flow — once a peer is revoked locally, future announces carrying its signature are dropped at the receiver. The narrow freshness window keeps the residual replay surface bounded.
+    - **Domain-separated Ed25519 signing helpers** (`crypto.sign_detached_with_context` / `verify_detached_with_context`) reduce the severity of the Ed25519/X25519 dual-use concern by binding signatures to per-purpose context labels. Signed CAPABILITY_ANNOUNCE is the first signing surface to use this; existing wire signatures stay as-is pending the master-seed migration tracked separately for v0.9.4 → v1.0.
+    - **Frame-length ceiling** `MAX_FRAME_BYTES = 1 MiB` enforced before buffer alloc in `Frame.deserialize_and_decrypt` (defeats 4 GiB attacker-declared length DoS).
+    - **JSON nesting guard** `MAX_JSON_DEPTH = 64` on all wire-parsed JSON.
+    - **`ReplayGuard.MAX_SEQUENCE = 2^48`** upper bound prevents self-DoS from oversized sequence.
+    - **CVE-2020-10735 mitigation**: `sys.set_int_max_str_digits(4300)` at bridge bootstrap (Python 3.10 deployments).
+    - **Fail-closed TOFU check**: malformed-data branch now refuses connection with a `WARNING` log rather than passing as "trust verified".
+    - **Narrowed signing-path excepts** — programmer errors propagate instead of silently dropping inner signatures.
+- **v0.9.3**: Trust store encrypted at rest (closes the prior "host-disk leak exposes peer graph" caveat). Optional `--strict-tls` for transport-layer authentication on outbound WSS. Optional `--max-msgs-per-sec` global daemon-wide cap, defense-in-depth for hostile-peer exposure. New audit events: `TRUST_STORE_ENCRYPTED`, `STRICT_TLS_ENABLED`, `GLOBAL_RATE_LIMIT_TRIGGERED`.
 - **v0.9.2**: Handshake skip on identified RNS Links (opt-in, both peers advertise `hskip`); capability-aware routing (`send_to_capability`); A11–A14 added; cross-asset attack table extended for RNS-specific threats.
 - **v0.9.1**: Reticulum integration sweep — auto-discovery via announces, per-packet ratchets, RNS Resource auto-routing, public capability RPC paths, identity-gated admin RPC, LXMF interop. Added A11–A14 assets.
 - **v0.9.0**: OpenClaw / ACP / A2A interop surfaces; capability registry persistence; cross-transport replay detection; cap-set-binding TOFU extension.

@@ -292,14 +292,20 @@ class TestTrustStoreMAC:
         store = TrustStore(agent_key=b"\x00" * 32, path=str(tmp_path / "trust.json"))
         store.pin_peer("test-peer", base64.b64encode(os.urandom(32)).decode())
 
-        # Tamper with the file
+        # v0.9.3+: on-disk envelope is the encrypted v2 shape:
+        #   {"version": 2, "ciphertext": "<b64>", "_mac": "..."}
+        # Tamper by flipping a byte inside the ciphertext while leaving
+        # the _mac intact — load must detect the MAC mismatch.
         with open(str(tmp_path / "trust.json")) as f:
             data = json.load(f)
-        data["peers"]["evil-peer"] = {"pubkey": "EVIL", "fingerprint": "x"}
+        assert data.get("version") == 2 and "ciphertext" in data
+        tampered = bytearray(base64.b64decode(data["ciphertext"]))
+        tampered[-1] ^= 0xFF
+        data["ciphertext"] = base64.b64encode(bytes(tampered)).decode()
         with open(str(tmp_path / "trust.json"), "w") as f:
             json.dump(data, f)
 
-        # Reload — should detect tampering
+        # Reload — should detect tampering via MAC mismatch and reject.
         store2 = TrustStore(agent_key=b"\x00" * 32, path=str(tmp_path / "trust.json"))
         assert len(store2._peers) == 0  # Rejected due to MAC mismatch
 

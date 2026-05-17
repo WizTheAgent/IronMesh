@@ -166,6 +166,17 @@ EVENT_PEER_STATE_CHANGED = "PEER_STATE_CHANGED"
 # "we saw the change but couldn't persist it" for forensic review.
 EVENT_PEER_CAP_BINDING_PARTIAL = "PEER_CAP_BINDING_PARTIAL"
 
+# v0.9.3: at-rest encryption + transport-auth + global rate cap surface.
+# Each fires at most a handful of times per daemon lifetime (or in the
+# global-cap case is sampled — at most one per 10 s) so they never
+# dominate the audit chain.
+EVENT_TRUST_STORE_ENCRYPTED = "TRUST_STORE_ENCRYPTED"
+EVENT_STRICT_TLS_ENABLED = "STRICT_TLS_ENABLED"
+EVENT_GLOBAL_RATE_LIMIT_TRIGGERED = "GLOBAL_RATE_LIMIT_TRIGGERED"
+
+# v0.9.4 — signed CAPABILITY_ANNOUNCE events.
+EVENT_CAPABILITY_ANNOUNCE_BAD_SIG = "CAPABILITY_ANNOUNCE_BAD_SIG"
+
 
 class AuditLog:
     """Append-only audit log with HMAC chain for tamper evidence.
@@ -248,7 +259,15 @@ class AuditLog:
                 if isinstance(hm, str) and len(hm) == 64:
                     return hm
             return self._GENESIS
-        except Exception:
+        except Exception:  # noqa: BLE001
+            # Wide except is intentional. The audit chain backing file can
+            # fail to read for many unrelated reasons — permission errors,
+            # FS unmount mid-read, encoding errors on a partial flush, decoded
+            # JSON that yields surprise types, and so on. The recovery
+            # contract is "start a fresh chain with GENESIS as the prev_hmac";
+            # narrowing this except risks crashing the daemon on bootstrap
+            # over a recoverable filesystem condition. Failure is announced
+            # at WARNING so operators see it.
             logger.warning("Could not read last audit HMAC — starting new chain")
         return self._GENESIS
 
@@ -428,7 +447,14 @@ class AuditLog:
 
                     prev_hmac = stored_hmac
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
+            # Wide except is intentional. Chain verification reads back a
+            # mutable on-disk artifact whose corruption is exactly the
+            # failure mode this function exists to detect. JSON parse
+            # errors, missing keys, unicode decode failures, and
+            # filesystem read errors are all "chain unverifiable" outcomes
+            # — they must surface as (verified=False, problem_line) rather
+            # than as an uncaught exception that crashes the verifier.
             logger.error("Audit log verification error at line %d: %s", line_num, e)
             return (False, line_num, line_num)
 

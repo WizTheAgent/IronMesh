@@ -32,7 +32,7 @@ The arc, version by version:
 
 ## Where IronMesh is today (v0.9.2)
 
-- **892 tests** passing on Ubuntu + Windows + macOS across Python 3.10–3.13, plus live cross-host validation on every wire-surface change. The 14-phase E2E driver (`scripts/stress_e2e_round4.py`) runs 37 checks across multi-hop routing, burst load, dedup/replay defense, audit-tamper detection, connect storm, shutdown-under-load, and a 5-probe attack-surface battery — green on the v0.9.2 ship.
+- **1068 tests** passing on Ubuntu + Windows + macOS across Python 3.10–3.13, plus live cross-host validation on every wire-surface change. The 14-phase E2E driver (`scripts/stress_e2e_round4.py`) runs 37 checks across multi-hop routing, burst load, dedup/replay defense, audit-tamper detection, connect storm, shutdown-under-load, and a 5-probe attack-surface battery — green on the v0.9.4 ship.
 - **27 core modules** in the wheel, audit-graded crypto stack (Ed25519 + X25519 + XSalsa20-Poly1305 via PyNaCl), formal threat model in `docs/THREAT_MODEL.md`, v1.0 surface contract in `docs/STABILITY_PROMISE.md`.
 - **25 MCP tools** exposed via stdio JSON-RPC, usable from Claude Desktop and any MCP-capable agent.
 - **Four transports:** WebSocket (default), Reticulum/LoRa (opt-in via `ironmesh[rns]`), LXMF (Sideband / Nomadnet interop), and the bundled NAT relay (Option A — pure relay, sealed envelopes, never holds session keys) for WAN meshes that can't direct-connect. Federation between meshes via `FederationGateway` with v2 per-source matchers.

@@ -1,7 +1,11 @@
 # IronMesh Wire Protocol Specification
 
-**Version:** 4 (ironmesh/0.6)
-**Status:** Stable. Describes the wire format as implemented in v0.8.3 (unchanged from v0.8.2).
+**Version:** 4 (ironmesh/0.6 → ironmesh/0.8)
+**Status:** Stable. Describes the wire format as implemented in v0.8.3
+through v0.9.3. **No wire-protocol change in v0.9.3** — every v0.8.x
+and v0.9.x peer remains interoperable. v0.9.3 ships at-rest, transport,
+and observability hardening only; the wire envelope, message types,
+and handshake stages are byte-identical to v0.9.2.
 
 This specification is the canonical reference for implementing IronMesh
 in any language. The Python implementation in `protocol.py` and `bridge.py`
@@ -127,7 +131,9 @@ HELLO payload (JSON, signed with Ed25519):
   "protocol_version": "ironmesh/0.6",
   "capabilities": ["llm:llama3", "tool:filesystem"],
   "channel_binding": "<nonce-hex>",
-  "signature": "<Ed25519-detached-sig-b64>"
+  "signature": "<Ed25519-detached-sig-b64>",
+  "x25519_public_b64": "<X25519-identity-public-b64>",
+  "x25519_binding_signature_b64": "<Ed25519-detached-sig-b64>"
 }
 ```
 
@@ -136,6 +142,10 @@ HELLO payload (JSON, signed with Ed25519):
 - **signature:** Ed25519 detached signature over the canonical JSON of the HELLO body (sorted keys, no whitespace). Binds the identity to the ephemeral key.
 - **channel_binding:** The server's original nonce from Stage 1, included in the signed payload to prevent relay attacks.
 - **TOFU check:** After receiving the peer's HELLO, each side checks its trust store. If the identity key is new → pin it (TOFU). If it's changed → reject and disconnect (possible MITM).
+- **x25519_public_b64 (v0.9.4+, optional, RESERVED):** Long-lived X25519 identity public key used for E2E SealedBox encryption. When present, receivers prefer this over the legacy `ed25519_to_curve25519(identity_public)` derivation. Pre-v0.9.4 receivers ignore the field. The field name is formally reserved by this spec — future versions MUST NOT repurpose it.
+- **x25519_binding_signature_b64 (v0.9.4+, optional, RESERVED):** 64-byte Ed25519 detached signature of `x25519_public_b64` (raw 32 bytes, not the base64) under the `SIG_CTX_X25519_BINDING = b"ironmesh-sig-v1/x25519-identity-binding\x00"` domain-separation context. Cryptographically binds the advertised X25519 to the pinned Ed25519 identity. Receivers MUST verify this binding under the peer's `identity_public` before trusting the advertised X25519 — otherwise the field is ignored and legacy derivation runs. The field name is formally reserved.
+
+**Wire-compat invariant.** The two `x25519_*` fields sit OUTSIDE the signed HELLO canonical body. Pre-v0.9.4 receivers reconstruct the canonical from the original 5 keys (channel_binding, ephemeral_public, identity_public, name, protocol_version) and verify the HELLO signature identically to v0.9.4. v0.9.4 senders use the same canonical body — the X25519 binding is its own Ed25519 signature, separate from the HELLO sig. Mixed v0.9.4 ⇄ v0.9.4 meshes interoperate cleanly.
 
 ### Stage 3: ECDH Key Agreement
 
@@ -312,6 +322,105 @@ ordinary `MSG` payloads. The v0.8.2 `llm_bridge.py` still accepts that
 form for one release so older orchestrators keep working; all newly
 written code should emit a real CONV frame.
 
+### 4.2 Signed CAPABILITY_ANNOUNCE envelope (v0.9.4+)
+
+`CAPABILITY_ANNOUNCE` frames carry capability advertisements. From
+v0.9.4 onward, any announce whose `origin` field differs from the
+delivering peer's `peer_id` MUST carry an inner Ed25519 signature so
+the receiver can authenticate the announce against the origin's pinned
+identity key. Direct-from-peer announces (`origin == peer_id`) without
+the inner signature remain accepted for backward compatibility with
+pre-v0.9.4 senders — the outer hop signature already authenticates
+them.
+
+```json
+{
+  "origin":       "<node-id>",
+  "capabilities": ["chat", "embed", "..."],
+  "announced_at": 1736812800.0,
+  "version":      1,
+  "signature":    "<b64 Ed25519 over canonical-bytes>"
+}
+```
+
+**Canonical signing input.** The signing operation binds to the JSON
+serialization of the object `{origin, capabilities, announced_at,
+version}` with `sort_keys=True, separators=(",", ":")` — same
+canonicalization convention used for HELLO. Cross-language client
+implementations MUST reproduce these bytes exactly.
+
+**Domain-separated signature.** The signing operation is
+`Ed25519.sign(SIG_CTX_CAPABILITY_ANNOUNCE || canonical_bytes)` where
+`SIG_CTX_CAPABILITY_ANNOUNCE = b"ironmesh-sig-v1/capability-announce\x00"`.
+The NUL terminator is part of the context label; senders MUST include
+it and verifiers MUST require it.
+
+**Receiver MUST:**
+
+1. Reject the announce if the body lacks `signature` AND `origin != peer_id`.
+   The default action is to drop the frame, increment the
+   `capability_announce_bad_signature_total` counter, and emit a
+   `CAPABILITY_ANNOUNCE_BAD_SIG` audit event with `reason="missing-sig"`.
+2. Look up `origin`'s pinned Ed25519 identity key. Unknown origins are
+   not TOFU-pinned from the announce body — drop with
+   `reason="unknown-origin"`.
+3. Reject if `(time.time() - announced_at) > capability_announce_max_age`
+   (default 300 s). This bounds the replay window of a stolen origin
+   signature. Drop with `reason="stale"`.
+4. Track `(origin, announced_at)` in an LRU. A second copy of the same
+   pair inside the freshness window is a no-op (silently dropped, not
+   re-applied).
+5. Verify the signature. On `BadSignatureError`, drop with
+   `reason="bad-sig"`.
+6. On successful verification, learn the caps via the registry AND
+   cache the verbatim signed envelope bytes for re-broadcast to other
+   neighbors. The mesh-routed relay flow continues to converge:
+   intermediate hops re-broadcast the cached envelope as-is; the next
+   receiver re-verifies it.
+
+**Mesh-routed announce trust.** The current implementation accepts a
+signed envelope from any directly-connected peer (which is itself
+authenticated by the per-hop SecretBox + outer signature). This is the
+"yes-implicit" trust this design adopts: the immediately-relaying
+peer is already trusted because the session through which the announce
+arrives required TOFU. **Future NAT-relay v2 design MUST preserve this
+property** — a relay node MUST NOT be able to inject a signed envelope
+the receiver couldn't otherwise reach.
+
+**No PFS for the announce signature.** Ed25519 long-term key signs.
+If the origin's identity key is later compromised, historical signed
+announces remain replayable inside the freshness window. Mitigation:
+the revocation flow in the trust store — once a peer is revoked,
+future announces with its signature are dropped at the receiver. See
+`THREAT_MODEL.md` §2.
+
+**TOFU bootstrap is out of band.** Signed-announce verification assumes the
+origin's Ed25519 identity key is already pinned in the receiver's
+trust store. Mesh announces are *updates* to known peer state, not
+the trust-establishing channel itself. Initial TOFU pinning happens
+through one of:
+
+1. **Direct LAN handshake.** Two peers completing the v0.4 binary
+   handshake on the same LAN segment pin each other's identity keys
+   via the normal `PEER_CONNECT` path. Common case for home, office,
+   and data-center meshes.
+2. **Out-of-band trust import.** `ironmesh trust pin <node-id>
+   <pubkey-b64>` lets an operator install a peer's identity key from
+   any side channel — Signal, fingerprint card, secure email. See
+   `OPERATOR_RUNBOOK.md` §9.
+3. **Bridged transport handshake.** A peer completing a Reticulum /
+   LXMF link or an `ironmesh-acp` / `ironmesh-a2a` session goes
+   through the same identity exchange as the LAN path.
+
+**Pure-LoRa or fully-disconnected mesh deployments** where peers will
+never share a direct trust-establishing channel MUST rely on the
+out-of-band import path. Mesh announces alone will never bootstrap a
+new peer's trust — by design. An announce from an unknown origin is
+dropped with `reason="unknown-origin"` and the
+`capability_announce_bad_signature_total` counter ticks up. Operators
+of such deployments should pin all expected origin keys before
+bringing the mesh online.
+
 ## 5. Cryptographic Primitives
 
 | Operation | Algorithm | Library |
@@ -467,6 +576,73 @@ serialization round-trip tests. Portable golden vectors for
 language-agnostic conformance live in `tests/conformance/` and are
 the basis of the v1.0 conformance test suite — any third-party
 implementation should pass them to claim spec compliance.
+
+### 10.1 v0.9.4 signing test vectors
+
+The following deterministic byte sequences let cross-language clients
+verify their canonicalization + signing implementations against the
+reference. All fields are hex unless noted.
+
+**Inputs (deterministic for the vector):**
+
+| Field | Value |
+|---|---|
+| `ed25519_seed` | `0000000000000000000000000000000000000000000000000000000000000000` |
+| `ed25519_public` | `3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29` |
+| `hkdf_salt` | `0102030405060708090a0b0c0d0e0f10` |
+
+**Derived (master-seed format):**
+
+| Field | Value |
+|---|---|
+| `x25519_seed` (HKDF-SHA256, info `ironmesh-identity-x25519-v1\x00`) | `ce7108ff0eca1ceecad3694e28326172e3ee1bc42cce6b12f10decc128d090ab` |
+| `x25519_public` (scalar base-mult of `x25519_seed`) | `c6dba2b75b4701f39f307f2e9b94ad2a1bcadf360936a8cc502c24c6968dca5f` |
+| `binding_sig` (Ed25519 over `SIG_CTX_X25519_BINDING \|\| x25519_public`) | `36ec773252ec8cae3f53948091f0f2159b26edf449ab38f1f6c4cf17eadd340220a338caa13f3641139b038658006e9cb5c6f62001d2cb71b2debadaccb2300e` |
+
+`SIG_CTX_X25519_BINDING = b"ironmesh-sig-v1/x25519-identity-binding\x00"` (40 bytes
+including the trailing NUL).
+
+**CAPABILITY_ANNOUNCE canonicalization + signing:**
+
+Input announce body:
+
+```json
+{
+  "origin": "alice-node",
+  "capabilities": ["chat", "embed"],
+  "announced_at": 1736812800.0,
+  "version": 1
+}
+```
+
+Canonical bytes (`sort_keys=True, separators=(",", ":")`):
+
+```
+{"announced_at":1736812800.0,"capabilities":["chat","embed"],"origin":"alice-node","version":1}
+```
+
+Hex of canonical bytes:
+
+```
+7b22616e6e6f756e6365645f6174223a313733363831323830302e302c
+226361706162696c6974696573223a5b2263686174222c22656d626564
+225d2c226f726967696e223a22616c6963652d6e6f6465222c22766572
+73696f6e223a317d
+```
+
+(Single line on the wire; wrapped here for readability.)
+
+Ed25519 signature under `SIG_CTX_CAPABILITY_ANNOUNCE =
+b"ironmesh-sig-v1/capability-announce\x00"` (37 bytes incl. NUL):
+
+```
+e6c0239a7e5557282b8cb6ea7fdbda0f0dd049564b43602a2f16f5e8ce
+fa6015c6b7ea72e8e4e9d92096e1670dba109906c06d79cdecad462e74
+fac628a48107
+```
+
+A conformant cross-language implementation given the inputs above
+MUST reproduce every derived value byte-for-byte.
 
 ## 11. Implementation Status by Version
 

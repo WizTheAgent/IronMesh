@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ironmesh"
-version = "0.9.2"
+version = "0.9.4"
 description = "Local-first agent-to-agent mesh protocol with multi-hop routing, end-to-end encryption, and capability discovery"
 readme = "README.md"
 license = {text = "MIT"}
@@ -26,46 +26,50 @@ classifiers = [
     "Topic :: Security :: Cryptography",
     "Topic :: System :: Networking",
 ]
+# Upper bounds protect installs from breaking-change surprises in
+# transitive deps. They cap the next major (one ahead of the current
+# stable) so patch + minor releases flow through automatically while
+# unreviewed major bumps are surfaced as a resolver error.
 dependencies = [
-    "websockets>=12.0",
-    "pynacl>=1.5.0",
-    "zeroconf>=0.80.0",
-    "aiosqlite>=0.19.0",
+    "websockets>=12.0,<16",
+    "pynacl>=1.5.0,<2",
+    "zeroconf>=0.80.0,<1",
+    "aiosqlite>=0.19.0,<1",
 ]
 
 [project.optional-dependencies]
 rns = [
-    "rns>=1.1.9",
+    "rns>=1.1.9,<2",
 ]
 keychain = [
     # OS-native passphrase storage backend. Optional; the daemon
     # works fine without it via passphrase-file or env var.
-    "keyring>=24.0",
+    "keyring>=24.0,<26",
 ]
 otel = [
     # OpenTelemetry SDK + OTLP exporter. Spans are emitted on the
     # handshake, message dispatch, and MCP surface. Configure via
     # standard OTEL_EXPORTER_OTLP_* env vars. With this extra absent,
     # all telemetry is a no-op — no overhead.
-    "opentelemetry-api>=1.25",
-    "opentelemetry-sdk>=1.25",
-    "opentelemetry-exporter-otlp-proto-http>=1.25",
+    "opentelemetry-api>=1.25,<2",
+    "opentelemetry-sdk>=1.25,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.25,<2",
 ]
 lxmf = [
     # LXMF messaging on top of Reticulum. Required by the
     # examples/lxmf_gateway.py reference agent that bridges IronMesh
     # to Sideband / NomadNet phones via LXMF over LoRa or any other
     # rns transport. Pulls rns transitively.
-    "rns>=1.1.9",
-    "lxmf>=0.5.5",
+    "rns>=1.1.9,<2",
+    "lxmf>=0.5.5,<1",
 ]
 dev = [
-    "pytest>=7.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.0",
-    "hypothesis>=6.0",
-    "ruff>=0.1.0",
-    "mypy>=1.0",
+    "pytest>=7.0,<9",
+    "pytest-asyncio>=0.21.0,<1",
+    "pytest-cov>=4.0,<7",
+    "hypothesis>=6.0,<7",
+    "ruff>=0.1.0,<1",
+    "mypy>=1.0,<2",
 ]
 
 [project.scripts]

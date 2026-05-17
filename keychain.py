@@ -52,7 +52,16 @@ def store(node_name: str, passphrase: str) -> None:
     keyring = _import_keyring()
     try:
         keyring.set_password(SERVICE, node_name, passphrase)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # Wide except is required: the `keyring` library wraps several
+        # OS-specific backends (macOS Keychain, Windows Credential Vault,
+        # Secret Service on Linux, libsecret, kwallet, etc.) and each
+        # backend raises its own exception types — `keyring.errors.*`,
+        # `dbus.exceptions.*`, OS subprocess errors, and so on. Catching
+        # narrowly here would silently lose error context on whichever
+        # backend the operator runs. The wide catch is paired with an
+        # immediate re-raise as a domain `RuntimeError` so callers see a
+        # uniform failure surface.
         raise RuntimeError(
             f"Failed to write passphrase to OS keychain: {exc}"
         ) from exc
@@ -69,7 +78,9 @@ def load(node_name: str) -> Optional[str]:
     keyring = _import_keyring()
     try:
         return keyring.get_password(SERVICE, node_name)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # See `store()` — wide except is required for cross-backend
+        # `keyring` compatibility. Re-raised as RuntimeError.
         raise RuntimeError(
             f"Failed to read passphrase from OS keychain: {exc}"
         ) from exc
@@ -114,6 +125,11 @@ def is_available() -> bool:
         # Some backends raise lazily on first use. Force one no-op
         # round-trip to surface that.
         keyring.get_password(SERVICE, "__ironmesh_probe__")
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # Wide except is the contract here — `is_available()` must
+        # never raise (its docstring promises this) and the only way
+        # to determine availability across the heterogeneous keyring
+        # backend surface is to call into one and observe whether
+        # *any* exception comes back.
         return False
     return True

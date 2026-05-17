@@ -82,7 +82,7 @@ process wrote the trust file with a different identity key).
 1. `ironmesh trust cap-status <node_id>` — does it show a pending hash?
    If yes, the stash DID succeed and demote failed; the peer is still
    `trusted` from the gate's perspective.
-2. Check the wiz log for `Trust store integrity check FAILED`. If
+2. Check the daemon log for `Trust store integrity check FAILED`. If
    present, there's a colliding writer — stop other daemons / CLI
    processes sharing the same trust path, or give them each their own
    `--trust-path`.
@@ -269,9 +269,226 @@ before `ironmesh keys rotate`.
 
 ---
 
+## 9. v0.9.4 changes operators care about
+
+### Signed CAPABILITY_ANNOUNCE
+
+From v0.9.4 onward, capability advertisements about a node other than the
+delivering peer require an inner Ed25519 signature from the origin (see
+`PROTOCOL_SPEC.md` §4.2). Direct-from-peer announces stay unchanged for
+backward compatibility.
+
+**Watch for in the dashboard:**
+
+- `capability_announce_bad_signature_total` metric — should sum to ~0 on
+  healthy meshes. Any rise = peer attempting relay impersonation OR a
+  v0.9.4 sender talking to a pre-v0.9.4 receiver (no harm, but noisy).
+- `CAPABILITY_ANNOUNCE_BAD_SIG` audit event — `reason` field tells you
+  which path tripped: `missing-sig` (third-party announce arrived unsigned),
+  `unknown-origin` (sender claims an origin we have no key for),
+  `stale` (announce older than `capability_announce_max_age`), or
+  `bad-sig` (signature didn't verify against origin's pinned key).
+
+**Tuning:** `capability_announce_max_age` defaults to 300 s — generous
+clock-skew tolerance for NTP-synced fleets, replay window narrow enough
+to prevent meaningful misuse of a stolen origin signature.
+
+**TOFU bootstrap path matters for pure-LoRa or fully-disconnected
+deployments.** The signed-announce check only authenticates announces against keys we
+already have pinned — mesh announces themselves are NOT a
+trust-establishing channel. New origin's first announce will be
+dropped with `reason="unknown-origin"`. Bootstrap via one of:
+
+- **LAN handshake** (the common case — peers complete the v0.4
+  handshake on the same segment and pin each other automatically).
+- **`ironmesh trust pin <node-id> <pubkey-b64>`** for out-of-band
+  import (Signal, fingerprint card, secure email, paper).
+- **A bridged-transport handshake** (Reticulum / LXMF / ACP / A2A
+  links go through the same TOFU path as LAN).
+
+If your deployment is pure-LoRa or otherwise fully disconnected, pin
+every expected peer's key *before* bringing the mesh online —
+otherwise the first batch of announces converges to nothing.
+
+### HELLO X25519 advertisement (Phase 2 of Ed25519/X25519 dual-use split)
+
+v0.9.4 daemons advertise their master-seed X25519 identity public in
+HELLO via two optional fields: `x25519_public_b64` and
+`x25519_binding_signature_b64`. Receivers that recognize the fields
+verify the binding signature under the peer's pinned Ed25519 identity
+and, on success, store the advertised X25519 on the peer's PeerState
+for subsequent E2E SealedBox encryption.
+
+**Mixed-mesh interop is seamless.** A v0.9.4 receiver ignores both
+fields and falls through to the legacy `ed25519_to_curve25519` path —
+no operator action needed. A v0.9.4 receiver talking to a v0.9.4
+sender doesn't see the advertisement fields and likewise falls back.
+
+**Auto-migration on first start.** When a v0.9.4 daemon loads a legacy
+v1/v2 keystore for the first time, it writes the master-seed envelope
+forward in place, preserves the Ed25519 seed byte-for-byte (every
+TOFU pin in the mesh remains valid), and saves a `.legacy.bak`
+alongside the original file. You'll see a one-time WARNING in the log:
+
+```
+v0.9.4 Phase 2 auto-migration: legacy keys rewritten to master-seed
+envelope (~/.ironmesh/keys.json). Legacy backup at
+~/.ironmesh/keys.json.legacy.bak. Ed25519 identity unchanged — every
+TOFU pin remains valid.
+```
+
+If auto-migration fails (read-only filesystem, disk full, etc.) the
+daemon still starts on the legacy keys without the new HELLO
+advertisement — a second WARNING fires explaining the situation.
+Manual remediation: run `ironmesh keys migrate` once the underlying
+condition is fixed.
+
+**Rollback path.** Same as Phase 1 — copy `.legacy.bak` over
+`keys.json` to revert to a pre-v0.9.4 daemon. The advertisement is
+purely additive in v0.9.4; legacy daemons load the legacy backup
+unchanged.
+
+**What to watch:** the existing `peer_blocked` / `peer_state_changed`
+metrics catch identity mismatches. A peer whose advertised X25519
+fails the binding check is silently ignored at the advertisement
+level — the legacy fallback runs and the connection proceeds as if
+the peer were v0.9.4. Look for `X25519 binding verification FAILED`
+in the log — repeated entries from the same peer indicate either a
+buggy implementation or an active attempt to swap the advertised
+key without the corresponding Ed25519 secret.
+
+### Master-seed key format (Phase 1 of Ed25519/X25519 dual-use split)
+
+New daemons started fresh in v0.9.4 write `~/.ironmesh/keys.json` in
+the **v3 master-seed envelope** — a JSON object tagged
+`format: "master-seed-v1"` that carries the same Ed25519 seed as
+before plus a 32-byte HKDF-derived X25519 subkey and a 16-byte
+`hkdf_salt`. **Wire behaviour is unchanged in v0.9.4** — the X25519
+subkey sits on disk but the wire path keeps using
+`ed25519_to_curve25519(ed25519_secret)` until Phase 2 (v0.9.4)
+switches it over. Phase 1 is a disk-format upgrade only.
+
+**Existing deployments DO NOT auto-migrate.** Legacy v1/v2 key files
+continue to load and run identically. Migration is operator-driven:
+
+```bash
+ironmesh keys migrate --path ~/.ironmesh/keys.json
+# Migrated to master-seed format -> ~/.ironmesh/keys.json
+# Legacy backup preserved at:      ~/.ironmesh/keys.json.legacy.bak
+# Fingerprint:                     b324ff19...
+# Ed25519 identity unchanged — every TOFU pin remains valid.
+```
+
+**What survives migration:**
+- Ed25519 secret + public (byte-for-byte). Fingerprint unchanged.
+- Every TOFU pin recorded on every peer that knows this node.
+- The encrypted-at-rest passphrase + Argon2id parameters.
+
+**What's new on disk:**
+- 32-byte `x25519_seed` = HKDF-SHA256(`ed25519_secret`, `hkdf_salt`,
+  `ironmesh-identity-x25519-v1\x00`).
+- 16-byte `hkdf_salt` chosen freshly at migration time.
+- `format: "master-seed-v1"` tag for unambiguous detection.
+
+**Rolling back:** the `.legacy.bak` next to your `keys.json` is the
+canonical rollback target for one full release cycle (i.e. through
+v0.9.4). A v0.9.3 daemon cannot read v3 envelopes; if you need to
+revert to v0.9.3, copy `.legacy.bak` back over `keys.json`. Do NOT
+delete `.legacy.bak` until you have committed to staying on v0.9.4+.
+
+**Integrity guarantee:** load-time verifies that the on-disk
+`x25519_seed` reproduces from HKDF over `ed25519_secret + hkdf_salt`.
+A tampered subkey is rejected with a clear `ValueError` even if the
+operator's passphrase decrypts the envelope cleanly.
+
+### CVE-2020-10735 mitigation enabled at boot
+
+The daemon now calls `sys.set_int_max_str_digits(4300)` at bridge boot
+to cap the cost of parsing pathologically-large integers from untrusted
+JSON. On Python 3.11+ this matches the interpreter's default; on 3.10
+it activates the PEP 686 backport (or logs a `WARNING` if the
+interpreter predates it — upgrade to 3.10.7+ in that case).
+
+### TOFU verification is now fail-closed
+
+A malformed or unreadable peer identity now produces a `WARNING`-level
+log line and refuses the connection. Previously the daemon would log at
+`debug` and let the peer through. Operators may see a small bump in
+`PEER_CONNECT` refusals from buggy peers — investigate any sustained
+refusal rate above the noise floor.
+
+## 9.x v0.9.3 changes operators care about
+
+### Trust store now encrypted at rest
+
+`known_peers.json` is rewritten as a SecretBox-encrypted v2 envelope on
+the first save after upgrade. The on-disk file no longer contains
+plaintext fingerprints, pubkeys, or capability sets. Tools that parse
+the file directly need to switch to the CLI surface
+(`ironmesh trust list`, `ironmesh trust cap-status`, etc.).
+
+Force the migration immediately:
+
+```bash
+ironmesh trust migrate
+ironmesh doctor   # Trust-store envelope: v2 (encrypted at rest)
+```
+
+Roll back to a v0.9.2 daemon? You need the pre-upgrade trust file from
+backup — v0.9.2 cannot read v2 envelopes. See
+`docs/migration/v0_9_3_trust_store_encryption.md`.
+
+### Outbound TLS strict mode
+
+If your operator CA / internal Let's Encrypt issues real certs to your
+mesh nodes, opt into transport-layer auth:
+
+```bash
+ironmesh run ... --strict-tls --pinned-ca /etc/ssl/private-ca.pem
+```
+
+Default mesh mode (no flag) keeps `CERT_NONE` — peers authenticate at
+the application layer (passphrase HMAC + Ed25519 + TOFU). Use
+`--strict-tls` only when the certs are real; otherwise the daemon will
+fail to connect.
+
+### Global daemon-wide rate cap
+
+For deployments exposed to potentially-hostile peers:
+
+```bash
+ironmesh run ... --max-msgs-per-sec 100
+```
+
+Default is off. Burst capacity = `ceil(rate)`. When the cap rejects an
+inbound message, `ironmesh_global_msg_rate_limit_total` increments and
+a sampled `GLOBAL_RATE_LIMIT_TRIGGERED` audit event fires (≤ one per
+ten seconds).
+
+### Out-of-band fingerprint verification
+
+Read a peer's fingerprint to them over the phone, then:
+
+```bash
+# What to read aloud (this node):
+ironmesh keys fingerprint --format colons
+
+# After they pin you, paste their value here:
+ironmesh trust verify <their-node-id> ab:cd:ef:12:34:56:78:90
+```
+
+The verifier accepts colons, spaces, and prefix matches of >= 8 hex.
+
 ## Useful commands reference
 
 ```bash
+# v0.9.3 ergonomics
+ironmesh trust verify <node_id> <expected-fp>   # OOB pin check
+ironmesh trust migrate                          # force trust-store v2 encryption
+ironmesh trust export <node_id>                 # JSON dump of one peer
+ironmesh trust pin <node_id> <pubkey-b64>       # offline manual pin
+ironmesh keys fingerprint --format colons       # this node's FP for OOB share
+
 # Cap-binding
 ironmesh trust list --show-caps        # which peers have pinned caps
 ironmesh trust cap-status <node_id>    # one-peer deep dive

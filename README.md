@@ -9,7 +9,7 @@
 
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **v0.9.2 — 1.0 prep mega-release.** 892 tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus live cross-host validation on the new wire surfaces.
+> **v0.9.4 — Pre-audit hardening + dual-use migration + signed capability announcement.** 1068 tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus live cross-host validation on the new wire surfaces.
 > Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
 > Wire-format `ironmesh/0.8` adds opt-in feature flags (handshake-skip, group-broadcast) without disturbing any existing path. The headline doc — [`docs/STABILITY_PROMISE.md`](docs/STABILITY_PROMISE.md) — is the v1.0 contract for everything we commit to keeping stable.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
@@ -442,7 +442,7 @@ Client                                 Server
 IronMesh includes a built-in web GUI for real-time monitoring and management. No extra software needed — it's served directly by the bridge daemon on `port + 1`. The GUI is **off by default** and must be explicitly enabled with `--gui`.
 
 ```bash
-ironmesh run --name wiz --port 8765 --gui
+ironmesh run --name node1 --port 8765 --gui
 # Dashboard: http://127.0.0.1:8766/?token=<printed-at-startup>
 # Metrics:   http://127.0.0.1:8766/metrics?token=<printed-at-startup>
 ```
@@ -537,7 +537,26 @@ pytest tests/ -v --cov=ironmesh
 
 ## Recent changes
 
-**v0.9.2 (current) — 1.0 prep mega-release.** Every piece originally
+**v0.9.3 — security + observability point release** (in development;
+ship pending operator sign-off). At-rest encryption for the trust
+store: `known_peers.json` is now SecretBox-encrypted with a key
+derived from the daemon's identity secret, so a host-disk leak no
+longer exposes the peer graph. Pre-v0.9.3 plaintext stores migrate
+forward on next save; `ironmesh trust migrate` lands the migration
+immediately. `--strict-tls` (with optional `--pinned-ca <path>`)
+opts into CA-validated outbound WSS for deployments where real
+certificates are issued. `--max-msgs-per-sec N` adds a daemon-wide
+defense-in-depth cap on top of the existing per-peer limits.
+`ironmesh trust verify <node-id> <expected-fp>` provides
+point-and-shoot fingerprint verification. New audit events:
+`TRUST_STORE_ENCRYPTED`, `STRICT_TLS_ENABLED`,
+`GLOBAL_RATE_LIMIT_TRIGGERED`. New metrics:
+`ironmesh_trust_store_version`, `ironmesh_strict_tls_enabled`,
+`ironmesh_global_msg_rate_limit_total`. Wire format unchanged at
+`ironmesh/0.8`. Dependency upper bounds added throughout. See
+[`docs/RELEASE_NOTES_v0.9.3.md`](docs/RELEASE_NOTES_v0.9.3.md).
+
+**v0.9.2 — 1.0 prep mega-release.** Every piece originally
 scheduled across v0.9.2 → v0.9.7 landed in this single release so that
 v1.0 is a stability promise rather than a feature push. Wire-format
 `ironmesh/0.8` adds two opt-in feature flags (`hskip`, `group`) without

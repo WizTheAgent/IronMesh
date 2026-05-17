@@ -12,6 +12,7 @@ import logging
 import os
 import time
 
+import nacl.exceptions as nacl_exceptions
 import nacl.utils
 
 # Audit L-03: known-good protocol version strings. An implementation
@@ -25,12 +26,122 @@ VALID_PROTOCOL_VERSIONS = frozenset({
     "ironmesh/0.5.2",
     "ironmesh/0.6",
     "ironmesh/0.7",
+    "ironmesh/0.8",
 })
 
 
 def is_known_protocol_version(v: str) -> bool:
     """Return True if v is an explicitly recognized IronMesh version."""
     return v in VALID_PROTOCOL_VERSIONS
+
+
+# Ceiling on the attacker-declared encrypted_length in Frame.deserialize.
+# The wire field is u32 (4 GiB max); legitimate IronMesh frames are KB-scale
+# (largest known surface = capability/route gossip, a few KB). Anything beyond
+# this ceiling is rejected before the buffer slice, defeating
+# memory-exhaustion via an absurd declared length. Tuned generously enough
+# to cover RNS.Resource chunk envelopes without re-fragmentation.
+MAX_FRAME_BYTES = 1 * 1024 * 1024  # 1 MiB
+
+# Maximum nesting depth on JSON parsed from the wire. The 1 MiB MAX_FRAME_BYTES
+# ceiling already bounds the wallclock cost of `json.loads`, but a deeply-
+# nested object (`[[[[...[[1]...]]]]`) inside that budget can still drive
+# downstream consumers (validators, routers, persistence layers) into
+# pathological recursion. 64 is well above any legitimate IronMesh shape —
+# the deepest known payload nests 6 levels (route announce → routes → entry
+# → metadata → cap-set → cap-tag). Sender-side JSON shapes are bounded by
+# our own canonicalization; this guard is for malicious / malformed inputs.
+MAX_JSON_DEPTH = 64
+
+
+def _validate_json_depth(obj, max_depth: int = MAX_JSON_DEPTH, _depth: int = 0) -> None:
+    """Recursively verify that ``obj`` does not nest deeper than ``max_depth``.
+
+    Raises ``ValueError`` if the depth is exceeded. The recursion this helper
+    itself uses is bounded by ``max_depth`` — Python's default recursion
+    limit of 1000 is comfortably above the configured 64.
+    """
+    if _depth > max_depth:
+        raise ValueError(
+            f"JSON nesting exceeds max depth {max_depth}"
+        )
+    if isinstance(obj, dict):
+        for value in obj.values():
+            _validate_json_depth(value, max_depth, _depth + 1)
+    elif isinstance(obj, list):
+        for value in obj:
+            _validate_json_depth(value, max_depth, _depth + 1)
+
+
+def safe_json_loads(raw, max_depth: int = MAX_JSON_DEPTH):
+    """Wire-safe ``json.loads`` for attacker-controlled bytes.
+
+    Wraps the standard library decoder with the configured depth guard.
+    Use this on any JSON parsed from a frame body or a peer-sent message;
+    file-local config / on-disk artifacts are exempt.
+    """
+    obj = json.loads(raw)
+    _validate_json_depth(obj, max_depth)
+    return obj
+
+
+# ---------------------------------------------------------------------------
+# CAPABILITY_ANNOUNCE — signed-envelope canonicalization
+# ---------------------------------------------------------------------------
+#
+# Wire shape (signed, v1):
+#   {
+#     "origin":         "<node-id>",
+#     "capabilities":   ["chat", "embed", ...],
+#     "announced_at":   1736812800.0,
+#     "version":        1,
+#     "signature":      "<b64 Ed25519 over canonical_capability_announce_bytes>"
+#   }
+#
+# The canonical bytes are the JSON serialization of
+# ``{origin, capabilities, announced_at, version}`` with
+# ``sort_keys=True, separators=(",", ":")`` — same convention used elsewhere
+# in the protocol so cross-language clients (Go, TS) reproduce the byte
+# sequence exactly. Signature uses the Ed25519 domain-separation context
+# ``crypto.SIG_CTX_CAPABILITY_ANNOUNCE``.
+#
+# Wire compat: pre-signing senders emit ``{"origin", "capabilities"}`` only.
+# Receivers MUST accept those bodies UNLESS ``origin != peer_id`` (i.e.
+# a relayed announce about a third party). Direct-from-peer announces
+# stay backwards compatible because the outer hop signature already
+# authenticates them. Cross-host announces require the inner sig.
+
+CAPABILITY_ANNOUNCE_SIGNED_VERSION: int = 1
+CAPABILITY_ANNOUNCE_MAX_AGE_DEFAULT: float = 300.0
+
+
+def canonical_capability_announce_bytes(
+    origin: str,
+    capabilities: list,
+    announced_at: float,
+    version: int = CAPABILITY_ANNOUNCE_SIGNED_VERSION,
+) -> bytes:
+    """Build the canonical byte sequence that the inner Ed25519 signature
+    binds to. Both senders and verifiers MUST use this exact function so
+    the produced bytes match byte-for-byte across languages.
+    """
+    if not isinstance(origin, str) or not origin:
+        raise ValueError("origin must be non-empty string")
+    if not isinstance(capabilities, list):
+        raise ValueError("capabilities must be list")
+    if not all(isinstance(c, str) and c for c in capabilities):
+        raise ValueError("capabilities entries must be non-empty strings")
+    if not isinstance(announced_at, (int, float)):
+        raise ValueError("announced_at must be a numeric timestamp")
+    if not isinstance(version, int) or version < 1:
+        raise ValueError("version must be a positive int")
+    body = {
+        "origin": origin,
+        "capabilities": list(capabilities),
+        "announced_at": float(announced_at),
+        "version": version,
+    }
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 from collections import OrderedDict
 from enum import Enum
 from types import MappingProxyType
@@ -473,12 +584,28 @@ class Frame:
                 self.source_signature = bytes(
                     source_signing_key.sign(self.payload).signature
                 )
-            except Exception:
-                # If signing fails, leave source_signature as None
-                pass
+            except (nacl_exceptions.CryptoError, TypeError, ValueError) as e:
+                # Inner-sig generation failed for a *crypto-input* reason
+                # (bad key type, payload not bytes, nacl-level signing error).
+                # Drop the inner signature and let the outer wire path proceed
+                # — relays without the source key still pass the frame.
+                # KeyboardInterrupt, MemoryError, AttributeError, and other
+                # programmer errors are intentionally NOT caught here; they
+                # propagate so real bugs surface instead of silently dropping
+                # inner signatures forever.
+                logger.warning(
+                    "Inner source signature generation failed for msg %s: %s: %s",
+                    self.msg_id, type(e).__name__, e,
+                )
 
         payload_json = json.dumps(self.to_dict(), separators=(",", ":")).encode()
         encrypted = encrypt_message(shared_key, payload_json)
+
+        if len(encrypted) > MAX_FRAME_BYTES:
+            raise ValueError(
+                f"Encrypted frame payload {len(encrypted)} bytes "
+                f"exceeds MAX_FRAME_BYTES ceiling {MAX_FRAME_BYTES}"
+            )
 
         self.flags |= self.FLAG_ENCRYPTED
         if signing_key is not None:
@@ -544,6 +671,16 @@ class Frame:
         _timestamp_ms = int.from_bytes(data[12:20], "big")
         _msg_id_hash = data[20:28]
         encrypted_length = int.from_bytes(data[28:32], "big")
+
+        # Reject attacker-declared lengths before slicing/allocating the
+        # encrypted_data buffer. The wire field is u32 — without this guard
+        # a single malicious frame can force allocation of up to 4 GiB.
+        if encrypted_length > MAX_FRAME_BYTES:
+            raise ValueError(
+                f"Declared frame length {encrypted_length} bytes "
+                f"exceeds MAX_FRAME_BYTES ceiling {MAX_FRAME_BYTES}"
+            )
+
         encrypted_data = data[32:32 + encrypted_length]
 
         if len(encrypted_data) < encrypted_length:
@@ -563,15 +700,15 @@ class Frame:
             from ironmesh.crypto import verify_detached
             try:
                 verify_detached(verify_key, encrypted_data, signature)
-            except Exception as e:
+            except nacl_exceptions.BadSignatureError as e:
                 raise ValueError(f"Signature verification failed: {e}")
 
         try:
             payload_json = decrypt_message(shared_key, encrypted_data)
-        except Exception as e:
+        except nacl_exceptions.CryptoError as e:
             raise ValueError(f"Decryption failed: {e}")
 
-        payload_data = json.loads(payload_json)
+        payload_data = safe_json_loads(payload_json)
         obj = cls.from_dict(payload_data)
         obj.sequence = sequence
 
@@ -579,14 +716,14 @@ class Frame:
         if obj.source_signature is not None and verify_source_key is not None:
             try:
                 src_vk = verify_source_key(obj.source)
-            except Exception as e:  # audit M-05
+            except Exception as e:  # verify_source_key safety wrap
                 logger.debug("verify_source_key lookup failed for %s: %s",
                              obj.source, e)
                 src_vk = None
             if src_vk is not None:
                 try:
                     src_vk.verify(obj.payload, obj.source_signature)
-                except Exception as e:
+                except nacl_exceptions.BadSignatureError as e:
                     raise ValueError(f"Inner source signature verification failed: {e}")
 
         return obj
@@ -600,6 +737,12 @@ class Frame:
         enforces ``FLAG_ENCRYPTED`` on inbound frames.
         """
         payload_json = json.dumps(self.to_dict(), separators=(",", ":")).encode()
+
+        if len(payload_json) > MAX_FRAME_BYTES:
+            raise ValueError(
+                f"Plaintext frame payload {len(payload_json)} bytes "
+                f"exceeds MAX_FRAME_BYTES ceiling {MAX_FRAME_BYTES}"
+            )
 
         header = self.MAGIC + self.VERSION.to_bytes(1, "big")
         header += self.flags.to_bytes(1, "big")
@@ -624,9 +767,20 @@ class ReplayGuard:
 
     Rejects:
     - Any frame with seq <= last_seen_seq for that peer
+    - Any frame with seq > MAX_SEQUENCE (sane upper bound — defeats a
+      peer that ratchets its own high-water mark with an absurd value
+      and then can never receive again)
     - Any frame with timestamp more than max_age seconds old
     - Duplicate sequence numbers within sliding window
     """
+
+    # Wire field is u64. Legitimate sessions stay well under 2**48: at
+    # 10_000 msg/s that's still ~890 years of traffic. Anything above is
+    # either a peer bug or malicious — reject before ratcheting last_seq.
+    # Without this guard, one frame with seq=2**63 permanently disables
+    # replay-window acceptance for the peer (self-DoS, but it's still
+    # easier to bound it here than to recover later).
+    MAX_SEQUENCE = 1 << 48
 
     def __init__(self, max_age: float = 30.0, window_size: int = 1024):
         self.max_age = max_age
@@ -659,6 +813,11 @@ class ReplayGuard:
         # seq=0 is only valid during handshake (before replay guard is active).
         if sequence <= 0:
             return f"Invalid sequence {sequence} — post-handshake messages require seq > 0"
+
+        # Upper bound — reject before ratcheting last_seq. See MAX_SEQUENCE
+        # docstring for the self-DoS scenario this defeats.
+        if sequence > self.MAX_SEQUENCE:
+            return f"Sequence {sequence} exceeds MAX_SEQUENCE {self.MAX_SEQUENCE}"
 
         # Strict monotonic floor (audit C-04): rejects any sequence
         # below the high-water mark, preventing replay of old seqs that
@@ -757,6 +916,15 @@ class PeerState:
         self.session_key: Optional[bytes] = None  # Derived ECDH shared secret
         self.ephemeral_public: Optional[bytes] = None  # Peer's X25519 public key
         self.verified: bool = False  # True after successful handshake
+
+        # v0.9.4 Phase 2: peer's advertised X25519 identity public key.
+        # Populated from the HELLO ``x25519_public_b64`` advertisement
+        # AFTER the binding signature has verified against the peer's
+        # pinned Ed25519 identity. None when the peer is pre-v0.9.4
+        # (no advertisement) or the binding failed verification — in
+        # which case E2E sealing falls back to the legacy
+        # ``ed25519_to_curve25519`` derivation.
+        self.x25519_identity_public: Optional[bytes] = None
 
         # Replay protection
         self.next_send_seq: int = 1

@@ -7,11 +7,39 @@ Supports bridge daemon, key management, trust management, and metrics.
 import argparse
 import getpass
 import hashlib
+import json
 import logging
 import os
 import sys
 import time
 from typing import Optional
+
+
+def _normalize_fingerprint(raw: str) -> str:
+    """Strip whitespace and ``:`` separators; lower-case the result.
+
+    Operators read fingerprints out-of-band and routinely include colons
+    or spaces. Accept both shapes so the verify command works no matter
+    how the value was pasted.
+    """
+    return (raw or "").replace(":", "").replace(" ", "").strip().lower()
+
+
+def fingerprint_matches(actual: str, expected_raw: str) -> bool:
+    """Return True when ``expected_raw`` matches the stored ``actual``.
+
+    Equality on the full fingerprint always counts as a match. A prefix
+    of at least 8 hex characters also counts so an operator who reads
+    "first eight" out-of-band gets a clean verdict. Empty / shorter
+    expected values are rejected to avoid trivial false positives.
+    """
+    actual_norm = _normalize_fingerprint(actual)
+    expected_norm = _normalize_fingerprint(expected_raw)
+    if not expected_norm or len(expected_norm) < 8:
+        return False
+    if actual_norm == expected_norm:
+        return True
+    return actual_norm.startswith(expected_norm)
 
 
 def _parse_admin_identities(raw):
@@ -82,6 +110,20 @@ def parse_args():
                            help="Allow mDNS auto-connect to any peer (insecure, default: deny)")
     run_parser.add_argument("--allow-plaintext-ws", action="store_true",
                            help="Allow plaintext ws:// connections (insecure, default: try wss first)")
+    run_parser.add_argument("--strict-tls", action="store_true",
+                           help="Require CA-validated outbound WSS certs (hostname check + CERT_REQUIRED). "
+                                "Default mesh mode trusts self-signed certs and authenticates peers at the "
+                                "application layer (passphrase HMAC + Ed25519 + TOFU). Enable this when "
+                                "WSS endpoints are issued real certificates.")
+    run_parser.add_argument("--pinned-ca", default=None,
+                           help="Path to a private CA bundle to use as the trust anchor under --strict-tls. "
+                                "Ignored unless --strict-tls is set. Falls back to the system trust store "
+                                "when omitted.")
+    run_parser.add_argument("--max-msgs-per-sec", type=float, default=None,
+                           help="Global daemon-wide cap on inbound message rate (msg/s) across all peers. "
+                                "Defense-in-depth on top of the per-peer caps; default off because per-peer "
+                                "limits are sufficient when peers are mutually trusted. Set this when the mesh "
+                                "may be exposed to potentially-hostile peers. Burst capacity = ceil(rate).")
     # v0.4: mesh routing
     run_parser.add_argument("--mesh-routing", default="relay",
                            choices=["off", "passive", "relay"],
@@ -303,6 +345,60 @@ def parse_args():
     cap_status.add_argument("--json", action="store_true",
                             help="Emit JSON instead of human-readable text")
 
+    # v0.9.3: out-of-band fingerprint verification helper. Operators paste
+    # the expected fingerprint they got over a separate channel and the
+    # CLI returns a clear match / mismatch verdict so they don't have to
+    # eyeball ``trust list`` output.
+    verify_parser = trust_sub.add_parser(
+        "verify",
+        help="Confirm a pinned peer's fingerprint matches an expected value "
+             "obtained out-of-band (phone call, signed message, etc.).",
+    )
+    verify_parser.add_argument("node_id", help="Node ID to verify")
+    verify_parser.add_argument("expected_fingerprint",
+                               help="Fingerprint received out-of-band. "
+                                    "Whitespace and ':' separators are ignored; "
+                                    "case-insensitive prefix match is accepted.")
+    verify_parser.add_argument("--json", action="store_true",
+                               help="Emit JSON instead of human-readable text")
+
+    # v0.9.3: explicit migration trigger for trust-store at-rest encryption.
+    # Idempotent — always rewrites the store under the current envelope
+    # version (v2). Useful when an operator wants the migration to land
+    # immediately rather than waiting for the next routine save.
+    migrate_parser = trust_sub.add_parser(
+        "migrate",
+        help="Rewrite the trust store on disk (v0.9.3+ encrypted v2 envelope). "
+             "Idempotent; safe to re-run.",
+    )
+    migrate_parser.add_argument("--dry-run", action="store_true",
+                                help="Print what would happen without writing.")
+
+    # v0.9.3: dump a peer record as JSON for backup or fingerprint sharing.
+    export_parser = trust_sub.add_parser(
+        "export",
+        help="Print the stored record for one peer as JSON (handy for "
+             "backup or sharing the pinned fingerprint over a side channel).",
+    )
+    export_parser.add_argument("node_id", help="Node ID to export")
+
+    # v0.9.3: out-of-band manual pin. Lets operators establish trust
+    # without going through the network — useful for offline bootstrap
+    # or when the operator received the peer's pubkey via a separate
+    # secure channel.
+    pin_parser = trust_sub.add_parser(
+        "pin",
+        help="Pin a peer's identity manually (offline TOFU bootstrap). "
+             "Prefer the network handshake when available.",
+    )
+    pin_parser.add_argument("node_id", help="Node ID to pin")
+    pin_parser.add_argument("pubkey",
+                            help="Peer's Ed25519 identity public key, base64-encoded")
+    pin_parser.add_argument("--state", default="trusted",
+                            choices=["pending", "trusted", "blocked",
+                                     "pending-cap-change"],
+                            help="Initial trust state (default: trusted)")
+
     # --- keys ---
     keys_parser = sub.add_parser("keys", help="Key management")
     keys_sub = keys_parser.add_subparsers(dest="keys_command")
@@ -341,6 +437,33 @@ def parse_args():
         help="Report whether the OS keychain backend is usable on this "
              "system",
     )
+
+    # v0.9.3: ergonomic helper for OOB fingerprint sharing.
+    fp_parser = keys_sub.add_parser(
+        "fingerprint",
+        help="Print this node's Ed25519 identity fingerprint in the same "
+             "format that peers see — useful for reading aloud or pasting "
+             "into a side channel before a fresh TOFU pin.",
+    )
+    fp_parser.add_argument("--path", default="~/.ironmesh/keys.json",
+                           help="Key file to inspect (default: ~/.ironmesh/keys.json)")
+    fp_parser.add_argument("--passphrase", default=None,
+                           help="Passphrase to decrypt the key file (if encrypted)")
+    fp_parser.add_argument("--format", default="hex",
+                           choices=["hex", "colons", "json"],
+                           help="hex (default), colons (xx:xx:xx...), or json")
+
+    # v0.9.4 — Phase 1 of the Ed25519/X25519 dual-use migration.
+    migrate_parser = keys_sub.add_parser(
+        "migrate",
+        help="Migrate a legacy v1/v2 key file to the v0.9.4 master-seed "
+             "envelope. Preserves the Ed25519 seed byte-for-byte (TOFU "
+             "pin survival). Writes a .legacy.bak rollback file.",
+    )
+    migrate_parser.add_argument("--path", default="~/.ironmesh/keys.json",
+                                 help="Key file to migrate (default: ~/.ironmesh/keys.json)")
+    migrate_parser.add_argument("--passphrase", default=None,
+                                 help="Passphrase to decrypt + re-encrypt the key file")
 
     # --- backup / restore ---
     backup_parser = sub.add_parser("backup", help="Create an encrypted backup of node state")
@@ -815,6 +938,21 @@ def cmd_run(args):
             "and pass --tls-cert/--tls-key in any real deployment."
         )
 
+    strict_tls = getattr(args, "strict_tls", False)
+    pinned_ca_path = getattr(args, "pinned_ca", None)
+    if pinned_ca_path and not strict_tls:
+        log.warning(
+            "--pinned-ca was set without --strict-tls; the bundle will be "
+            "ignored. Pass --strict-tls to enable CA-validated outbound WSS."
+        )
+        pinned_ca_path = None
+    if strict_tls:
+        log.info(
+            "Strict outbound TLS enabled: hostname check + CERT_REQUIRED, "
+            "trust anchor = %s",
+            pinned_ca_path or "system trust store",
+        )
+
     # Pending-trust message gate deprecation notice (default-on in v0.9)
     require_msg_promotion = (
         getattr(args, "require_message_promotion", False)
@@ -847,6 +985,9 @@ def cmd_run(args):
         allowed_peers=allowed_peers,
         open_discovery=open_discovery,
         allow_plaintext_ws=allow_plaintext_ws,
+        strict_tls=strict_tls,
+        pinned_ca_path=pinned_ca_path,
+        max_msgs_per_sec=getattr(args, "max_msgs_per_sec", None),
         # v0.4
         mesh_routing=getattr(args, "mesh_routing", "relay"),
         max_hops=getattr(args, "max_hops", 5),
@@ -1363,11 +1504,129 @@ def cmd_trust(args):
             print(f"  cap_rejected_at    : "
                   f"{_fmtt(rec.get('cap_rejected_at'))}")
         return 0
+    elif trust_cmd == "verify":
+        nid = args.node_id
+        expected_raw = args.expected_fingerprint or ""
+        rec = store.get_peer(nid)
+        if rec is None:
+            if getattr(args, "json", False):
+                print(json.dumps({
+                    "node_id": nid,
+                    "verdict": "unknown",
+                    "expected": expected_raw,
+                }))
+            else:
+                print(f"Peer {nid} is not pinned. Run "
+                      f"'ironmesh trust list' to see known peers.")
+            return 1
+        actual = rec.get("fingerprint") or ""
+        is_match = fingerprint_matches(actual, expected_raw)
+        verdict = "match" if is_match else "mismatch"
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "node_id": nid,
+                "verdict": verdict,
+                "expected": expected_raw,
+                "actual": rec.get("fingerprint"),
+                "trust_state": rec.get("trust_state", "trusted"),
+            }))
+        elif is_match:
+            print(f"OK: peer {nid} fingerprint matches.")
+            print(f"    expected : {expected_raw}")
+            print(f"    actual   : {rec.get('fingerprint')}")
+            print(f"    state    : {rec.get('trust_state', 'trusted')}")
+        else:
+            print(f"MISMATCH: peer {nid} fingerprint does NOT match.")
+            print(f"    expected : {expected_raw}")
+            print(f"    actual   : {rec.get('fingerprint')}")
+            print()
+            print("If you are sure the expected fingerprint is correct, this "
+                  "peer's identity has changed (rotation or impersonation). "
+                  "Investigate before continuing — see SECURITY.md and "
+                  "docs/QUICKSTART.md \"Manage trust\".")
+        return 0 if is_match else 2
+    elif trust_cmd == "migrate":
+        # The store always re-saves under the current envelope version,
+        # so calling _save() once is the migration. Detect whether the
+        # on-disk file is already v2 and skip the rewrite for a cleaner
+        # operator log line.
+        path = store.path
+        already_v2 = False
+        try:
+            with open(path) as f:
+                raw_envelope = json.load(f)
+            already_v2 = (
+                isinstance(raw_envelope, dict)
+                and raw_envelope.get("version") == 2
+            )
+        except (OSError, ValueError):
+            already_v2 = False
+
+        if getattr(args, "dry_run", False):
+            if already_v2:
+                print(f"Trust store at {path} is already v2 (encrypted). "
+                      "Migration would be a no-op.")
+            else:
+                print(f"Trust store at {path} would be rewritten as v2 "
+                      "(encrypted at rest).")
+            return 0
+
+        if already_v2:
+            print(f"Trust store at {path} is already v2 (encrypted). "
+                  "No migration required.")
+            return 0
+
+        if not store._save():
+            print(f"ERROR: trust store migration failed for {path}. See log.")
+            return 1
+        print(f"Trust store at {path} migrated to encrypted v2 envelope.")
+        _audit_log_event(
+            "TRUST_STORE_ENCRYPTED",
+            {"path": path, "trigger": "operator_migrate"},
+        )
+        return 0
+    elif trust_cmd == "export":
+        nid = args.node_id
+        rec = store.get_peer(nid)
+        if rec is None:
+            print(f"Peer {nid} not pinned.")
+            return 1
+        print(json.dumps({
+            "node_id": nid,
+            "fingerprint": rec.get("fingerprint"),
+            "pubkey": rec.get("pubkey"),
+            "first_seen": rec.get("first_seen"),
+            "last_seen": rec.get("last_seen"),
+            "trust_state": rec.get("trust_state", "trusted"),
+            "capability_hash": rec.get("capability_hash"),
+            "capability_set": rec.get("capability_set"),
+        }, default=str, indent=2))
+        return 0
+    elif trust_cmd == "pin":
+        nid = args.node_id
+        pubkey_b64 = args.pubkey
+        state = getattr(args, "state", "trusted")
+        try:
+            store.pin_peer(nid, pubkey_b64, trust_state=state)
+        except ValueError as e:
+            print(f"ERROR: {e}")
+            return 1
+        rec = store.get_peer(nid)
+        fp = rec.get("fingerprint") if rec else "(unknown)"
+        print(f"Pinned {nid} ({state}) — fingerprint {fp}")
+        _audit_log_event("TOFU_NEW_PEER", {
+            "peer_id": nid,
+            "trust_state": state,
+            "trigger": "operator_manual_pin",
+        })
+        return 0
     else:
         print("Usage: ironmesh trust [list [--show-caps]|revoke <node_id>|"
               "list-revoked|set-state <node_id> <state>|cap-promote "
               "[<node_id>|--all]|cap-reject [<node_id>|--all] [--block]|"
-              "cap-status <node_id>|list-cap-pending|cap-diff <node_id>]")
+              "cap-status <node_id>|list-cap-pending|cap-diff <node_id>|"
+              "verify <node_id> <expected-fp>|migrate|export <node_id>|"
+              "pin <node_id> <pubkey-b64>]")
 
     return 0
 
@@ -1476,8 +1735,51 @@ def cmd_keys(args):
                   "(pip install ironmesh[keychain]) or no system backend "
                   "is configured (Linux: kwallet/gnome-keyring/etc.).")
             return 1
+    elif keys_cmd == "fingerprint":
+        from ironmesh.keys import load_keys
+        try:
+            keys = load_keys(args.path, passphrase=args.passphrase)
+        except FileNotFoundError:
+            print(f"Key file not found: {args.path}")
+            return 1
+        except ValueError as e:
+            print(f"Error: {e}")
+            return 1
+        fp = keys.get_fingerprint()
+        fmt = getattr(args, "format", "hex")
+        if fmt == "hex":
+            print(fp)
+        elif fmt == "colons":
+            # Group hex into bytes for read-aloud friendliness.
+            print(":".join(fp[i:i + 2] for i in range(0, len(fp), 2)))
+        else:  # json
+            print(json.dumps({
+                "fingerprint": fp,
+                "fingerprint_colons": ":".join(
+                    fp[i:i + 2] for i in range(0, len(fp), 2)
+                ),
+                "agent_name": keys.agent_name,
+                "key_path": args.path,
+            }, indent=2))
+    elif keys_cmd == "migrate":
+        from ironmesh.keys import migrate_keys_to_master_seed
+        try:
+            migrated = migrate_keys_to_master_seed(
+                args.path, passphrase=args.passphrase,
+            )
+        except FileNotFoundError:
+            print(f"Key file not found: {args.path}")
+            return 1
+        except ValueError as e:
+            print(f"Migration error: {e}")
+            return 1
+        backup_path = os.path.expanduser(args.path) + ".legacy.bak"
+        print(f"Migrated to master-seed format -> {args.path}")
+        print(f"Legacy backup preserved at:      {backup_path}")
+        print(f"Fingerprint:                     {migrated.get_fingerprint()}")
+        print("Ed25519 identity unchanged — every TOFU pin remains valid.")
     else:
-        print("Usage: ironmesh keys [generate|info|"
+        print("Usage: ironmesh keys [generate|info|fingerprint|migrate|"
               "keychain-store|keychain-clear|keychain-check] [args...]")
 
     return 0
@@ -1746,7 +2048,7 @@ def cmd_doctor(args):
         pass
 
     # 1. Identity key file readable + decryptable.
-    print(f"[1/7] Identity key file: {keys_path}")
+    print(f"[1/8] Identity key file: {keys_path}")
     if not os.path.exists(keys_path):
         print("      FAIL — file does not exist (run 'ironmesh keys generate')")
         failures += 1
@@ -1784,7 +2086,7 @@ def cmd_doctor(args):
             failures += 1
 
     # 2. Trust file readable + integrity check passes.
-    print(f"[2/7] Trust store: {trust_path}")
+    print(f"[2/8] Trust store: {trust_path}")
     if not os.path.exists(trust_path):
         print("      OK — file does not exist yet (will be created on first peer)")
     elif keypair is None:
@@ -1808,7 +2110,7 @@ def cmd_doctor(args):
             failures += 1
 
     # 3. SQLite schema version.
-    print(f"[3/7] Message store: {db_path}")
+    print(f"[3/8] Message store: {db_path}")
     if not os.path.exists(db_path):
         print("      OK — DB does not exist yet (will be created at daemon startup)")
     else:
@@ -1830,7 +2132,7 @@ def cmd_doctor(args):
             failures += 1
 
     # 4. Pending-trust queue health.
-    print("[4/7] Pending-trust queue (SQLite v3 only):")
+    print("[4/8] Pending-trust queue (SQLite v3 only):")
     if not os.path.exists(db_path):
         print("      SKIP — DB not present")
     else:
@@ -1861,7 +2163,7 @@ def cmd_doctor(args):
             failures += 1
 
     # 5. Gate flag + queue cap from env (if a daemon were started now).
-    print("[5/7] Gate environment:")
+    print("[5/8] Gate environment:")
     gate_env = os.environ.get("IRONMESH_REQUIRE_MSG_PROMOTION", "").lower()
     cap_env = os.environ.get("IRONMESH_PENDING_QUEUE_CAP")
     trust_env = os.environ.get("IRONMESH_TRUST_PATH")
@@ -1872,7 +2174,7 @@ def cmd_doctor(args):
     print("      OK — env reported (informational; CLI flags override env)")
 
     # 6. Port availability.
-    print(f"[6/7] Port {args.port} on {args.bind}:")
+    print(f"[6/8] Port {args.port} on {args.bind}:")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.bind((args.bind, args.port))
@@ -1890,7 +2192,7 @@ def cmd_doctor(args):
     # while the daemon writes to <db-dir>/audit.log — and report on a
     # different log entirely.
     audit_path = os.path.join(os.path.dirname(db_path), "audit.log")
-    print(f"[7/7] Audit log: {audit_path}")
+    print(f"[7/8] Audit log: {audit_path}")
     if not os.path.exists(audit_path):
         print("      OK — audit log does not exist yet (will be created on daemon start)")
     else:
@@ -1916,6 +2218,36 @@ def cmd_doctor(args):
         except Exception as e:
             print(f"      FAIL — {e}")
             failures += 1
+
+    # 8. v0.9.3 features in use on disk.
+    print("[8/8] v0.9.3 features (on-disk state):")
+    # Trust-store envelope version. v2 = encrypted at rest, v1 = legacy
+    # plaintext (still accepted, migrates forward on next save).
+    if os.path.exists(trust_path):
+        try:
+            with open(trust_path) as f:
+                envelope = json.load(f)
+            if isinstance(envelope, dict):
+                if envelope.get("version") == 2:
+                    print("      Trust-store envelope: v2 (encrypted at rest)")
+                elif "_mac" in envelope or "peers" in envelope:
+                    print("      Trust-store envelope: v1 (legacy plaintext, "
+                          "migrates on next save) — run "
+                          "`ironmesh trust migrate` to roll forward now")
+                else:
+                    print("      Trust-store envelope: unrecognized shape")
+            else:
+                print("      Trust-store envelope: unrecognized shape")
+        except (OSError, ValueError) as e:
+            print(f"      Trust-store envelope: could not parse ({e})")
+    else:
+        print("      Trust-store envelope: file not present yet "
+              "(will be v2 on first save)")
+    # Strict TLS + global rate cap can only be confirmed against a running
+    # daemon's runtime state. Doctor inspects on-disk state, so report
+    # this caveat instead of guessing.
+    print("      Strict TLS / global rate cap: report runtime state "
+          "from `ironmesh status` (added per running daemon).")
 
     print("=" * 60)
     if failures == 0:

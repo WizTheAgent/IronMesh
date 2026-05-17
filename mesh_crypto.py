@@ -36,18 +36,32 @@ from nacl.public import PrivateKey as X25519PrivateKey, PublicKey as X25519Publi
 from ironmesh.keys import ed25519_to_curve25519_public, ed25519_to_curve25519_secret
 
 
-def seal_to_destination(plaintext: bytes, dest_ed25519_pub: bytes) -> bytes:
+def seal_to_destination(
+    plaintext: bytes,
+    dest_ed25519_pub: bytes,
+    dest_x25519_pub: Optional[bytes] = None,
+) -> bytes:
     """End-to-end encrypt ``plaintext`` for the holder of ``dest_ed25519_pub``.
 
     Args:
         plaintext: Bytes to encrypt.
         dest_ed25519_pub: Destination's Ed25519 public key (32 bytes).
+            Used for legacy derivation when no master-seed X25519 public
+            is supplied; also kept as the canonical identity reference
+            for diagnostics.
+        dest_x25519_pub: v0.9.4 Phase 2 — when present, use this X25519
+            public directly for SealedBox encryption. The caller is
+            responsible for having verified this key is bound to
+            ``dest_ed25519_pub`` (typically via the HELLO
+            ``x25519_binding_signature``). When None, falls back to the
+            legacy ``ed25519_to_curve25519_public`` derivation so
+            mixed-version meshes keep working.
 
     Returns:
         SealedBox ciphertext (48 bytes longer than plaintext).
 
     Raises:
-        ValueError: If ``dest_ed25519_pub`` is not a valid 32-byte key.
+        ValueError: If the destination key is not a valid 32-byte key.
     """
     if not isinstance(dest_ed25519_pub, (bytes, bytearray)):
         raise ValueError("dest_ed25519_pub must be bytes")
@@ -58,17 +72,36 @@ def seal_to_destination(plaintext: bytes, dest_ed25519_pub: bytes) -> bytes:
     if not isinstance(plaintext, (bytes, bytearray)):
         raise ValueError("plaintext must be bytes")
 
-    x25519_pub = ed25519_to_curve25519_public(bytes(dest_ed25519_pub))
+    if dest_x25519_pub is not None:
+        if not isinstance(dest_x25519_pub, (bytes, bytearray)):
+            raise ValueError("dest_x25519_pub must be bytes when provided")
+        if len(dest_x25519_pub) != 32:
+            raise ValueError(
+                f"dest_x25519_pub must be 32 bytes, got {len(dest_x25519_pub)}"
+            )
+        x25519_pub = bytes(dest_x25519_pub)
+    else:
+        x25519_pub = ed25519_to_curve25519_public(bytes(dest_ed25519_pub))
     box = SealedBox(X25519PublicKey(x25519_pub))
     return bytes(box.encrypt(bytes(plaintext)))
 
 
-def unseal_from_source(sealed: bytes, my_ed25519_secret: bytes) -> bytes:
+def unseal_from_source(
+    sealed: bytes,
+    my_ed25519_secret: bytes,
+    my_x25519_secret: Optional[bytes] = None,
+) -> bytes:
     """End-to-end decrypt a SealedBox payload addressed to us.
 
     Args:
         sealed: SealedBox ciphertext from ``seal_to_destination``.
-        my_ed25519_secret: Our Ed25519 secret key (32 bytes).
+        my_ed25519_secret: Our Ed25519 secret key (32 bytes). Used for
+            legacy derivation when ``my_x25519_secret`` is None.
+        my_x25519_secret: v0.9.4 Phase 2 — when present, use this
+            X25519 secret directly for decryption. Typically the
+            master-seed-derived ``x25519_seed`` from
+            ``AgentKeys.get_x25519_secret()``. When None, falls back to
+            the legacy ``ed25519_to_curve25519_secret`` derivation.
 
     Returns:
         Decrypted plaintext bytes.
@@ -82,7 +115,16 @@ def unseal_from_source(sealed: bytes, my_ed25519_secret: bytes) -> bytes:
     if not isinstance(sealed, (bytes, bytearray)):
         raise ValueError("sealed must be bytes")
 
-    x25519_priv_bytes = ed25519_to_curve25519_secret(bytes(my_ed25519_secret))
+    if my_x25519_secret is not None:
+        if not isinstance(my_x25519_secret, (bytes, bytearray)):
+            raise ValueError("my_x25519_secret must be bytes when provided")
+        if len(my_x25519_secret) != 32:
+            raise ValueError(
+                f"my_x25519_secret must be 32 bytes, got {len(my_x25519_secret)}"
+            )
+        x25519_priv_bytes = bytes(my_x25519_secret)
+    else:
+        x25519_priv_bytes = ed25519_to_curve25519_secret(bytes(my_ed25519_secret))
     box = SealedBox(X25519PrivateKey(x25519_priv_bytes))
     try:
         return bytes(box.decrypt(bytes(sealed)))

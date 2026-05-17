@@ -5,6 +5,268 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.9.4] — 2026-05-15 — Pre-audit hardening + dual-use migration + signed capability announcement
+
+Combined release. The v0.9.3 security hardening point release (strict TLS, trust-store at-rest encryption, global rate cap, trust CLI subcommands) and the v0.9.4 pre-audit hardening pass (Ed25519/X25519 dual-use migration phases 1 & 2, signed `CAPABILITY_ANNOUNCE`, frame-length ceiling, JSON depth guard, replay upper bound, narrowed exception handling, fail-closed TOFU, dependency upper bounds) ship together as v0.9.4. See `docs/RELEASE_NOTES_v0.9.4.md` for the full operator-facing write-up.
+
+### Pre-audit hardening + dual-use migration
+
+### Added
+
+- **Wire-level X25519 advertisement (Phase 2 of the Ed25519/X25519
+  dual-use split).** HELLO frames now carry two optional fields when
+  the daemon's keypair is in the v0.9.4 master-seed format:
+  `x25519_public_b64` (32-byte X25519 identity public, base64) and
+  `x25519_binding_signature_b64` (64-byte Ed25519 signature of the
+  X25519 public under the `SIG_CTX_X25519_BINDING` context). Receivers
+  that recognize the fields verify the binding under the peer's
+  Ed25519 identity and, on success, store the advertised X25519 on
+  `PeerState.x25519_identity_public` for subsequent E2E sealing. When
+  either field is absent OR the binding fails to verify, receivers
+  fall back to the historical `ed25519_to_curve25519` derivation
+  (full back-compat with pre-v0.9.4 senders).
+  - **Mixed-mesh interop preserved.** The new fields sit OUTSIDE the
+    signed HELLO canonical body, so pre-v0.9.4 receivers verify the
+    HELLO signature exactly as before. v0.9.4 senders still sign the
+    v0.9.4-shaped canonical, leaving sig-verify byte-compatible
+    across versions. The binding's own Ed25519 signature provides the
+    cryptographic link between the advertised X25519 and the pinned
+    Ed25519 identity, with `SIG_CTX_X25519_BINDING` domain separation
+    preventing cross-context misuse.
+  - **E2E SealedBox upgraded.** `mesh_crypto.seal_to_destination`
+    and `unseal_from_source` gained optional `dest_x25519_pub` /
+    `my_x25519_secret` kwargs. When supplied (v0.9.4 master-seed
+    path), the X25519 keys are used directly; when omitted (legacy
+    path), the historical `ed25519_to_curve25519` derivation runs
+    inside the helpers. Callers in `bridge.py` thread the
+    advertised peer X25519 from PeerState and the local subkey from
+    `AgentKeys.get_x25519_secret()`.
+  - **Auto-migration on first start.** `ensure_agent_keys` (the
+    daemon's keypair bootstrap path) now silently migrates legacy
+    v1/v2 keystores forward to the v3 master-seed envelope on first
+    load. The Ed25519 seed is preserved byte-for-byte — every TOFU
+    pin in the mesh remains valid — and a `.legacy.bak` is written
+    next to the original. Auto-migration is best-effort: if it
+    fails (disk full, permissions, etc.) the daemon still starts on
+    the legacy keys without the new HELLO advertisement.
+  - **Reserved HELLO field names.** `x25519_public_b64` and
+    `x25519_binding_signature_b64` are formally reserved in
+    `PROTOCOL_SPEC.md` §2.2 — future versions MUST NOT repurpose
+    these field names.
+  - **18 new tests in `tests/test_x25519_advertisement.py`** covering
+    advertisement shape, forward-compat for v0.9.4 receivers,
+    receiver verification (accept valid / reject swapped-identity /
+    reject malformed), E2E sealing roundtrips on both paths, mixed-
+    mesh interop in both directions, auto-migration + TOFU
+    fingerprint survival, best-effort failure handling, and
+    domain-separation contract for the binding signature.
+
+- **Master-seed key envelope (Phase 1 of the Ed25519/X25519 dual-use
+  split).** `keys.json` gains a v3 format tagged `format = "master-seed-v1"`
+  that carries the existing Ed25519 seed byte-for-byte plus a new
+  32-byte `x25519_seed` (HKDF-SHA256 from the Ed25519 seed +
+  per-node 16-byte `hkdf_salt`). Phase 1 does NOT change wire behaviour
+  — `get_x25519_secret()` returns the stored subkey when present,
+  otherwise falls back to the historical `ed25519_to_curve25519`
+  transform. Phase 2 (v0.9.4) wires the HELLO advertisement so peers
+  can prefer the advertised X25519 key.
+  - **TOFU pin survival:** the Ed25519 seed and public are unchanged
+    by the migration. Every existing pinned fingerprint stays valid.
+  - **Opt-in migration:** `ironmesh keys migrate` converts a v1/v2
+    file in place. The pre-migration bytes are preserved at
+    `<path>.legacy.bak` for one full release cycle so operators have
+    a rollback path. Existing daemons continue running on legacy
+    files without action.
+  - **New deployments:** `generate_keypair()` defaults to the
+    master-seed format. Pass `master_seed_format=False` for the
+    legacy shape (tests, reproducibility).
+  - **Concurrent-daemon-startup safety:** per-process+thread tmp
+    filename + atomic `os.replace`. Verified empirically by
+    `tests/test_master_seed_format.py::TestConcurrentMigrationRace`
+    — two threads racing on the same file converge to a single
+    consistent envelope, never split-brain.
+  - **Integrity check on load:** the stored `x25519_seed` must
+    re-derive from `HKDF(ed25519_secret, hkdf_salt, INFO_X25519)`;
+    tampering with the encrypted seed is detected even if the
+    passphrase is correct.
+
+- **Signed `CAPABILITY_ANNOUNCE` frames.** Capability advertisements
+  whose `origin` differs from the delivering peer now require an inner
+  Ed25519 signature from `origin` using the
+  `SIG_CTX_CAPABILITY_ANNOUNCE` domain-separation context. Receiver
+  enforces a 300 s freshness window (configurable via
+  `capability_announce_max_age`) and a per-`(origin, announced_at)`
+  replay-dedup LRU. Closes the prior relay-impersonation gap where a
+  malicious relay could poison a third party's pinned cap-set baseline.
+  Direct-from-peer announces (`origin == peer_id`) without the inner
+  signature remain accepted for back-compat with pre-v0.9.4 senders.
+  New audit event `CAPABILITY_ANNOUNCE_BAD_SIG`, new metric
+  `capability_announce_bad_signature_total`, new config field
+  `capability_announce_max_age`.
+- **Cached signed-envelope re-broadcast.** Bridge caches the verbatim
+  signed CAPABILITY_ANNOUNCE envelope per remote origin (LRU, 4096
+  entries) and re-broadcasts it to neighbors within the freshness
+  window, preserving mesh convergence across multi-hop topologies. The
+  cache only stores envelopes that have already verified locally.
+
+### Security
+
+- **Narrowed exception handling on 12 best-effort `bridge.py` blocks.**
+  The wide `except Exception: pass` blocks on rate-limit / shutdown /
+  cleanup paths now catch a documented type set per call site instead
+  of swallowing every class. Behaviour is unchanged on the happy path
+  AND on the documented failure cases; programmer errors
+  (`AttributeError`, `TypeError`, `KeyboardInterrupt`, etc.) now
+  propagate rather than getting silently dropped:
+  - Per-connection rate-limit notify, per-IP rate-limit notify, and
+    auth-blocked notify → `(websockets.exceptions.ConnectionClosed,
+    OSError, RuntimeError)`.
+  - Duplicate-connection upgrade close, finally-block close,
+    peer-revocation cleanup close, and TOFU-mismatch teardown → same
+    set.
+  - Per-peer + global RATE_LIMITED encrypted-control notify → same
+    set + `ValueError` (covers the encrypted-control input-validation
+    surface).
+  - `_capabilities.save()` initial-write best-effort → `OSError`
+    only; logged at `WARNING` (was silent).
+  - `_open_trust_store` GUI helper → `(OSError, ValueError,
+    RuntimeError)`; logged at `DEBUG`.
+  - Two `_gui_broadcast` notification sends (capability revert +
+    capability change) → `(RuntimeError, AttributeError)`; logged.
+  - `on_peer_disconnect` user-supplied hook fire → KEPT wide with
+    `# noqa: BLE001` and an explanatory comment + WARNING log on
+    fire. User-defined callbacks can raise any class; narrowing
+    here would silently drop hook callbacks that raise a custom
+    type.
+
+  Auditors looking at these sites now see explicit type sets with
+  rationale comments. The narrow failure paths cannot mask a real
+  bug because every other exception class continues to propagate.
+
+- **CPython large-int-string-conversion DoS mitigation** (CVE-2020-10735 /
+  PEP 686). Daemon bootstrap now calls `sys.set_int_max_str_digits(4300)`
+  unconditionally so behaviour is uniform across Python 3.10 / 3.11 / 3.12
+  / 3.13. Without this, a Python 3.10 deployment parsing untrusted JSON
+  with a 100k-digit integer can spend multi-millisecond CPU per parse.
+- **Constant-time fingerprint comparison.** `_get_peer_identity_key`
+  in `bridge.py` previously used `==` to match a pinned peer's fingerprint
+  against a node ID lookup key. Switched to `hmac.compare_digest` for
+  consistency with the rest of the file. Both sides are public data so
+  no real timing-side-channel, but auditors flag this pattern uniformly.
+- **JSON nesting depth guard.** New `protocol.safe_json_loads` rejects
+  inbound JSON nested deeper than `MAX_JSON_DEPTH = 64`. Applied to
+  `Frame.deserialize_and_decrypt` so an attacker who lands a deeply-nested
+  payload inside the 1 MiB frame ceiling cannot push downstream
+  consumers into pathological recursion. The 64 limit is well above any
+  legitimate IronMesh shape (deepest known = 6).
+- **`ReplayGuard.MAX_SEQUENCE = 2^48` upper bound.** A peer that sent
+  `seq=2^63` would permanently ratchet its own `last_seq` and never
+  receive again — self-DoS, not a real external attack, but the bound
+  defeats the edge case cheaply.
+- **Domain-separated Ed25519 signing helpers** (Option C, dual-use
+  mitigation): new `crypto.sign_detached_with_context` /
+  `crypto.verify_detached_with_context` plus a registry of stable
+  per-purpose context labels (`SIG_CTX_*`). NEW signing surfaces
+  (signed capability announce, future trust-pin export) MUST use these;
+  existing wire signatures stay as-is pending a coordinated migration.
+  Reduces audit severity of the Ed25519/X25519 dual-use finding.
+- **Fail-closed TOFU check.** `bridge.py` `_check_tofu_for_peer` previously
+  caught every non-`ConnectionError`/`ImportError` exception with a `debug`-
+  level log and silently let the connection proceed — meaning a peer whose
+  identity could not be evaluated (malformed key, transient file error on
+  the trust-store backing file, missing-keypair bootstrap race) was treated
+  as "trust verified". The catch is now narrowed to `ValueError` (the
+  recoverable "malformed input data" branch) with a `WARNING` log AND a
+  re-raise as `ConnectionError` so the connection is refused. Every other
+  exception class propagates so the daemon surfaces real failures instead
+  of swallowing them as a successful TOFU pass.
+- **`nat_relay.MAX_FRAME_BYTES` aligned with the wire-level ceiling.** The
+  NAT relay previously carried its own `2 MiB` constant that diverged from
+  the protocol's 1 MiB frame ceiling, producing inconsistent acceptance
+  across code paths. The relay now imports `MAX_FRAME_BYTES` from
+  `ironmesh.protocol` as the single source of truth, enforcing the same
+  cap on every forward path.
+
+### Added
+
+- **`MAX_FRAME_BYTES` ceiling (1 MiB) on `Frame.deserialize_and_decrypt`**.
+  The wire format's 4-byte `encrypted_length` field is u32, so a malicious
+  peer could declare up to 4 GiB and force buffer allocation before any
+  truncation check. Rejection now happens immediately after reading the
+  length field, before the buffer slice. Aligned with the existing 1 MiB
+  websocket `max_message_size` default. Same ceiling enforced on
+  `encrypt_and_serialize` and `serialize_plaintext` send paths so we
+  never emit a frame our own peers would reject.
+- Test module `tests/test_frame_hardening.py` covering attacker-declared
+  4 GiB rejection, just-above-ceiling rejection, send-side rejection,
+  and regression of the legitimate small-frame round-trip.
+
+### Changed
+
+- **Narrowed exception handling in the frame signing path** (`protocol.py`).
+  Inner-source signature generation in `Frame.encrypt_and_serialize`
+  previously caught every `Exception` and silently dropped the
+  signature. It now catches only the crypto-input subset
+  (`nacl.exceptions.CryptoError`, `TypeError`, `ValueError`) and emits
+  a `WARNING` log when this happens. Programmer errors (`AttributeError`,
+  bad-key-type, etc.), `KeyboardInterrupt`, and `MemoryError` now
+  propagate so real bugs surface instead of silently disabling the
+  inner-source signature forever. The verification paths
+  (outer detached signature, payload decryption, inner-source
+  signature verify) likewise narrowed to `BadSignatureError` /
+  `CryptoError` from the bare `except Exception` they previously used.
+
+### Security hardening (originally v0.9.3 scope)
+
+### Added
+
+- **`--strict-tls` flag** for outbound WebSocket connections.
+  Default mesh mode keeps `CERT_NONE` + `check_hostname=False` (peer
+  authentication runs at the application layer via TOFU-pinned
+  Ed25519 + signed HELLO), preserving compatibility with self-signed
+  mesh certs. Opt-in `--strict-tls` requires a CA-validated cert
+  (hostname check + `CERT_REQUIRED`) for deployments where WSS
+  endpoints are issued real certificates. Pair with
+  `--pinned-ca <path>` to use a private CA bundle as the trust
+  anchor; without it the system trust store is used.
+- **At-rest encryption for the trust store** (`known_peers.json`).
+  The on-disk envelope is now SecretBox-encrypted with a key derived
+  from the agent identity secret, so a host-disk leak no longer
+  exposes the peer graph (node IDs, fingerprints, capability sets).
+  HMAC-SHA256 over the ciphertext keeps tamper evidence + multi-daemon
+  collision detection. Pre-existing plaintext stores load through the
+  legacy v1 path and migrate forward on the next save — no operator
+  action required.
+- **`--max-msgs-per-sec N` flag** — global daemon-wide cap on inbound
+  message rate across all peers. Defense-in-depth on top of the
+  existing per-peer caps. Off by default since per-peer limits are
+  sufficient for mutually-trusted peer sets; enable when the mesh is
+  exposed to potentially-hostile peers. Burst capacity = ceil(rate).
+
+### Changed
+
+- **Dependency upper bounds** added throughout `pyproject.toml`. Each
+  runtime, optional, and dev dependency now caps at the next major
+  release so a breaking upstream major bump cannot ship into an
+  unsuspecting `pip install ironmesh` mid-release-cycle. Patch and
+  minor bumps continue to flow through automatically.
+
+### Documentation
+
+- `SECURITY.md` — TLS section now describes both default and strict
+  modes; new "LAN discovery (mDNS) caveats" subsection enumerates
+  what mDNS spoofing can and cannot do (it cannot bypass the
+  application-layer handshake); new "Threat-model assumption — peer
+  set" subsection makes explicit that per-peer caps assume mutually
+  trusted peers and recommends external rate limiting for deployments
+  that expose the mesh to potentially-hostile peers.
+- `docs/QUICKSTART.md` — trust-management section now points operators
+  at out-of-band fingerprint verification before exchanging sensitive
+  traffic with a new peer, and documents `--strict-tls` for
+  transport-level authentication on top of the application-layer pin.
+
 ## [0.9.2] — 2026-04-27 — 1.0 prep mega-release
 
 The mega-release on the road to 1.0. Every piece originally

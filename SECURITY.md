@@ -97,21 +97,57 @@ If RNS isn't enabled, none of this applies.
 ### TLS and peer authentication (design choice)
 
 - IronMesh's outbound WebSocket client uses `ssl.CERT_NONE` +
-  `check_hostname = False` by default. TLS here is for line-level
-  confidentiality only; **peer authentication is handled at the
-  application layer** via TOFU-pinned Ed25519 identity keys and a
-  signed HELLO that covers the channel-binding nonce. An attacker
-  with a self-signed TLS cert still fails the Ed25519 signature
-  check on HELLO and cannot impersonate a pinned peer.
-- If you terminate TLS with a real CA (e.g. internal Let's Encrypt),
-  the current client doesn't *additionally* verify the cert chain.
-  Strict CA verification is a candidate for a future `--strict-tls`
-  flag; today you get confidentiality + application-layer
-  authentication, not TLS-layer authentication.
+  `check_hostname = False` **by default**. TLS in this mode is for
+  line-level confidentiality only; **peer authentication is handled
+  at the application layer** via TOFU-pinned Ed25519 identity keys
+  and a signed HELLO that covers the channel-binding nonce. An
+  attacker with a self-signed TLS cert still fails the Ed25519
+  signature check on HELLO and cannot impersonate a pinned peer.
+- For deployments where WSS endpoints are issued real certificates
+  (operator CA, internal Let's Encrypt, public ACME), pass
+  **`--strict-tls`** to require CA-validated certs on the outbound
+  WSS path: hostname check + `CERT_REQUIRED`. Pair with
+  `--pinned-ca <path>` to use a private CA bundle as the trust
+  anchor; without it the system trust store is used. This adds
+  TLS-layer authentication on top of the Ed25519 application-layer
+  check, satisfying transport-only auditors who expect WSS to
+  authenticate the endpoint.
 - `--allow-plaintext-ws` is a compatibility fallback: when TLS fails
   and this flag is set, the client retries over `ws://`. The daemon
   logs a WARNING with "INSECURE" every time this happens so operators
   can spot accidental fallback.
+
+### LAN discovery (mDNS) caveats
+
+- mDNS discovery is unauthenticated by design — that's how mDNS
+  works. Anyone on the same LAN can publish or query an
+  `_ironmesh._tcp` record. An adversary on the LAN can therefore:
+  enumerate IronMesh nodes, advertise spoofed nodes to harvest
+  connection attempts, or replay stale records.
+- Spoofing does **not** bypass authentication. Every connection,
+  however discovered, runs the full handshake (passphrase HMAC →
+  signed ephemeral X25519 → TOFU-pinned Ed25519 identity check). A
+  spoofer cannot pass any of those without the mesh passphrase **and**
+  the impersonated peer's Ed25519 secret key.
+- Default behavior is **deny** — mDNS auto-connect is gated behind
+  `--open-discovery` (testing only) or `--allowed-peers` (an explicit
+  allowlist). Production deployments should always pass
+  `--allowed-peers` or distribute peer endpoints out-of-band rather
+  than relying on mDNS as a trust source.
+
+### Threat-model assumption — peer set
+
+IronMesh's per-peer rate limits, queue caps, and message-size limits
+assume that peers on the mesh are **mutually trusted parties** (your
+own agents, your team's agents, peers you've explicitly pinned). The
+protocol is hardened against passive eavesdropping, active MITM, and
+replay between any pair of peers, but it is not designed to absorb
+adversarial peer pressure (e.g. an actively-malicious pinned peer
+flooding the queue with maximum-size messages within their per-peer
+cap). If your deployment exposes the mesh to potentially-hostile peers,
+add an external rate limiter / WAF and treat the application-layer
+caps as defense-in-depth, not the primary control. A future
+release may add a global daemon-wide bandwidth cap as belt-and-suspenders.
 
 ### Storage-at-rest properties (v0.8.5+)
 
@@ -131,10 +167,15 @@ If RNS isn't enabled, none of this applies.
   design choice — the daemon needs to index and query them — but
   means a local attacker with disk access can see who talked to whom
   and when, just not what was said.
-- **Trust store** (`known_peers.json`) is integrity-protected by an
-  HMAC-SHA256 chain keyed from the daemon's identity secret. It is
-  not confidential — pinned public keys and fingerprints are plain
-  JSON by design.
+- **Trust store** (`known_peers.json`) is both integrity-protected
+  and **confidential at rest as of v0.9.3**: the on-disk envelope is
+  SecretBox-encrypted (XSalsa20-Poly1305) with a key derived from the
+  daemon's identity secret, and the surrounding HMAC-SHA256 covers
+  the ciphertext for tamper evidence and multi-daemon collision
+  detection. A host-disk leak no longer exposes the peer graph (node
+  IDs, fingerprints, capability sets). Pre-v0.9.3 plaintext stores
+  load through the legacy v1 path and migrate forward automatically
+  on the next save — no operator action required.
 - **Audit log** (`audit.log`) is plaintext JSON with an HMAC chain.
   Not confidential; tamper-evident.
 - **Backup archives** (`ironmesh backup`) ARE additionally encrypted

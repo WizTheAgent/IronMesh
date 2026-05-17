@@ -4,7 +4,7 @@
 
 **Origin**: Built because no existing A2A protocol works without the internet. Google A2A needs HTTPS. MCP is tool calls, not P2P. ACP can't cross machines. ANP needs DIDs and internet. IronMesh is the protocol that works when you pull the plug on your router.
 
-**Operator**: KingPi (Raspberry Pi 5) + Wiz (Windows Gaming PC)
+**Reference operators**: Linux node (Raspberry Pi 5) + Windows node (desktop PC)
 **Protocol Version**: 0.5.0
 **Date**: 2026-04-10
 
@@ -24,8 +24,8 @@
 
 ```
 +---------------------------+                       +---------------------------+
-|         KingPi            |                       |         Wiz               |
-|   Raspberry Pi 5          |      WebSocket:8765   |   Windows Gaming PC       |
+|         Node A            |                       |         Node B            |
+|   Linux (Raspberry Pi 5)  |      WebSocket:8765   |   Windows desktop         |
 |   (Self-hosted Ollama)    |<--------------------->|   (Local AI / Claude)     |
 |                           |   Encrypted Channel   |                           |
 |  +---------------------+  |   (XSalsa20-Poly1305) |  +---------------------+  |
@@ -186,6 +186,9 @@ All subsequent messages use SecretBox(session_key) for encryption AND Ed25519 fo
 | GUI token auth | Dashboard requires per-session bearer token for `/metrics`, `/api/state`, `/ws` endpoints |
 | Longer fingerprints | 32 hex chars (128 bits) for collision resistance |
 | TLS-first connections | Client tries wss:// before ws://. Plaintext fallback requires explicit `--allow-plaintext-ws` |
+| TLS validation modes (v0.9.3) | Default mesh mode: `CERT_NONE`, peers authenticate at the application layer (passphrase HMAC + Ed25519 + TOFU). `--strict-tls` opts into hostname check + `CERT_REQUIRED`; `--pinned-ca <path>` selects a private CA bundle. |
+| Trust store encrypted at rest (v0.9.3) | `known_peers.json` is SecretBox-encrypted with a key derived from the agent identity secret. Pre-v0.9.3 plaintext stores migrate forward on the next save. |
+| Global message rate cap (v0.9.3) | Optional `--max-msgs-per-sec` daemon-wide cap on inbound message rate, defense-in-depth on top of the existing per-peer caps. Off by default. |
 | Immutable hook/bus context | Hook and MessageBus callbacks receive frozen (read-only) MappingProxyType data |
 | Hook circuit breaker | Failing hook callbacks auto-unregistered after 3 consecutive failures |
 | Required passphrase | No default — IronMesh refuses to start without a passphrase (min 12 chars) |
@@ -316,7 +319,7 @@ Dev: `pytest`, `pytest-asyncio`, `pytest-cov`, `ruff`, `mypy`
 
 ## 12. Launch Commands
 
-**KingPi (Raspberry Pi 5):**
+**Pi-class coordinator node:**
 ```bash
 # Set passphrase via file (never appears in process list)
 echo "YOUR_SHARED_SECRET" > ~/.ironmesh/passphrase && chmod 600 ~/.ironmesh/passphrase
@@ -325,7 +328,7 @@ export IRONMESH_PASSPHRASE_FILE=~/.ironmesh/passphrase
 ironmesh run --name alice --port 8765 --allowed-peers bob --gui
 ```
 
-**Wiz (Gaming PC):**
+**x86-class workstation node:**
 ```bash
 export IRONMESH_PASSPHRASE_FILE=~/.ironmesh/passphrase
 ironmesh run --name bob --port 8765 --allowed-peers alice --gui

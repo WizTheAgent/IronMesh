@@ -136,13 +136,33 @@ Returns JSON with messages sent/received, active peers, uptime, handshake stats.
 
 ## 9. Manage trust
 
+IronMesh uses TOFU — trust on first contact. The first time a peer
+connects, its Ed25519 fingerprint is pinned. Anyone on the LAN who can
+reach the daemon and knows the mesh passphrase can become a pinned
+peer on first contact, so for sensitive deployments you should verify
+the fingerprint **out-of-band** (read it over a phone call, paste it
+into a private channel, etc.) before exchanging real traffic with a
+new peer.
+
 ```bash
-# See which peers you've connected to
+# See which peers you've connected to + their pinned fingerprints
 ironmesh trust list
+
+# Compare the fingerprint shown on this side against what the peer
+# sees on theirs (run `ironmesh status` or `trust list` on their end).
+# If they match, you've confirmed the pin was not MITM'd.
 
 # If a peer's identity key changes unexpectedly, revoke and re-verify
 ironmesh trust revoke <node_id>
 ```
+
+**Stricter transport-level auth.** On top of the application-layer
+TOFU pin, you can require the outbound WSS connection itself to
+present a CA-validated certificate by adding `--strict-tls` (and
+optionally `--pinned-ca <path>` for a private CA bundle). This is
+useful when you've issued real certs to your daemons via an internal
+CA or public ACME — the default mesh mode trusts self-signed certs
+because peer authentication runs at the application layer.
 
 ## 10. Try the chat example
 
@@ -175,6 +195,31 @@ Type messages and see them appear encrypted on the other side.
 
 - **Works on localhost but not across machines:**
   - Your router/firewall may be blocking mDNS multicast. Try connecting manually: the `connect_to_peer()` API takes a host and port directly.
+
+## Trust bootstrap (TOFU)
+
+The first time two agents handshake on the same LAN they trust-on-
+first-use (TOFU)-pin each other's Ed25519 identity keys. Every
+subsequent connection requires the identity key to match; a changed
+key is treated as a possible MITM and the connection is refused.
+
+For deployments where peers will never share a direct trust-
+establishing channel — pure-LoRa meshes, fully disconnected nodes —
+the LAN handshake path is unavailable. In that case, pin peer keys
+out of band before bringing the mesh online:
+
+```bash
+# On peer-A: print this node's identity fingerprint to share OOB.
+ironmesh keys fingerprint --format colons
+
+# On peer-B: install peer-A's identity from the shared fingerprint
+#           plus its base64 public key (also obtainable from
+#           `ironmesh keys info`).
+ironmesh trust pin <peer-A-node-id> <peer-A-pubkey-b64>
+```
+
+Mesh announces (including signed CAPABILITY_ANNOUNCE in v0.9.4+) are
+authentication of *known* peers — they do not bootstrap new trust.
 
 ## Next steps
 

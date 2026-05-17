@@ -2,9 +2,12 @@
 
 On first connection to a peer, saves their Ed25519 identity public key.
 On subsequent connections, compares — if key changed, warns of possible MITM.
-Trust store file is integrity-protected with HMAC to detect tampering.
+Trust store file is integrity-protected with HMAC and (since v0.9.3)
+encrypted at rest with a SecretBox key derived from the agent identity
+secret. Pre-existing plaintext stores migrate forward on the next save.
 """
 
+import base64
 import contextlib
 import hashlib
 import hmac as hmac_mod
@@ -15,7 +18,18 @@ import sys
 import threading
 import time
 import weakref
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+
+try:  # pragma: no cover — exercised on every install with pynacl
+    from nacl.exceptions import CryptoError
+    from nacl.secret import SecretBox
+    from nacl.utils import random as nacl_random
+    _HAS_NACL = True
+except ImportError:  # pragma: no cover — keeps tests importable without pynacl
+    CryptoError = Exception  # type: ignore[misc,assignment]
+    SecretBox = None  # type: ignore[assignment]
+    nacl_random = None  # type: ignore[assignment]
+    _HAS_NACL = False
 
 logger = logging.getLogger("ironmesh.trust")
 
@@ -154,6 +168,37 @@ def _derive_mac_key(agent_key: bytes) -> bytes:
     return hashlib.sha256(bytes(agent_key) + b"ironmesh-trust-store-v1").digest()
 
 
+def _derive_box_key(agent_key: bytes) -> bytes:
+    """Derive the at-rest SecretBox key for trust-store payload encryption.
+
+    Distinct domain separator from ``_derive_mac_key`` so the HMAC and
+    SecretBox keys are independent even though both are bound to the
+    same underlying identity secret. SecretBox keys are 32 bytes; SHA-256
+    output happens to be the right size.
+    """
+    if not isinstance(agent_key, (bytes, bytearray)) or len(agent_key) < 16:
+        raise ValueError(
+            "TrustStore requires an agent_key of at least 16 bytes "
+            "(pass the Ed25519 secret or a derivative)."
+        )
+    return hashlib.sha256(
+        bytes(agent_key) + b"ironmesh-trust-store-encryption-v1"
+    ).digest()
+
+
+# Trust-store envelope versions.
+#
+# v1: legacy plaintext envelope ``{"peers": ..., "revoked": ..., "_mac": ...}``
+#     written by every daemon up to and including v0.9.2. Loaders accept it
+#     for one-shot forward migration.
+# v2: encrypted envelope ``{"version": 2, "ciphertext": "<b64>", "_mac": "..."}``.
+#     ``ciphertext`` is the SecretBox encryption of the v1 inner JSON
+#     (``{"peers", "revoked"}``); ``_mac`` is HMAC-SHA256 over
+#     ``"v=2|c=<ciphertext>"`` so the MAC binds both the version label and
+#     the exact bytes that were encrypted.
+_TRUST_ENVELOPE_VERSION = 2
+
+
 # ---------------------------------------------------------------------------
 # v0.8.5.6: capability-set binding — hash a peer's advertised capability
 # set into a stable 32-byte value so we can detect changes across
@@ -207,6 +252,7 @@ class TrustStore:
         self.path = os.path.expanduser(path)
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         self._mac_key: bytes = _derive_mac_key(agent_key)
+        self._box_key: bytes = _derive_box_key(agent_key)
         self._peers: Dict[str, dict] = {}
         self._revoked: Dict[str, dict] = {}  # v0.6: node_id -> {revoker, timestamp, reason}
         # v0.8.5.6: when _load() detects a MAC mismatch, the in-memory
@@ -228,64 +274,205 @@ class TrustStore:
         """Compute HMAC-SHA256 over trust store data."""
         return hmac_mod.new(self._mac_key, data.encode(), hashlib.sha256).hexdigest()
 
-    def _load(self):
-        if os.path.exists(self.path):
+    # ------------------------------------------------------------------
+    # v0.9.3: at-rest envelope (encrypted v2 + plaintext v1 fallback)
+    # ------------------------------------------------------------------
+
+    def _encrypt_inner(self, inner_json: str) -> str:
+        """SecretBox-encrypt the inner peers/revoked JSON. Returns base64."""
+        if not _HAS_NACL or SecretBox is None:
+            raise RuntimeError(
+                "Trust-store encryption requires pynacl. Install with "
+                "`pip install pynacl` or downgrade IronMesh to <0.9.3."
+            )
+        box = SecretBox(self._box_key)
+        nonce = nacl_random(SecretBox.NONCE_SIZE)  # type: ignore[misc]
+        ct = box.encrypt(inner_json.encode("utf-8"), nonce)
+        # ``ct`` is nonce||ciphertext (NaCl ``EncryptedMessage`` bytes form).
+        return base64.b64encode(bytes(ct)).decode("ascii")
+
+    def _decrypt_inner(self, b64_ct: str) -> str:
+        """Inverse of ``_encrypt_inner``. Raises on tamper or wrong key."""
+        if not _HAS_NACL or SecretBox is None:
+            raise RuntimeError(
+                "Trust-store decryption requires pynacl. Install with "
+                "`pip install pynacl` or downgrade IronMesh to <0.9.3."
+            )
+        try:
+            raw = base64.b64decode(b64_ct.encode("ascii"))
+        except (ValueError, UnicodeEncodeError) as exc:
+            raise ValueError("trust-store ciphertext is not valid base64") from exc
+        box = SecretBox(self._box_key)
+        plaintext = box.decrypt(raw)
+        return plaintext.decode("utf-8")
+
+    @staticmethod
+    def _v2_mac_input(ciphertext_b64: str) -> str:
+        """Canonical bytes the v2 envelope MAC covers."""
+        return f"v={_TRUST_ENVELOPE_VERSION}|c={ciphertext_b64}"
+
+    def _serialize_envelope(self) -> str:
+        """Build the on-disk v2 envelope JSON for current in-memory state."""
+        inner = {"peers": self._peers, "revoked": self._revoked}
+        inner_json = json.dumps(inner, sort_keys=True, separators=(",", ":"))
+        ciphertext_b64 = self._encrypt_inner(inner_json)
+        envelope = {
+            "version": _TRUST_ENVELOPE_VERSION,
+            "ciphertext": ciphertext_b64,
+            "_mac": self._compute_mac(self._v2_mac_input(ciphertext_b64)),
+        }
+        return json.dumps(envelope, indent=2)
+
+    def _deserialize_envelope(self, raw) -> Optional[Tuple[Dict[str, dict], Dict[str, dict]]]:
+        """Parse a loaded envelope dict into (peers, revoked).
+
+        Handles v2 (encrypted) and v1 (legacy plaintext) shapes. Returns
+        ``None`` on integrity / decryption failure; the caller is
+        responsible for setting the read-only latch and surfacing the
+        operator-facing log line. The legacy MAC migration path stays
+        in ``_load`` because it has special "save once with new key"
+        semantics that don't fit a pure parse helper.
+        """
+        if not isinstance(raw, dict):
+            return None
+
+        version = raw.get("version")
+        if version == _TRUST_ENVELOPE_VERSION:
+            ciphertext_b64 = raw.get("ciphertext")
+            stored_mac = raw.get("_mac")
+            if not isinstance(ciphertext_b64, str) or not isinstance(stored_mac, str):
+                return None
+            expected_mac = self._compute_mac(self._v2_mac_input(ciphertext_b64))
+            if not hmac_mod.compare_digest(stored_mac, expected_mac):
+                return None
             try:
-                with open(self.path) as f:
-                    raw = json.load(f)
-                # Verify integrity MAC if present
-                if isinstance(raw, dict) and "_mac" in raw:
-                    stored_mac = raw.pop("_mac")
-                    data_str = json.dumps(raw, sort_keys=True, separators=(",", ":"))
-                    expected_mac = self._compute_mac(data_str)
-                    if hmac_mod.compare_digest(stored_mac, expected_mac):
-                        self._peers = raw.get("peers", raw)
-                        self._revoked = raw.get("revoked", {}) if isinstance(raw, dict) else {}
-                    else:
-                        # One-shot migration from legacy
-                        # home-directory-derived MAC to agent-key MAC.
-                        old_mac = hmac_mod.new(
-                            _LEGACY_MAC_KEY, data_str.encode(), hashlib.sha256
-                        ).hexdigest()
-                        if hmac_mod.compare_digest(stored_mac, old_mac):
-                            logger.info("Trust store: migrating from legacy MAC key to agent-bound MAC")
-                            self._peers = raw.get("peers", raw)
-                            self._save()  # Re-save with new key
-                        else:
-                            # v0.8.5.2: include MAC context + multi-daemon hint.
-                            # The most common cause is two daemons on one host
-                            # writing the same trust file with different keypairs
-                            # (the v0.8.4 collision pattern fixed by --trust-path
-                            # in v0.8.5+). Tampering is the other possibility.
-                            logger.critical(
-                                "Trust store integrity check FAILED at %s — "
-                                "stored_mac=%s expected_mac=%s peers_in_file=%d. "
-                                "If you run multiple daemons on this host, give "
-                                "each its own --trust-path to avoid silent "
-                                "collisions; otherwise the file may be tampered. "
-                                "TRUST STORE LOCKED READ-ONLY — _save() will "
-                                "refuse until you remove the colliding writer "
-                                "and reset the file.",
-                                self.path,
-                                stored_mac[:16] + "…",
-                                expected_mac[:16] + "…",
-                                len(raw.get("peers", {})) if isinstance(raw, dict) else 0,
-                            )
-                            self._peers = {}
-                            # v0.8.5.6: lock writes. The on-disk
-                            # file was written by a process with a
-                            # different MAC key — never overwrite it
-                            # blindly, or we'll wipe every pinned peer.
-                            self._readonly_due_to_mac_failure = True
-                            return
-                elif isinstance(raw, dict):
-                    # Legacy format without MAC — migrate on next save
-                    self._peers = raw.get("peers", raw) if "peers" in raw else raw
-                else:
-                    self._peers = {}
-            except (json.JSONDecodeError, IOError) as e:
-                logger.warning("Failed to load trust store: %s", e)
-                self._peers = {}
+                inner_json = self._decrypt_inner(ciphertext_b64)
+            except (CryptoError, ValueError, RuntimeError):
+                return None
+            try:
+                inner = json.loads(inner_json)
+            except json.JSONDecodeError:
+                return None
+            peers = inner.get("peers", {}) if isinstance(inner, dict) else {}
+            revoked = inner.get("revoked", {}) if isinstance(inner, dict) else {}
+            return (peers, revoked)
+
+        # Legacy v1 (plaintext) — migrate forward on next save.
+        if "_mac" in raw:
+            return None  # v1 path is handled inline in ``_load`` because
+            # of the legacy-MAC migration branch.
+        if isinstance(raw, dict):
+            inner = raw.get("peers", raw) if "peers" in raw else raw
+            if isinstance(inner, dict):
+                # No MAC at all (very old store) — accept and migrate.
+                return (inner, raw.get("revoked", {}) if isinstance(raw, dict) else {})
+        return None
+
+    def _atomic_write(self, payload: str) -> bool:
+        """Write ``payload`` to ``self.path`` atomically. Caller holds the lock."""
+        tmp_path = "{}.{}.{}.tmp".format(self.path, os.getpid(), threading.get_ident())
+        try:
+            with open(tmp_path, "w") as f:
+                f.write(payload)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except (OSError, AttributeError):
+                    pass
+            os.replace(tmp_path, self.path)
+            return True
+        except (IOError, OSError) as e:
+            logger.error("Failed to save trust store: %s", e)
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            return False
+
+    def _load(self):
+        if not os.path.exists(self.path):
+            return
+        try:
+            with open(self.path) as f:
+                raw = json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning("Failed to load trust store: %s", e)
+            self._peers = {}
+            return
+
+        if not isinstance(raw, dict):
+            self._peers = {}
+            return
+
+        # v2 (encrypted): version label present + ciphertext field.
+        if raw.get("version") == _TRUST_ENVELOPE_VERSION:
+            decoded = self._deserialize_envelope(raw)
+            if decoded is not None:
+                self._peers, self._revoked = decoded
+                return
+            stored_mac = raw.get("_mac", "")
+            logger.critical(
+                "Trust store integrity check FAILED at %s (v2 envelope) — "
+                "stored_mac=%s. The file was written by a different agent "
+                "key, tampered, or corrupted. TRUST STORE LOCKED READ-ONLY "
+                "— _save() will refuse until you remove the colliding "
+                "writer and reset the file.",
+                self.path,
+                (stored_mac[:16] + "…") if stored_mac else "<missing>",
+            )
+            self._peers = {}
+            self._readonly_due_to_mac_failure = True
+            return
+
+        # Legacy v1 (plaintext, with HMAC). Verify, migrate forward on next
+        # save. Same agent-key migration path as before for the very-old
+        # home-directory-derived MAC.
+        if "_mac" in raw:
+            stored_mac = raw.pop("_mac")
+            data_str = json.dumps(raw, sort_keys=True, separators=(",", ":"))
+            expected_mac = self._compute_mac(data_str)
+            if hmac_mod.compare_digest(stored_mac, expected_mac):
+                self._peers = raw.get("peers", raw)
+                self._revoked = raw.get("revoked", {})
+                logger.info(
+                    "Trust store loaded from legacy plaintext envelope; "
+                    "migrating to encrypted v%d on next save.",
+                    _TRUST_ENVELOPE_VERSION,
+                )
+                return
+            old_mac = hmac_mod.new(
+                _LEGACY_MAC_KEY, data_str.encode(), hashlib.sha256
+            ).hexdigest()
+            if hmac_mod.compare_digest(stored_mac, old_mac):
+                logger.info(
+                    "Trust store: migrating from legacy MAC key to "
+                    "agent-bound MAC (and to encrypted v%d envelope)",
+                    _TRUST_ENVELOPE_VERSION,
+                )
+                self._peers = raw.get("peers", raw)
+                self._save()
+                return
+            logger.critical(
+                "Trust store integrity check FAILED at %s — "
+                "stored_mac=%s expected_mac=%s peers_in_file=%d. "
+                "If you run multiple daemons on this host, give each "
+                "its own --trust-path to avoid silent collisions; "
+                "otherwise the file may be tampered. TRUST STORE "
+                "LOCKED READ-ONLY — _save() will refuse until you "
+                "remove the colliding writer and reset the file.",
+                self.path,
+                stored_mac[:16] + "…",
+                expected_mac[:16] + "…",
+                len(raw.get("peers", {})),
+            )
+            self._peers = {}
+            self._readonly_due_to_mac_failure = True
+            return
+
+        # Very-old MAC-less plaintext. Migrate on next save.
+        self._peers = raw.get("peers", raw) if "peers" in raw else raw
+        self._revoked = raw.get("revoked", {})
 
     def _save(self) -> bool:
         """Persist current state to disk under a cross-process lock.
@@ -312,34 +499,15 @@ class TrustStore:
             )
             return False
         # v0.8.5.6: hold a cross-process flock around the
-        # tmp-write + rename. Use a per-process tmp filename so two
-        # processes can't trash each other's in-flight tmp file.
-        tmp_path = "{}.{}.{}.tmp".format(self.path, os.getpid(), threading.get_ident())
+        # tmp-write + rename so two processes can't trash each other's
+        # in-flight tmp file.
         try:
-            with _trust_file_lock(self.path):
-                envelope = {"peers": self._peers,
-                            "revoked": self._revoked}
-                data_str = json.dumps(envelope, sort_keys=True,
-                                      separators=(",", ":"))
-                envelope["_mac"] = self._compute_mac(data_str)
-                with open(tmp_path, "w") as f:
-                    json.dump(envelope, f, indent=2)
-                    f.flush()
-                    try:
-                        os.fsync(f.fileno())
-                    except (OSError, AttributeError):
-                        pass
-                os.replace(tmp_path, self.path)
-            return True
-        except (IOError, OSError) as e:
-            logger.error("Failed to save trust store: %s", e)
-            # Best-effort cleanup of our per-pid tmp file
-            try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except OSError:
-                pass
+            payload = self._serialize_envelope()
+        except RuntimeError as e:
+            logger.error("Failed to serialize trust store: %s", e)
             return False
+        with _trust_file_lock(self.path):
+            return self._atomic_write(payload)
 
     @staticmethod
     def fingerprint(pubkey_b64: str) -> str:
@@ -704,38 +872,21 @@ class TrustStore:
             rec.pop("capability_hash_pending", None)
             rec.pop("capability_set_pending", None)
             rec["cap_accepted_at"] = time.time()
-            # Bypass the lock acquisition in _save (we already hold
-            # it) by serializing inline. Same envelope shape as _save.
+            # We already hold the trust file lock — call the write helper
+            # directly instead of going through _save() (which would try
+            # to re-acquire the same flock).
             if self._readonly_due_to_mac_failure:
                 logger.error(
                     "accept_capability_change: trust store at %s is "
                     "LOCKED read-only — refusing to save", self.path,
                 )
                 return False
-            tmp_path = "{}.{}.{}.tmp".format(self.path, os.getpid(), threading.get_ident())
             try:
-                envelope = {"peers": self._peers,
-                            "revoked": self._revoked}
-                data_str = json.dumps(envelope, sort_keys=True,
-                                      separators=(",", ":"))
-                envelope["_mac"] = self._compute_mac(data_str)
-                with open(tmp_path, "w") as f:
-                    json.dump(envelope, f, indent=2)
-                    f.flush()
-                    try:
-                        os.fsync(f.fileno())
-                    except (OSError, AttributeError):
-                        pass
-                os.replace(tmp_path, self.path)
-            except (IOError, OSError) as e:
-                logger.error(
-                    "accept_capability_change: save failed: %s", e,
-                )
-                try:
-                    if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
-                except OSError:
-                    pass
+                payload = self._serialize_envelope()
+            except RuntimeError as e:
+                logger.error("accept_capability_change: serialize failed: %s", e)
+                return False
+            if not self._atomic_write(payload):
                 return False
             logger.info(
                 "Peer %s capability baseline updated to hash %s...",
