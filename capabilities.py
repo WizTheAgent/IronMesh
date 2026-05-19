@@ -189,7 +189,35 @@ class CapabilityRegistry:
             expected = hmac.new(self._hmac_key, body.encode("utf-8"),
                                 hashlib.sha256).hexdigest()
             if not hmac.compare_digest(stored, expected):
-                logger.warning("Capability file failed HMAC verification")
+                # v0.9.4: identity-rotation silent reset. Same pattern as
+                # ``mesh.MeshRouter.load_persisted_routes`` — if the
+                # body decodes and the embedded ``my_node_id`` differs
+                # from ours, this is a stale file from a previous
+                # identity, not a real tamper event. Remove it
+                # silently; the next save under the new key writes a
+                # fresh record.
+                _identity_rotation = False
+                try:
+                    _peek = json.loads(body) if body else {}
+                    if isinstance(_peek, dict):
+                        _peek_id = _peek.get("my_node_id")
+                        if (isinstance(_peek_id, str) and _peek_id
+                                and _peek_id != self._my_node_id):
+                            _identity_rotation = True
+                except (ValueError, TypeError):
+                    pass
+                if _identity_rotation:
+                    logger.info(
+                        "Capability file %s belongs to a previous identity — "
+                        "discarding silently (key rotation)",
+                        self._persist_path,
+                    )
+                    try:
+                        os.remove(self._persist_path)
+                    except OSError:
+                        pass
+                else:
+                    logger.warning("Capability file failed HMAC verification")
                 return False
             obj = json.loads(body)
             if obj.get("my_node_id") != self._my_node_id:

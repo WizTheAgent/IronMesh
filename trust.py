@@ -241,6 +241,15 @@ def canonical_capability_hash(capabilities) -> str:
 class TrustStore:
     """TOFU key pinning database backed by JSON file with integrity MAC."""
 
+    # Per-process dedup of integrity-check-FAILED CRITICAL logs.
+    # The startup audit-chain verify path + each new daemon instance
+    # reconstructs a TrustStore against the same on-disk file; logging
+    # CRITICAL every iteration produces unbounded log noise. Keyed by
+    # ``(path, stored_mac)`` so a genuine new failure (different MAC
+    # appears in the file) re-fires the CRITICAL, while the lock-loop
+    # silently downgrades to DEBUG.
+    _mac_failure_logged: set = set()
+
     def __init__(self, agent_key: bytes, path: str = DEFAULT_TRUST_PATH):
         """
         Args:
@@ -412,15 +421,26 @@ class TrustStore:
                 self._peers, self._revoked = decoded
                 return
             stored_mac = raw.get("_mac", "")
-            logger.critical(
-                "Trust store integrity check FAILED at %s (v2 envelope) — "
-                "stored_mac=%s. The file was written by a different agent "
-                "key, tampered, or corrupted. TRUST STORE LOCKED READ-ONLY "
-                "— _save() will refuse until you remove the colliding "
-                "writer and reset the file.",
-                self.path,
-                (stored_mac[:16] + "…") if stored_mac else "<missing>",
-            )
+            # Log CRITICAL once per (path, stored_mac) pair to keep
+            # the audit-chain-verify loop from spamming the log. A
+            # genuine new failure (different stored_mac) re-fires.
+            mac_key = (self.path, stored_mac)
+            if mac_key in TrustStore._mac_failure_logged:
+                logger.debug(
+                    "Trust store v2 envelope still locked read-only at %s",
+                    self.path,
+                )
+            else:
+                TrustStore._mac_failure_logged.add(mac_key)
+                logger.critical(
+                    "Trust store integrity check FAILED at %s (v2 envelope) — "
+                    "stored_mac=%s. The file was written by a different agent "
+                    "key, tampered, or corrupted. TRUST STORE LOCKED READ-ONLY "
+                    "— _save() will refuse until you remove the colliding "
+                    "writer and reset the file.",
+                    self.path,
+                    (stored_mac[:16] + "…") if stored_mac else "<missing>",
+                )
             self._peers = {}
             self._readonly_due_to_mac_failure = True
             return
@@ -453,19 +473,29 @@ class TrustStore:
                 self._peers = raw.get("peers", raw)
                 self._save()
                 return
-            logger.critical(
-                "Trust store integrity check FAILED at %s — "
-                "stored_mac=%s expected_mac=%s peers_in_file=%d. "
-                "If you run multiple daemons on this host, give each "
-                "its own --trust-path to avoid silent collisions; "
-                "otherwise the file may be tampered. TRUST STORE "
-                "LOCKED READ-ONLY — _save() will refuse until you "
-                "remove the colliding writer and reset the file.",
-                self.path,
-                stored_mac[:16] + "…",
-                expected_mac[:16] + "…",
-                len(raw.get("peers", {})),
-            )
+            # Dedup as above — log CRITICAL once per (path, stored_mac)
+            # pair to keep the audit-chain-verify loop from spamming.
+            mac_key = (self.path, stored_mac)
+            if mac_key in TrustStore._mac_failure_logged:
+                logger.debug(
+                    "Trust store legacy envelope still locked read-only at %s",
+                    self.path,
+                )
+            else:
+                TrustStore._mac_failure_logged.add(mac_key)
+                logger.critical(
+                    "Trust store integrity check FAILED at %s — "
+                    "stored_mac=%s expected_mac=%s peers_in_file=%d. "
+                    "If you run multiple daemons on this host, give each "
+                    "its own --trust-path to avoid silent collisions; "
+                    "otherwise the file may be tampered. TRUST STORE "
+                    "LOCKED READ-ONLY — _save() will refuse until you "
+                    "remove the colliding writer and reset the file.",
+                    self.path,
+                    stored_mac[:16] + "…",
+                    expected_mac[:16] + "…",
+                    len(raw.get("peers", {})),
+                )
             self._peers = {}
             self._readonly_due_to_mac_failure = True
             return

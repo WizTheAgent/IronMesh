@@ -236,7 +236,38 @@ class RoutingTable:
             body = data.get("body", "")
             expected = hmac.new(hmac_key, body.encode("utf-8"), hashlib.sha256).hexdigest()
             if not hmac.compare_digest(stored, expected):
-                logger.warning("Routes file %s failed HMAC verification — ignoring", path)
+                # v0.9.4: if the body decodes and carries a different
+                # my_node_id, this is the "keys rotated, stale file"
+                # case (different identity on the same path). Silently
+                # reset by removing the file; the daemon will write a
+                # fresh one under the new key on first save. Avoids
+                # log-noise spam on every restart with a new identity.
+                # A true tamper case (matching node_id, fails HMAC) or
+                # an unparseable body still warns loudly.
+                _identity_rotation = False
+                try:
+                    _peek = json.loads(body) if body else {}
+                    if isinstance(_peek, dict):
+                        _peek_id = _peek.get("my_node_id")
+                        if (isinstance(_peek_id, str) and _peek_id
+                                and _peek_id != self._my_node_id):
+                            _identity_rotation = True
+                except (ValueError, TypeError):
+                    pass
+                if _identity_rotation:
+                    logger.info(
+                        "Routes file %s belongs to a previous identity — "
+                        "discarding silently (key rotation)", path,
+                    )
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                else:
+                    logger.warning(
+                        "Routes file %s failed HMAC verification — ignoring",
+                        path,
+                    )
                 return False
             obj = json.loads(body)
             if obj.get("my_node_id") != self._my_node_id:

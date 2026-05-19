@@ -1481,6 +1481,30 @@ class BridgeDaemon:
                 "Minimum 12 characters required for security."
             )
         self.passphrase = passphrase
+        # v0.9.4: when keys_path is non-default and the sibling on-disk
+        # paths (db_path / routes_path / capabilities_path / trust_path)
+        # are still at their default ~/.ironmesh/* values, auto-derive
+        # them next to the keys file. Removes the silent-collision foot-
+        # gun where two daemons on one host share the same trust store
+        # because the caller only redirected keys_path. The 3-way live-
+        # mesh test on 2026-05-17 tripped this — wiz daemon + dialogue
+        # orchestrator both wrote ~/.ironmesh/known_peers.json and the
+        # second one got locked read-only via MAC mismatch.
+        _DEFAULT_KEYS = "~/.ironmesh/keys.json"
+        _DEFAULT_DB = "~/.ironmesh/data.db"
+        _DEFAULT_ROUTES = "~/.ironmesh/routes.json"
+        _DEFAULT_CAPS = "~/.ironmesh/capabilities.json"
+        if keys_path and keys_path != _DEFAULT_KEYS:
+            _key_dir = os.path.dirname(os.path.expanduser(keys_path))
+            if _key_dir:
+                if db_path == _DEFAULT_DB:
+                    db_path = os.path.join(_key_dir, "data.db")
+                if routes_path == _DEFAULT_ROUTES:
+                    routes_path = os.path.join(_key_dir, "routes.json")
+                if capabilities_path == _DEFAULT_CAPS:
+                    capabilities_path = os.path.join(_key_dir, "capabilities.json")
+                if trust_path is None:
+                    trust_path = os.path.join(_key_dir, "known_peers.json")
         self.keys_path = keys_path
         self.keys_passphrase = keys_passphrase
         self.tls_cert = tls_cert
@@ -1918,6 +1942,14 @@ class BridgeDaemon:
             # much faster than app-level heartbeat alone.
             ping_interval=20,
             ping_timeout=10,
+            # v0.9.4: SO_REUSEADDR so daemon restart on Windows doesn't
+            # trip Errno 10048 ("only one usage of each socket address
+            # ... is normally permitted") while the previous bind sits
+            # in TIME_WAIT. POSIX already allows this in most kernels;
+            # Windows requires the explicit flag. Live-mesh test on
+            # 2026-05-17 hit this three times during orchestrator
+            # restarts.
+            reuse_address=True,
         )
         scheme = "wss" if ssl_context else "ws"
         logger.info("WebSocket server started on %s://%s:%d", scheme, self.bind_address, self.port)
@@ -2110,6 +2142,28 @@ class BridgeDaemon:
             self._audit.log(EVENT_AUTH_FAILURE, {"ip": ip, "failure_count": count})
             if count >= self._auth_max_failures:
                 self._audit.log(EVENT_AUTH_BLOCKED, {"ip": ip, "duration_seconds": self._auth_block_duration})
+
+    async def _clear_ip_auth_history(self, ip: str) -> bool:
+        """Clear the auth-failure history for an IP that successfully
+        presented a TOFU-pinned (or fresh-pin) identity.
+
+        The auth-failure / IP-block window exists to defeat brute force
+        on the shared passphrase. Once a peer has authenticated AND
+        passed TOFU identity verification, they are no longer a
+        brute-force candidate, so retaining the block on their source
+        IP only creates a dead zone for legitimate reconnects.
+        Returns True iff the history was non-empty (i.e. we cleared a
+        real block, not a no-op).
+        """
+        async with self._auth_failures_lock:
+            had_history = bool(self._auth_failures.get(ip))
+            self._auth_failures.pop(ip, None)
+        if had_history:
+            logger.info(
+                "Auth-failure history for %s cleared after valid "
+                "TOFU-pinned identity authenticated", ip,
+            )
+        return had_history
 
     async def _handle_connection(self, websocket, path=None):
         """Handle incoming WebSocket connection: passphrase auth -> ephemeral ECDH -> message loop."""
@@ -2388,6 +2442,22 @@ class BridgeDaemon:
 
             # TOFU check BEFORE adding peer to dicts.
             await self._check_tofu(peer_id, peer_identity_b64)
+
+            # Peer presented a valid TOFU-pinned (or fresh-pin) identity —
+            # clear any auth-failure block for this source IP. The block
+            # exists to defeat brute-force on the passphrase, not to gate
+            # known-identity peers; without this, a peer that briefly
+            # mismatched passphrases stays blocked from the same IP even
+            # after correcting itself.
+            try:
+                remote_ip_for_clear = (
+                    websocket.remote_address[0]
+                    if websocket.remote_address else None
+                )
+                if remote_ip_for_clear:
+                    await self._clear_ip_auth_history(remote_ip_for_clear)
+            except (AttributeError, IndexError, RuntimeError) as _e:
+                logger.debug("IP-block clear after TOFU failed: %s", _e)
 
             # Set up peer state (only after TOFU passes)
             peer_state = ew_protocol.PeerState(
@@ -6172,11 +6242,25 @@ class BridgeDaemon:
         # during the handshake — mDNS address changes are safe to accept.
         pinned = self._pinned_peers.get(agent_name)
         if pinned and pinned["address"] != addr:
-            logger.info(
-                "mDNS: address changed for pinned peer %s "
-                "(was %s, now %s). Identity will be verified during handshake.",
-                agent_name, pinned["address"], addr,
-            )
+            # v0.9.4: same-IP port-shift (ephemeral source port giving
+            # way to the announced listen port) is benign and was
+            # producing repeat "address changed" log noise during the
+            # 3-way live-mesh test. Downgrade to DEBUG; only a real
+            # IP change (different host) warrants the operator-visible
+            # log.
+            _old_host = pinned["address"].rsplit(":", 1)[0] if ":" in pinned["address"] else pinned["address"]
+            _new_host = addr.rsplit(":", 1)[0] if ":" in addr else addr
+            if _old_host == _new_host:
+                logger.debug(
+                    "mDNS: port shift for pinned peer %s (was %s, now %s)",
+                    agent_name, pinned["address"], addr,
+                )
+            else:
+                logger.info(
+                    "mDNS: address changed for pinned peer %s "
+                    "(was %s, now %s). Identity will be verified during handshake.",
+                    agent_name, pinned["address"], addr,
+                )
             pinned["address"] = addr
         # Skip if THIS specific peer is already online (avoid duplicate connections)
         # Match by agent_name OR by node_id (peers dict is keyed by node_id but
