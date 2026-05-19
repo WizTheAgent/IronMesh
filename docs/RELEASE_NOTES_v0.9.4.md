@@ -124,8 +124,8 @@ fallback) remain on the roadmap. The Phase 4 cutoff comes with a
 ### Pre-audit hardening (frame, JSON, replay, mitigations)
 
 A targeted hardening pass to make the upcoming external audit
-maximally productive — closing every gap we can already see so the
-audit budget focuses on findings the project didn't catch first:
+maximally productive — closing every visible gap so the audit
+budget focuses on findings the project didn't catch first:
 
 - **Frame-length ceiling.** `MAX_FRAME_BYTES = 1 MiB` enforced
   before the buffer slice in `Frame.deserialize_and_decrypt`. The
@@ -235,6 +235,31 @@ Migration guides:
 `.legacy.bak` next to `keys.json` is the rollback target for one
 full release cycle (through v0.9.5). A v0.9.2 daemon cannot read
 the v3 envelope; copy `.legacy.bak` back over `keys.json` to revert.
+
+## Live-mesh hardening pass
+
+Six operator-facing fixes from a live multi-node dialogue verification
+run against the staged v0.9.4 build, folded in before tag:
+
+1. **Trust-store CRITICAL-log dedup** — a single MAC mismatch on
+   `known_peers.json` no longer re-emits CRITICAL on every read;
+   subsequent reads against the same MAC drop to DEBUG.
+2. **`SO_REUSEADDR` on the listener** — daemon restart can re-bind
+   immediately on Windows instead of blocking on `TIME_WAIT`.
+3. **Sibling-path auto-derivation from `--keys-path`** — when keys
+   live in a non-default directory, the database, route, capability,
+   and trust files default to siblings in the same directory unless
+   explicitly overridden.
+4. **Identity-rotation silent reset for `routes.json` +
+   `capabilities.json`** — same pattern that already shipped for the
+   trust store: HMAC failure with a previous-identity body in the
+   file → silent INFO reset, not a tamper WARNING.
+5. **Post-TOFU IP-block clear** — a peer that briefly mismatched
+   passphrases and corrected itself no longer stays blocked on the
+   same source IP. The block targets passphrase brute force, not
+   known-identity peers.
+6. **mDNS port-churn log dedup** — port-only changes for a pinned
+   peer log at DEBUG; only genuine IP changes log INFO.
 
 ## Wire-format invariant
 

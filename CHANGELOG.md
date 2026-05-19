@@ -7,9 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.4] — 2026-05-15 — Pre-audit hardening + dual-use migration + signed capability announcement
+## [0.9.4] — 2026-05-19 — Pre-audit hardening + dual-use migration + signed capability announcement
 
 Combined release. The v0.9.3 security hardening point release (strict TLS, trust-store at-rest encryption, global rate cap, trust CLI subcommands) and the v0.9.4 pre-audit hardening pass (Ed25519/X25519 dual-use migration phases 1 & 2, signed `CAPABILITY_ANNOUNCE`, frame-length ceiling, JSON depth guard, replay upper bound, narrowed exception handling, fail-closed TOFU, dependency upper bounds) ship together as v0.9.4. See `docs/RELEASE_NOTES_v0.9.4.md` for the full operator-facing write-up.
+
+### Fixed (live-mesh hardening pass)
+
+Six operator-facing fixes from a live multi-node dialogue verification
+run against the staged v0.9.4 build:
+
+- **Trust-store CRITICAL-log dedup.** A single MAC mismatch on
+  `known_peers.json` no longer re-emits a CRITICAL log on every
+  subsequent read; the first mismatch logs CRITICAL, subsequent reads
+  against the same MAC drop to DEBUG. Prevents log floods on a
+  long-running daemon with a stuck mismatch.
+- **`SO_REUSEADDR` on the WebSocket listener** (`websockets.serve`
+  `reuse_address=True`). A daemon restart can now re-bind the listen
+  socket immediately on Windows instead of blocking on `TIME_WAIT`.
+- **Sibling-path auto-derivation from `--keys-path`.** When the
+  operator points `--keys-path` at a non-default directory,
+  `--db-path`, `--routes-path`, `--capabilities-path`, and
+  `--trust-path` now default to siblings in the same directory unless
+  explicitly overridden. Avoids the surprise where a custom-keys
+  deployment silently uses `~/.ironmesh/data.db` for its database.
+- **Identity-rotation silent reset for routes + capabilities.** When
+  `routes.json` or `capabilities.json` fails its HMAC check, the body
+  is peeked: if the embedded `my_node_id` belongs to a previous
+  identity, the file is removed silently (INFO log, key-rotation
+  case). Genuine tamper events still WARN loudly. Same pattern that
+  already shipped for the trust store.
+- **Post-TOFU IP-block clear.** When a peer presents a valid
+  TOFU-pinned (or fresh-pin) identity, the bridge clears any
+  accumulated auth-failure history for the source IP. Prevents a peer
+  that briefly mismatched passphrases from staying blocked on the
+  same IP after correcting itself. The block exists to defeat
+  brute-force on the passphrase, not to gate known-identity peers.
+- **mDNS port-churn log dedup.** "Address changed for pinned peer" in
+  `_on_peer_discovered` now logs at DEBUG when only the port changed
+  (same host IP) and INFO only on genuine IP changes. Cuts noise from
+  the ephemeral-port shuffle that happens after a peer-side daemon
+  restart.
 
 ### Pre-audit hardening + dual-use migration
 
@@ -197,8 +234,8 @@ Combined release. The v0.9.3 security hardening point release (strict TLS, trust
   truncation check. Rejection now happens immediately after reading the
   length field, before the buffer slice. Aligned with the existing 1 MiB
   websocket `max_message_size` default. Same ceiling enforced on
-  `encrypt_and_serialize` and `serialize_plaintext` send paths so we
-  never emit a frame our own peers would reject.
+  `encrypt_and_serialize` and `serialize_plaintext` send paths so a daemon
+  never emits a frame its own peers would reject.
 - Test module `tests/test_frame_hardening.py` covering attacker-declared
   4 GiB rejection, just-above-ceiling rejection, send-side rejection,
   and regression of the legitimate small-frame round-trip.
@@ -360,7 +397,7 @@ rather than a feature push.
   activations all instrumented. Spans are no-ops on installs without
   the `otel` extra. Pre-canned **Grafana dashboard JSON** + **9
   Prometheus alert rules** ship under `scripts/observability/` —
-  drop into your stack and get the full ops view immediately.
+  drop in for an immediate full ops view.
 - **`docs/ROADMAP_TO_1.0.md`** publishing the v0.9.x → v1.0 release
   ladder commitment. Each release in the ladder carries a single
   focused theme; no v0.9.x release introduces a breaking change
