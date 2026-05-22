@@ -532,6 +532,26 @@ def load_keys(path: str, passphrase: Optional[str] = None) -> AgentKeys:
     )
 
 
+def _is_master_seed_file(path: str) -> bool:
+    """Best-effort check that a key file on disk is the master-seed v3 envelope.
+
+    Used by ``migrate_keys_to_master_seed`` to disambiguate a Windows
+    ``PermissionError`` raised by a concurrent racer's ``os.replace``
+    from a real permission failure: if the file already has the v3
+    format tag, the racer's loser should surface the same idempotent
+    ``ValueError`` as the explicit pre-check.
+
+    Returns False on any read/decode error — the caller will then
+    re-raise the original ``PermissionError``.
+    """
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data.get("format") == KEYS_FORMAT_MASTER_SEED_V1
+    except (OSError, ValueError):
+        return False
+
+
 def migrate_keys_to_master_seed(path: str,
                                  passphrase: Optional[str] = None,
                                  allow_plaintext: bool = False) -> AgentKeys:
@@ -595,9 +615,31 @@ def migrate_keys_to_master_seed(path: str,
         # rollback target. Subsequent migrations (re-migrating after a
         # partial failure) MUST NOT clobber the original backup.
         import shutil
-        shutil.copy2(path, backup_path)
+        try:
+            shutil.copy2(path, backup_path)
+        except PermissionError:
+            # Windows-only race: another thread/process is in the
+            # middle of replacing ``path`` with the migrated envelope.
+            # If the file is now in master-seed format, this call is
+            # the losing racer — surface the idempotent ValueError so
+            # callers handle it like the explicit pre-check above.
+            if _is_master_seed_file(path):
+                raise ValueError(
+                    f"{path} is already in master-seed format "
+                    "(migration completed by a concurrent caller)"
+                ) from None
+            raise
 
-    save_keys(migrated, path, passphrase=passphrase, allow_plaintext=allow_plaintext)
+    try:
+        save_keys(migrated, path, passphrase=passphrase,
+                  allow_plaintext=allow_plaintext)
+    except PermissionError:
+        if _is_master_seed_file(path):
+            raise ValueError(
+                f"{path} is already in master-seed format "
+                "(migration completed by a concurrent caller)"
+            ) from None
+        raise
     return migrated
 
 

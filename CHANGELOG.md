@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.4] — 2026-05-19 — Pre-audit hardening + dual-use migration + signed capability announcement
+## [0.9.4.1] — 2026-05-21 — CI fix: Windows py3.13 concurrent-migration race
+
+### Fixed
+
+- **`migrate_keys_to_master_seed` Windows race outcome.** On
+  Windows + CPython 3.13, two threads racing to migrate the same
+  legacy keystore could have the losing thread's `os.replace`
+  surface a `PermissionError(13)` instead of the documented
+  "already in master-seed format" `ValueError`. The function now
+  catches `PermissionError` from both the legacy-backup copy and
+  the final save, and — if the file is in master-seed format
+  by that point — surfaces the same idempotent `ValueError` the
+  pre-check would have raised. Behaviour on every other platform
+  is unchanged. Caught by the v0.9.4 CI matrix
+  (`test_two_threads_migrating_same_file_converge` on Windows
+  py3.13 only); v0.9.4 functional behaviour is otherwise unaffected.
+
+
 
 Combined release. The v0.9.3 security hardening point release (strict TLS, trust-store at-rest encryption, global rate cap, trust CLI subcommands) and the v0.9.4 pre-audit hardening pass (Ed25519/X25519 dual-use migration phases 1 & 2, signed `CAPABILITY_ANNOUNCE`, frame-length ceiling, JSON depth guard, replay upper bound, narrowed exception handling, fail-closed TOFU, dependency upper bounds) ship together as v0.9.4. See `docs/RELEASE_NOTES_v0.9.4.md` for the full operator-facing write-up.
 
