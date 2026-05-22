@@ -511,4 +511,36 @@ curl http://127.0.0.1:8765/metrics | grep peer_cap   # Prometheus
 
 # Doctor (v0.8.5.x sanity check)
 ironmesh doctor
+
+# Peer reachability + passphrase dry-run (v0.9.4.2)
+ironmesh doctor --peer <host>:<port> \
+    --passphrase-file ~/.ironmesh/passphrase
 ```
+
+## Deployment helpers (v0.9.4.2)
+
+Two small wrappers live in `tools/` for the deployment patterns
+that have actually hurt operators on the staging mesh:
+
+- **`tools/start-daemon-detached.sh`** — launch a daemon over SSH
+  so it survives logout. `nohup ... & disown` does not actually
+  survive logout (SIGHUP on terminal close); this wrapper uses
+  `setsid` to give the daemon its own session/process group.
+  Stdout/stderr land in `~/.ironmesh/daemon.log`.
+
+  ```bash
+  ssh peer "bash -s" < tools/start-daemon-detached.sh -- \
+      --name peer --port 8765 \
+      --passphrase-file ~/.ironmesh/passphrase
+  ```
+
+- **`tools/transfer-wheel.sh`** — wheel transfer with remote
+  SHA256 verification. `scp` over a flaky network has been
+  observed to complete with exit code 0 while transferring a
+  truncated file; this wrapper streams via
+  `ssh ... 'cat > path'` and re-checks the SHA after copy.
+
+  ```bash
+  tools/transfer-wheel.sh dist/ironmesh-0.9.4.2-py3-none-any.whl \
+      peer:/tmp/
+  ```

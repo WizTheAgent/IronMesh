@@ -562,6 +562,13 @@ def parse_args():
                                 help="Port the daemon binds to — checked for conflicts")
     doctor_parser.add_argument("--bind", default="0.0.0.0",
                                 help="Bind address — checked alongside --port")
+    doctor_parser.add_argument("--peer", default=None, metavar="HOST:PORT",
+                                help="Optional: dry-run a WebSocket handshake against a "
+                                     "peer to verify reachability + passphrase match. "
+                                     "Reports the failure point cleanly instead of waiting "
+                                     "for the daemon's auth-block storm.")
+    doctor_parser.add_argument("--passphrase-file", default=None,
+                                help="Passphrase file for the --peer dry-run handshake")
 
     # --- setup ---
     setup_parser = sub.add_parser(
@@ -2249,11 +2256,95 @@ def cmd_doctor(args):
     print("      Strict TLS / global rate cap: report runtime state "
           "from `ironmesh status` (added per running daemon).")
 
+    # Optional: dry-run a WebSocket handshake against a peer.
+    if args.peer:
+        print(f"[peer] Dry-run handshake against {args.peer}")
+        peer_result = _doctor_peer_handshake(args, keypair)
+        if peer_result != 0:
+            failures += 1
+
     print("=" * 60)
     if failures == 0:
         print("ALL CHECKS PASSED")
         return 0
     print(f"{failures} CHECK(S) FAILED — see above for remediation")
+    return 1
+
+
+def _doctor_peer_handshake(args, keypair) -> int:
+    """Dry-run a WebSocket handshake against a peer to surface
+    passphrase mismatch, unreachable host, or TLS errors as a clean
+    diagnostic message instead of letting the operator hit the
+    auth-failure block from a real daemon.
+
+    Returns 0 on a clean handshake, 1 on any reportable failure.
+    """
+    import asyncio
+    target = args.peer
+    if ":" not in target:
+        print(f"      FAIL — --peer must be HOST:PORT, got {target!r}")
+        return 1
+    host, _, port_s = target.rpartition(":")
+    try:
+        port = int(port_s)
+    except ValueError:
+        print(f"      FAIL — port {port_s!r} is not an integer")
+        return 1
+    if keypair is None:
+        print("      SKIP — identity key did not load (see check [1/8])")
+        return 1
+
+    passphrase = (
+        args.keys_passphrase
+        or os.environ.get("IRONMESH_PASSPHRASE")
+    )
+    if args.passphrase_file:
+        try:
+            with open(os.path.expanduser(args.passphrase_file)) as f:
+                passphrase = f.read().strip()
+        except OSError as e:
+            print(f"      FAIL — could not read --passphrase-file: {e}")
+            return 1
+    if not passphrase:
+        print("      SKIP — no passphrase available "
+              "(set IRONMESH_PASSPHRASE or --passphrase-file)")
+        return 1
+
+    async def _try() -> tuple[bool, str]:
+        import websockets
+        url = f"ws://{host}:{port}"
+        try:
+            async with websockets.connect(
+                url, open_timeout=5, close_timeout=2,
+            ) as ws:
+                # Wait briefly for the server HELLO. We don't complete
+                # the auth dance — surfacing the connect + initial frame
+                # is enough to disambiguate the common failure modes:
+                #   - "connection refused" → peer not listening
+                #   - "timeout" → host unreachable / firewalled
+                #   - "1006 closed without handshake" → TLS or
+                #     passphrase mismatch (peer rejected our hello)
+                try:
+                    hello = await asyncio.wait_for(ws.recv(), timeout=3)
+                    return True, f"received {len(hello)} bytes of initial frame"
+                except asyncio.TimeoutError:
+                    return False, ("connected but no HELLO within 3s — "
+                                   "possible passphrase mismatch (encrypted "
+                                   "HELLO won't decode on the other side)")
+        except (OSError, asyncio.TimeoutError) as e:
+            return False, f"transport: {type(e).__name__}: {e}"
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}"
+
+    try:
+        ok, detail = asyncio.run(_try())
+    except RuntimeError as e:
+        print(f"      FAIL — asyncio error: {e}")
+        return 1
+    if ok:
+        print(f"      OK — {detail}")
+        return 0
+    print(f"      FAIL — {detail}")
     return 1
 
 

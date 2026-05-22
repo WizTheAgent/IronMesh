@@ -103,6 +103,52 @@ def _enforce_int_str_digits_cap(limit: int = 4300) -> None:
 _enforce_int_str_digits_cap()
 
 
+def _ipv4_to_int(ip: str) -> Optional[int]:
+    """Parse a dotted-quad IPv4 string to its 32-bit int form. Returns None on parse error."""
+    try:
+        parts = ip.split(".")
+        if len(parts) != 4:
+            return None
+        n = 0
+        for p in parts:
+            v = int(p)
+            if v < 0 or v > 255:
+                return None
+            n = (n << 8) | v
+        return n
+    except (ValueError, AttributeError):
+        return None
+
+
+def _select_closest_subnet_address(candidates: List[str],
+                                    local_prefixes: List[int]) -> str:
+    """Pick the candidate address whose /24 matches one of ours.
+
+    Multi-homed peers (e.g. a VPN interface plus the LAN interface)
+    advertise multiple addresses via mDNS. Choosing the first one
+    deterministically can cross-route to the VPN side when a LAN
+    address would be cheaper and more reliable. This picks the first
+    candidate whose top 24 bits match one of the supplied local
+    /24 prefixes, falling back to the first candidate when no match
+    exists (same as the legacy single-address path).
+
+    ``candidates`` is a non-empty list of dotted-quad IPv4 strings.
+    ``local_prefixes`` is a list of /24 prefixes (top 24 bits as int).
+    """
+    if not candidates:
+        return ""  # unreachable per call sites — defensive only
+    if len(candidates) == 1 or not local_prefixes:
+        return candidates[0]
+    for ip in candidates:
+        ip_int = _ipv4_to_int(ip)
+        if ip_int is None:
+            continue
+        ip_prefix = ip_int & 0xFFFFFF00
+        if ip_prefix in local_prefixes:
+            return ip
+    return candidates[0]
+
+
 def _parse_protocol_version(v: str) -> tuple:
     """Parse 'ironmesh/X.Y' into a (major, minor) tuple. Returns (0, 0) on parse failure."""
     if not v:
@@ -6236,7 +6282,15 @@ class BridgeDaemon:
         if self._allowed_peers is None and not self._open_discovery:
             logger.info("mDNS: blocking auto-connect to %s (default-deny, use --allowed-peers or --open-discovery)", agent_name)
             return
-        addr = f"{info['ip']}:{info['port']}"
+        # Multi-homed peer: if the announcement carries multiple
+        # addresses, prefer the one whose /24 matches one of our own
+        # local interfaces. Falls through to the first announced
+        # address when no subnet match is found (same as the legacy
+        # single-address path).
+        candidate_ips = info.get("addresses") or [info["ip"]]
+        chosen_ip = _select_closest_subnet_address(candidate_ips, self._local_subnet_prefixes()) \
+            if len(candidate_ips) > 1 else candidate_ips[0]
+        addr = f"{chosen_ip}:{info['port']}"
         # If this code has seen this peer before, log address changes.
         # Identity is verified via Ed25519 key pinning in _check_tofu()
         # during the handshake — mDNS address changes are safe to accept.
@@ -6298,7 +6352,7 @@ class BridgeDaemon:
         # Schedule connection attempt on the event loop (mDNS callback runs in Zeroconf thread)
         try:
             loop = self._loop
-            host = info["ip"]
+            host = chosen_ip
             port = info["port"]
             logger.info("mDNS scheduling connect_to_peer(%s, %s) for %s", host, port, agent_name)
             def _schedule():
@@ -6310,6 +6364,39 @@ class BridgeDaemon:
         except Exception as e:
             logger.warning("Auto-connect schedule to %s failed: %s", agent_name, e)
             self._release_reconnect(agent_name)
+
+    def _local_subnet_prefixes(self) -> List[int]:
+        """Return the /24 prefixes of this host's IPv4 interfaces.
+
+        Used by the mDNS discovery callback to prefer same-LAN
+        candidate addresses on multi-homed peers. Cached after the
+        first call — interface set is treated as stable for the
+        process lifetime, which matches every real deployment we've
+        seen (a flapping NIC during runtime would simply revert to
+        the legacy first-announced behaviour on the affected calls).
+        """
+        cached = getattr(self, "_subnet_prefix_cache", None)
+        if cached is not None:
+            return cached
+        prefixes: List[int] = []
+        try:
+            import socket as _socket
+            # gethostbyname_ex returns (hostname, aliaslist, ipaddrlist).
+            # On multi-homed Windows + Linux boxes the ipaddrlist
+            # contains every bound IPv4. It deliberately excludes
+            # loopback on Linux — good, we don't want 127.0.0.0/24.
+            _, _, ips = _socket.gethostbyname_ex(_socket.gethostname())
+            for ip in ips:
+                n = _ipv4_to_int(ip)
+                if n is not None:
+                    prefixes.append(n & 0xFFFFFF00)
+        except (OSError, _socket.gaierror):
+            # Best-effort: if we can't enumerate interfaces, fall back
+            # to legacy first-announced behaviour by returning an
+            # empty prefix list.
+            pass
+        self._subnet_prefix_cache = prefixes
+        return prefixes
 
     def _has_online_peer(self) -> bool:
         """Check if any peer is currently online."""

@@ -80,6 +80,7 @@ For preppers, homelab operators, privacy advocates, tinkerers, and anyone who th
 - **Auth-failure blocking.** 3 failed auth attempts from an IP in 5 minutes trigger a 5-minute block. Rate-limited mDNS discovery prevents flood attacks.
 - **Model agnostic.** Ollama, llama.cpp, vLLM, a bash script — if it speaks WebSocket, it can use IronMesh.
 - **Cross-platform.** Raspberry Pi, Windows, Linux, Mac. Tested daily on a Pi 5 and a Windows desktop.
+- **`ironmesh doctor` + deployment helpers.** One-shot install diagnostic, plus `--peer HOST:PORT` for a dry-run handshake against another node. Two helper scripts in [`tools/`](tools/) cover the SSH-detached daemon launch and verified wheel transfer patterns operators hit on multi-node deployments.
 
 ## Where IronMesh fits
 

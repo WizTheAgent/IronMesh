@@ -259,7 +259,15 @@ class AgentListener:
                     log.warning("mDNS: rejecting oversized TXT record (%d bytes) from %s",
                                 total_props_size, name)
                     return
-                addr = socket.inet_ntoa(info.addresses[0]) if info.addresses else None
+                # Multi-address advertisement: surface every announced
+                # address so the caller can pick the closest-subnet
+                # match (multi-homed nodes — e.g. a host with both a
+                # LAN and a VPN interface — advertise more than one).
+                # ``ip`` keeps the historical "first announced" value
+                # for back-compat with any consumer that doesn't know
+                # about ``addresses``.
+                addresses = [socket.inet_ntoa(a) for a in info.addresses] if info.addresses else []
+                addr = addresses[0] if addresses else None
                 # Validate mDNS TXT fields rigorously.
                 # Malformed UTF-8, oversized strings, or unexpected
                 # characters must not reach the callback.
@@ -298,6 +306,7 @@ class AgentListener:
                 if agent_name and addr:
                     peer_info = {
                         "ip": addr,
+                        "addresses": addresses,
                         "port": port,
                         "pubkey": pubkey,
                         "idhash": idhash,

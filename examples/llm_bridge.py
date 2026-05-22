@@ -109,20 +109,67 @@ def _ollama_generate_sync(url: str, model: str, prompt: str,
 
 
 async def query_ollama(url: str, model: str, prompt: str,
-                       system: str, timeout: float = 30.0) -> str:
-    try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(
-                _ollama_generate_sync, url, model, prompt, system, timeout,
-            ),
-            timeout=timeout + 2,
-        )
-    except asyncio.TimeoutError:
-        return "[LLM-ERR] Timeout"
-    except urllib.error.URLError as e:
-        return f"[LLM-ERR] Ollama unreachable: {e.reason}"
-    except Exception as e:
-        return f"[LLM-ERR] {type(e).__name__}: {e}"
+                       system: str, timeout: float = 30.0,
+                       retries: int = 1, backoff: float = 2.0) -> str:
+    """Call Ollama with one retry on transient failures.
+
+    Transient = connection failure or timeout. Permanent = HTTP 4xx
+    (model not found, bad request) — those return immediately so the
+    caller sees the real error instead of waiting for a retry that
+    cannot help.
+
+    Elapsed wall-clock per attempt is logged at INFO so operators
+    debugging a slow conversation can see whether a single attempt
+    was slow or whether a retry doubled the latency. Silent retries
+    were the source of "why did my 90s timeout produce a 182s wait"
+    confusion in v0.9.4 testing.
+    """
+    last_err: str = ""
+    total_start = time.monotonic()
+    for attempt in range(retries + 1):
+        attempt_start = time.monotonic()
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _ollama_generate_sync, url, model, prompt, system, timeout,
+                ),
+                timeout=timeout + 2,
+            )
+            elapsed = time.monotonic() - attempt_start
+            if attempt > 0:
+                total = time.monotonic() - total_start
+                log.info("ollama ok in %.2fs (attempt %d/%d, total %.2fs incl. retries)",
+                         elapsed, attempt + 1, retries + 1, total)
+            else:
+                log.info("ollama ok in %.2fs", elapsed)
+            return result
+        except asyncio.TimeoutError:
+            last_err = "[LLM-ERR] Timeout"
+        except urllib.error.HTTPError as e:
+            # 4xx is permanent (model not found, malformed payload):
+            # don't retry, surface the error so the caller can fix the
+            # request.
+            elapsed = time.monotonic() - attempt_start
+            log.warning("ollama HTTP %d in %.2fs (no retry, permanent)",
+                        e.code, elapsed)
+            return f"[LLM-ERR] HTTP {e.code}: {e.reason}"
+        except urllib.error.URLError as e:
+            last_err = f"[LLM-ERR] Ollama unreachable: {e.reason}"
+        except Exception as e:
+            elapsed = time.monotonic() - attempt_start
+            log.warning("ollama %s in %.2fs (no retry)",
+                        type(e).__name__, elapsed)
+            return f"[LLM-ERR] {type(e).__name__}: {e}"
+        elapsed = time.monotonic() - attempt_start
+        if attempt < retries:
+            log.info("ollama transient failure (%s) in %.2fs; retrying in %.1fs",
+                     last_err, elapsed, backoff)
+            await asyncio.sleep(backoff)
+        else:
+            total = time.monotonic() - total_start
+            log.warning("ollama gave up after %d attempts (last: %s, total %.2fs)",
+                        retries + 1, last_err, total)
+    return last_err
 
 
 def main():
@@ -141,7 +188,11 @@ def main():
                     help="Custom system prompt (overrides --role). Default: "
                          "the 'assistant' role template.")
     p.add_argument("--max-prompt-bytes", type=int, default=4096)
-    p.add_argument("--timeout", type=float, default=30.0)
+    p.add_argument("--timeout", type=float, default=180.0,
+                    help="Per-prompt Ollama call timeout in seconds (default: 180.0). "
+                         "Local 7B-class models reply within 30s; 14B+ models on "
+                         "older GPUs can take 60-120s. The default leaves headroom "
+                         "for long generations under load.")
     p.add_argument("--gui", action="store_true")
     p.add_argument("--reticulum", action="store_true")
     # Identity + trust: reuse the same keys that an existing
@@ -151,6 +202,14 @@ def main():
                     help="Identity keys file to load (default: ~/.ironmesh/keys.json)")
     p.add_argument("--keys-passphrase", default=None,
                     help="Passphrase protecting the keys file, if any")
+    # CLI parity with `ironmesh run`. v0.9.4 added sibling-path
+    # auto-derivation from --keys-path so most operators don't need
+    # these flags, but explicit paths are useful for multi-tenant
+    # deployments that share a key directory.
+    p.add_argument("--db-path", default=None,
+                    help="Message store SQLite file (default: derived from --keys-path)")
+    p.add_argument("--trust-path", default=None,
+                    help="TOFU trust store file (default: derived from --keys-path)")
     p.add_argument("--allowed-peers", default=None,
                     help="Comma-separated list of peer names allowed to auto-connect via mDNS")
     p.add_argument("--conv-cooldown", type=float, default=1.0,
@@ -178,7 +237,12 @@ def main():
     elif role_name:
         resolved = get_role_prompt(role_name)
         if resolved is None:
-            sys.exit(f"Unknown --role {role_name!r}. Try one of: {', '.join(list_roles())}")
+            valid = list_roles()
+            sys.exit(
+                f"Unknown --role {role_name!r}. Valid roles ({len(valid)}):\n"
+                + "\n".join(f"  - {r}" for r in valid)
+                + "\nPass --role <name>, or use --system-prompt to supply a custom one."
+            )
         system_prompt = resolved
     else:
         role_name = "assistant"
@@ -223,6 +287,10 @@ def main():
         extra["keys_path"] = os.path.expanduser(args.keys_path)
     if args.keys_passphrase:
         extra["keys_passphrase"] = args.keys_passphrase
+    if args.db_path:
+        extra["db_path"] = os.path.expanduser(args.db_path)
+    if args.trust_path:
+        extra["trust_path"] = os.path.expanduser(args.trust_path)
     if args.allowed_peers:
         extra["allowed_peers"] = [p.strip() for p in args.allowed_peers.split(",") if p.strip()]
         # When an allowlist is set the daemon's default-deny kicks in;

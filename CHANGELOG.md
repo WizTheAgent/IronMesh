@@ -7,7 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.4.1] — 2026-05-21 — CI fix: Windows py3.13 concurrent-migration race
+## [0.9.4.2] — 2026-05-23 — Operator-polish sweep
+
+A focused sweep of operator-facing fixes surfaced by the v0.9.4
+multi-node verification run. No protocol changes, no wire-format
+changes — drop-in replacement for v0.9.4.1.
+
+### Added
+
+- **Multi-homed peer address selection.** When an mDNS announcement
+  carries multiple IPv4 addresses (multi-homed peer with both a LAN
+  and a VPN interface, for example), the discovery callback now
+  prefers the candidate whose `/24` matches one of the local host's
+  interfaces. Falls back to the first announced address when no
+  subnet matches, so single-homed setups behave exactly as before.
+  Local interface set is cached after the first lookup.
+  - New module-level helpers in `bridge.py`:
+    `_ipv4_to_int`, `_select_closest_subnet_address`.
+  - New `BridgeDaemon._local_subnet_prefixes` instance method.
+  - `tests/test_subnet_preference.py` covering parse + selection
+    (15 cases including malformed inputs and the no-match fallback).
+- **`ironmesh doctor --peer HOST:PORT`.** Dry-run WebSocket
+  handshake against a peer. Reports the failure point cleanly —
+  unreachable host, port closed, TLS error, or "connected but no
+  HELLO within 3s" (which is the canonical fingerprint of a
+  passphrase mismatch). Avoids the auth-failure-block storm the
+  operator would otherwise hit. Pair with `--passphrase-file` for
+  non-interactive runs.
+- **`tools/start-daemon-detached.sh`.** Reliable SSH-detached
+  daemon launch using `setsid`. `nohup ... & disown` over SSH does
+  NOT actually survive logout — the daemon receives SIGHUP when
+  the controlling terminal closes. The wrapper puts the daemon in
+  its own session/process group so it survives. Stdout/stderr land
+  in `~/.ironmesh/daemon.log`.
+- **`tools/transfer-wheel.sh`.** Wheel transfer with SHA256
+  verification on the remote end. `scp` over a flaky home WAN has
+  been observed to complete with exit code 0 while transferring a
+  truncated file; this wrapper streams via `ssh ... 'cat > path'`
+  and re-checks the SHA after copy. Exits with a distinct non-zero
+  status on a checksum mismatch so a stale wheel never reaches
+  `pip install`.
+- **`examples/llm_bridge.py` — `--db-path` / `--trust-path` flags.**
+  CLI parity with the main `ironmesh run` command. The v0.9.4
+  sibling-path auto-derivation from `--keys-path` is still in
+  effect, so most operators don't need these — they're useful for
+  multi-tenant deployments that share a key directory.
+
+### Changed
+
+- **`examples/llm_bridge.py` — default Ollama timeout 30s → 180s.**
+  The previous default was too tight for 14B+ models on older GPUs;
+  v0.9.4 live testing saw a model timeout mid-conversation despite
+  the model being healthy. New default leaves headroom for long
+  generations under load. Configurable via `--timeout`.
+- **`examples/llm_bridge.py` — `query_ollama` retries transient
+  failures once.** Connection failures and timeouts now retry after
+  a 2-second backoff before surfacing `[LLM-ERR]` to the caller.
+  HTTP 4xx (model not found, bad request) is treated as permanent
+  and surfaces immediately without retry. Configurable via the
+  `retries` / `backoff` kwargs.
+- **`examples/llm_bridge.py` — better unknown-role error message.**
+  When `--role <bad-name>` is passed, the error response now lists
+  every valid role on its own line (rather than a comma-joined
+  list) and adds a one-line nudge toward `--system-prompt` for
+  custom personas.
+
+### Test count
+
+1083 collected (was 1068 at v0.9.4.1). +15 from the new
+`test_subnet_preference.py` module.
+
+ — 2026-05-21 — CI fix: Windows py3.13 concurrent-migration race
 
 ### Fixed
 

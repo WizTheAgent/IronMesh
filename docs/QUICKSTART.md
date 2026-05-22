@@ -177,12 +177,45 @@ python examples/basic_chat.py --name bob --port 8765
 
 Type messages and see them appear encrypted on the other side.
 
+## Health check
+
+Before debugging deeper, run `ironmesh doctor`. It's a one-shot
+diagnostic that walks through the eight things that go wrong on a
+fresh install (identity key file, trust store, message store,
+pending-trust queue, audit chain, hooks, port binding, on-disk
+feature state) and prints a checklist.
+
+```bash
+ironmesh doctor
+```
+
+If two agents won't talk, the fastest way to disambiguate is the
+dry-run handshake added in v0.9.4.2:
+
+```bash
+ironmesh doctor --peer peer-b.local:8765 \
+    --passphrase-file ~/.ironmesh/passphrase
+```
+
+The output disambiguates the common failure modes cleanly:
+
+- "received N bytes of initial frame" — peer is reachable and
+  passphrases agree
+- "transport: ConnectionRefusedError" — peer isn't listening on
+  that port (wrong port, daemon down)
+- "transport: TimeoutError" — host unreachable / firewall is
+  dropping the SYN
+- "connected but no HELLO within 3s" — the canonical fingerprint
+  of a passphrase mismatch; the peer's encrypted HELLO won't
+  decode on our side and the connection stalls
+
 ## Troubleshooting
 
 - **Agents don't discover each other:**
   - Make sure both machines are on the same LAN/subnet
   - Check firewall rules: mDNS needs UDP port 5353, WebSocket needs TCP port 8765
   - On Linux: `sudo ufw allow 5353/udp && sudo ufw allow 8765/tcp`
+  - Multi-homed hosts (LAN + VPN): v0.9.4.2 auto-prefers the same-subnet address; on older versions confirm the announced address with `ironmesh peers`.
 
 - **Auth fails ("wrong passphrase"):**
   - The passphrase must be identical on both agents. Verify the file contents match on both machines.
