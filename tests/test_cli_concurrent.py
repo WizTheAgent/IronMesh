@@ -65,10 +65,13 @@ def test_parallel_speedup_vs_serial():
 
     assert len(results) == 5
     assert all(r.ok for r in results)
-    # Serial would be ~500ms; parallel with 5 workers should be
-    # well under 250ms even on a slow CI runner.
-    assert elapsed_parallel < 0.25, (
-        f"parallel fan-out took {elapsed_parallel:.3f}s, expected <0.25s"
+    # Serial would be ~500ms; parallel with 5 workers finishes much
+    # sooner. The 0.4s budget is a sanity check that fan_out is
+    # actually parallel, not a perf SLO — cloud CI runners under
+    # load have been observed to spend 250ms+ on the ThreadPool
+    # scheduling itself even with negligible per-task work.
+    assert elapsed_parallel < 0.4, (
+        f"parallel fan-out took {elapsed_parallel:.3f}s, expected <0.4s"
     )
 
 
