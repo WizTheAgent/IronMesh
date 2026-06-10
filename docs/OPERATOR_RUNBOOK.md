@@ -512,7 +512,7 @@ curl http://127.0.0.1:8765/metrics | grep peer_cap   # Prometheus
 # Doctor (v0.8.5.x sanity check)
 ironmesh doctor
 
-# Peer reachability + passphrase dry-run (v0.9.4.2)
+# Peer reachability dry-run (v0.9.4.2)
 ironmesh doctor --peer <host>:<port> \
     --passphrase-file ~/.ironmesh/passphrase
 ```

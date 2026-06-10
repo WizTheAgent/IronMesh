@@ -25,14 +25,23 @@ setups behave exactly as before — the new logic only activates when
 multiple addresses are present and at least one matches a local
 subnet.
 
+> Known limitation (Linux): local-interface detection uses `gethostbyname_ex`,
+> which on hosts whose hostname maps to `127.0.1.1` (common on Debian/Ubuntu)
+> returns only loopback. There the subnet match finds nothing and the daemon
+> falls back to the first announced address — a safe no-op. Fully effective on
+> Windows; a `getsockname()`-based probe is queued as a follow-up.
+
 ### `ironmesh doctor --peer HOST:PORT`
 
-Dry-run WebSocket handshake against a peer that reports the failure
-point cleanly: unreachable host, port closed, TLS error, or
-"connected but no HELLO within 3s" (the canonical fingerprint of a
-passphrase mismatch). Lets an operator confirm reachability +
-passphrase agreement without hitting the auth-failure-block storm
-from a real daemon.
+Dry-run diagnostic that opens a plaintext `ws://` connection to a peer
+and reports the failure point cleanly: unreachable host, port closed,
+transport error, or "connected but no initial frame within 3s." It
+checks reachability and whether the peer answers with an initial
+frame; it does NOT complete authentication, so it cannot confirm a
+passphrase match. A no-frame result can mean a passphrase mismatch, a
+peer that requires TLS (`wss://`), or a host that isn't an IronMesh
+daemon. Lets an operator triage a connection without hitting the
+auth-failure-block storm from a real daemon.
 
 ### `tools/start-daemon-detached.sh`
 

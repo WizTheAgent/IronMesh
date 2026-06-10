@@ -563,12 +563,13 @@ def parse_args():
     doctor_parser.add_argument("--bind", default="0.0.0.0",
                                 help="Bind address — checked alongside --port")
     doctor_parser.add_argument("--peer", default=None, metavar="HOST:PORT",
-                                help="Optional: dry-run a WebSocket handshake against a "
-                                     "peer to verify reachability + passphrase match. "
-                                     "Reports the failure point cleanly instead of waiting "
-                                     "for the daemon's auth-block storm.")
+                                help="Optional: dry-run a plaintext ws:// connection to a "
+                                     "peer to check reachability and whether it returns an "
+                                     "initial frame. Does NOT complete authentication, so it "
+                                     "cannot confirm a passphrase match; a peer requiring TLS "
+                                     "(wss://) will report as a transport error.")
     doctor_parser.add_argument("--passphrase-file", default=None,
-                                help="Passphrase file for the --peer dry-run handshake")
+                                help="Passphrase file for the --peer dry-run reachability check")
 
     # --- setup ---
     setup_parser = sub.add_parser(
@@ -2328,9 +2329,9 @@ def _doctor_peer_handshake(args, keypair) -> int:
                     hello = await asyncio.wait_for(ws.recv(), timeout=3)
                     return True, f"received {len(hello)} bytes of initial frame"
                 except asyncio.TimeoutError:
-                    return False, ("connected but no HELLO within 3s — "
-                                   "possible passphrase mismatch (encrypted "
-                                   "HELLO won't decode on the other side)")
+                    return False, ("connected but no initial frame within 3s — "
+                                   "peer may require TLS (wss://), use a different "
+                                   "passphrase, or not be an IronMesh daemon")
         except (OSError, asyncio.TimeoutError) as e:
             return False, f"transport: {type(e).__name__}: {e}"
         except Exception as e:

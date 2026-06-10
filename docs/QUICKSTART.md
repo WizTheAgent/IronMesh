@@ -190,7 +190,7 @@ ironmesh doctor
 ```
 
 If two agents won't talk, the fastest way to disambiguate is the
-dry-run handshake added in v0.9.4.2:
+dry-run reachability check added in v0.9.4.2:
 
 ```bash
 ironmesh doctor --peer peer-b.local:8765 \
@@ -200,14 +200,15 @@ ironmesh doctor --peer peer-b.local:8765 \
 The output disambiguates the common failure modes cleanly:
 
 - "received N bytes of initial frame" — peer is reachable and
-  passphrases agree
+  returned an initial frame. (The dry-run does not complete
+  authentication, so this alone does not confirm the passphrase.)
 - "transport: ConnectionRefusedError" — peer isn't listening on
   that port (wrong port, daemon down)
 - "transport: TimeoutError" — host unreachable / firewall is
   dropping the SYN
-- "connected but no HELLO within 3s" — the canonical fingerprint
-  of a passphrase mismatch; the peer's encrypted HELLO won't
-  decode on our side and the connection stalls
+- "connected but no initial frame within 3s" — one of several
+  causes: a passphrase mismatch, a peer that requires TLS (wss://),
+  or a host that isn't an IronMesh daemon
 
 ## Troubleshooting
 
