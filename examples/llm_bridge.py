@@ -113,10 +113,11 @@ async def query_ollama(url: str, model: str, prompt: str,
                        retries: int = 1, backoff: float = 2.0) -> str:
     """Call Ollama with one retry on transient failures.
 
-    Transient = connection failure or timeout. Permanent = HTTP 4xx
-    (model not found, bad request) — those return immediately so the
-    caller sees the real error instead of waiting for a retry that
-    cannot help.
+    Transient = connection failure or timeout. Permanent = any HTTP
+    error response (4xx or 5xx) — the request reached Ollama and was
+    answered, so it returns immediately instead of waiting for a retry
+    that cannot help. Note: a transient 5xx (e.g. a 503 under load)
+    therefore does not retry; revisiting that is queued as a follow-up.
 
     Elapsed wall-clock per attempt is logged at INFO so operators
     debugging a slow conversation can see whether a single attempt
@@ -146,9 +147,10 @@ async def query_ollama(url: str, model: str, prompt: str,
         except asyncio.TimeoutError:
             last_err = "[LLM-ERR] Timeout"
         except urllib.error.HTTPError as e:
-            # 4xx is permanent (model not found, malformed payload):
-            # don't retry, surface the error so the caller can fix the
-            # request.
+            # Any HTTP error response (4xx/5xx) is treated as permanent:
+            # the request reached Ollama and was answered. Don't retry;
+            # surface the error so the caller can fix the request.
+            # (A transient 5xx like 503 won't retry — follow-up queued.)
             elapsed = time.monotonic() - attempt_start
             log.warning("ollama HTTP %d in %.2fs (no retry, permanent)",
                         e.code, elapsed)

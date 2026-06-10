@@ -1,6 +1,6 @@
 """Unit tests for the multi-homed peer address selection helper.
 
-Covers the v0.9.5 fix where the mDNS callback prefers an advertised
+Covers the v0.9.4.2 fix where the mDNS callback prefers an advertised
 address whose /24 matches one of the local host's IPv4 interfaces
 instead of always picking the first announced address.
 """
@@ -62,10 +62,10 @@ class TestSelectClosestSubnetAddress:
         candidates = ["172.16.0.7", "192.168.1.43"]
         local_prefixes = [0xC0A80100, 0xAC100000]  # 192.168.1.0/24 + 172.16.0.0/24
         result = _select_closest_subnet_address(candidates, local_prefixes)
-        # Either match is acceptable per the contract — the first
-        # candidate to match is returned. Here 172.16.0.7 matches
-        # the AC10.0000 prefix first in the candidate list.
-        assert result in ("172.16.0.7", "192.168.1.43")
+        # Contract: the first candidate to match a local prefix wins.
+        # 172.16.0.7 is first in the candidate list and matches the
+        # 172.16.0.0/24 prefix, so it must be the result.
+        assert result == "172.16.0.7"
 
     def test_malformed_address_in_candidates_is_skipped(self):
         # Defensive: a malformed address shouldn't crash the picker.

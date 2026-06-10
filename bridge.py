@@ -6382,9 +6382,14 @@ class BridgeDaemon:
         try:
             import socket as _socket
             # gethostbyname_ex returns (hostname, aliaslist, ipaddrlist).
-            # On multi-homed Windows + Linux boxes the ipaddrlist
-            # contains every bound IPv4. It deliberately excludes
-            # loopback on Linux — good, we don't want 127.0.0.0/24.
+            # On Windows the ipaddrlist usually contains every bound
+            # IPv4, so subnet matching works. On many Linux distros
+            # (Debian/Ubuntu) the hostname maps to 127.0.1.1 via
+            # /etc/hosts, so this can return only loopback and miss the
+            # real LAN /24 — subnet matching then finds no match and we
+            # fall back to the first announced address (legacy
+            # behaviour). A getsockname()-based probe would be more
+            # reliable; tracked as a follow-up.
             _, _, ips = _socket.gethostbyname_ex(_socket.gethostname())
             for ip in ips:
                 n = _ipv4_to_int(ip)
