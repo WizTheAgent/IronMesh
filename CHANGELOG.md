@@ -22,18 +22,25 @@ changes — drop-in replacement for v0.9.4.1.
   interfaces. Falls back to the first announced address when no
   subnet matches, so single-homed setups behave exactly as before.
   Local interface set is cached after the first lookup.
+  - Known limitation: interface detection via `gethostbyname_ex` is
+    ineffective on Linux hosts whose hostname maps to `127.0.1.1`
+    (the subnet match finds nothing and it falls back safely to the
+    first announced address). A `getsockname()` probe is queued as a
+    follow-up.
   - New module-level helpers in `bridge.py`:
     `_ipv4_to_int`, `_select_closest_subnet_address`.
   - New `BridgeDaemon._local_subnet_prefixes` instance method.
   - `tests/test_subnet_preference.py` covering parse + selection
     (15 cases including malformed inputs and the no-match fallback).
-- **`ironmesh doctor --peer HOST:PORT`.** Dry-run WebSocket
-  handshake against a peer. Reports the failure point cleanly —
-  unreachable host, port closed, TLS error, or "connected but no
-  HELLO within 3s" (which is the canonical fingerprint of a
-  passphrase mismatch). Avoids the auth-failure-block storm the
-  operator would otherwise hit. Pair with `--passphrase-file` for
-  non-interactive runs.
+- **`ironmesh doctor --peer HOST:PORT`.** Dry-run diagnostic that
+  opens a plaintext `ws://` connection and reports the failure point
+  cleanly — unreachable host, port closed, transport error, or
+  "connected but no initial frame within 3s". Checks reachability and
+  whether an initial frame arrives; does not complete authentication,
+  so it cannot confirm a passphrase match (a no-frame result can mean
+  a passphrase mismatch, a TLS-required peer, or a non-IronMesh host).
+  Avoids the auth-failure-block storm the operator would otherwise
+  hit. Pair with `--passphrase-file` for non-interactive runs.
 - **`tools/start-daemon-detached.sh`.** Reliable SSH-detached
   daemon launch using `setsid`. `nohup ... & disown` over SSH does
   NOT actually survive logout — the daemon receives SIGHUP when
@@ -77,7 +84,7 @@ changes — drop-in replacement for v0.9.4.1.
 1083 collected (was 1068 at v0.9.4.1). +15 from the new
 `test_subnet_preference.py` module.
 
- — 2026-05-21 — CI fix: Windows py3.13 concurrent-migration race
+## [0.9.4.1] — 2026-05-21 — CI fix: Windows py3.13 concurrent-migration race
 
 ### Fixed
 
@@ -95,6 +102,7 @@ changes — drop-in replacement for v0.9.4.1.
   py3.13 only); v0.9.4 functional behaviour is otherwise unaffected.
 
 
+## [0.9.4] — 2026-05-19 — Combined release (v0.9.3 + v0.9.4)
 
 Combined release. The v0.9.3 security hardening point release (strict TLS, trust-store at-rest encryption, global rate cap, trust CLI subcommands) and the v0.9.4 pre-audit hardening pass (Ed25519/X25519 dual-use migration phases 1 & 2, signed `CAPABILITY_ANNOUNCE`, frame-length ceiling, JSON depth guard, replay upper bound, narrowed exception handling, fail-closed TOFU, dependency upper bounds) ship together as v0.9.4. See `docs/RELEASE_NOTES_v0.9.4.md` for the full operator-facing write-up.
 
