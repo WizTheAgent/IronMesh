@@ -6,11 +6,11 @@ PR, or extending the test suite.
 
 ## What gets run
 
-A full test pass collects **688 tests** across four layers:
+A full test pass collects **1083 tests** across four layers:
 
 | Layer | Count (approx) | Purpose |
 |---|---|---|
-| Unit tests | ~600 | Per-module behavior, edge cases, regression locks |
+| Unit tests | ~960 | Per-module behavior, edge cases, regression locks |
 | Property-based / fuzz tests | ~30 | Hypothesis-driven invariant checks on the wire protocol, conversation envelope, and trust gate |
 | Concurrency tests | ~20 | Race conditions, simultaneous-dial, queue draining under load, lock orderings |
 | Integration tests | ~30 | Real framework adapters (LangChain, CrewAI, AutoGen) against live in-process mesh |

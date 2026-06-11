@@ -68,7 +68,7 @@ auth scheme + URLs).
 ```json
 {
   "protocolVersion": "0.3.0",
-  "version": "0.9.2",
+  "version": "0.9.4.2",
   "name": "ironmesh-a2a",
   "description": "IronMesh node exposed as an A2A peer",
   "url": "https://your.host.example.com/a2a/jsonrpc",

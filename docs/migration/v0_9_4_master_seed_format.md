@@ -132,8 +132,9 @@ systemctl stop ironmesh         # or your equivalent
 # Restore the pre-migration file.
 cp ~/.ironmesh/keys.json.legacy.bak ~/.ironmesh/keys.json
 
-# Install the prior release.
-pip install ironmesh==0.9.3
+# Install the prior release (last PyPI release before the v0.9.4
+# master-seed format; 0.9.2/0.9.3 were never published to PyPI).
+pip install ironmesh==0.9.1
 
 # Start the daemon. It will read the v1/v2 envelope as before.
 systemctl start ironmesh

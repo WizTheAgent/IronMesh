@@ -107,7 +107,7 @@ The agent should call `ironmesh_discover_capabilities` with `pattern: "llm:*"`.
 
 ## Tool reference
 
-The `ironmesh` MCP server exposes 25 tools as of v0.9.2. The first
+The `ironmesh` MCP server exposes 25 tools as of v0.9.4.2. The first
 sections below cover the eight core operations and the five
 agent-collaboration tools added for cross-agent workflows. Later
 sections document the agent-introspection helpers, the pending-trust
