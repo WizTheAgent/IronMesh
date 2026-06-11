@@ -1,7 +1,7 @@
 # IronMesh — 5-minute Dashboard Quickstart
 
 > **Looking for the canonical walkthrough?** See
-> [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the v0.9.2
+> [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the canonical
 > multi-node SDK walkthrough that ends with a working Python `Agent`
 > call. For the fastest possible first-look, run `ironmesh demo` —
 > it spawns two local agents and confirms your install in 60 seconds

@@ -9,7 +9,7 @@
 
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **v0.9.4 — Pre-audit hardening + dual-use migration + signed capability announcement.** 1068 tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus live cross-host validation on the new wire surfaces.
+> **v0.9.4.2 — operator-polish patch on the v0.9.4 pre-audit-hardening + dual-use-migration line.** 1083 tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus live cross-host validation on the new wire surfaces.
 > Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
 > Wire-format `ironmesh/0.8` adds opt-in feature flags (handshake-skip, group-broadcast) without disturbing any existing path. The headline doc — [`docs/STABILITY_PROMISE.md`](docs/STABILITY_PROMISE.md) — is the v1.0 contract for everything we commit to keeping stable.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
@@ -80,7 +80,7 @@ For preppers, homelab operators, privacy advocates, tinkerers, and anyone who th
 - **Auth-failure blocking.** 3 failed auth attempts from an IP in 5 minutes trigger a 5-minute block. Rate-limited mDNS discovery prevents flood attacks.
 - **Model agnostic.** Ollama, llama.cpp, vLLM, a bash script — if it speaks WebSocket, it can use IronMesh.
 - **Cross-platform.** Raspberry Pi, Windows, Linux, Mac. Tested daily on a Pi 5 and a Windows desktop.
-- **`ironmesh doctor` + deployment helpers.** One-shot install diagnostic, plus `--peer HOST:PORT` for a dry-run handshake against another node. Two helper scripts in [`tools/`](tools/) cover the SSH-detached daemon launch and verified wheel transfer patterns operators hit on multi-node deployments.
+- **`ironmesh doctor` + deployment helpers.** One-shot install diagnostic, plus `--peer HOST:PORT` for a dry-run reachability check against another node. Two helper scripts in [`tools/`](tools/) cover the SSH-detached daemon launch and verified wheel transfer patterns operators hit on multi-node deployments.
 
 ## Where IronMesh fits
 
@@ -150,7 +150,7 @@ in the repo root.
 
 ```bash
 pip install ironmesh            # PyPI
-# or: docker pull wiztheagent/ironmesh:0.9.2
+# or: docker pull wiztheagent/ironmesh:0.9.4.2
 # or: ./scripts/install.sh       (Linux / macOS systemd)
 # or: see docs/TERMUX.md         (Android)
 ```
@@ -538,24 +538,23 @@ pytest tests/ -v --cov=ironmesh
 
 ## Recent changes
 
-**v0.9.3 — security + observability point release** (in development;
-ship pending operator sign-off). At-rest encryption for the trust
-store: `known_peers.json` is now SecretBox-encrypted with a key
-derived from the daemon's identity secret, so a host-disk leak no
-longer exposes the peer graph. Pre-v0.9.3 plaintext stores migrate
-forward on next save; `ironmesh trust migrate` lands the migration
-immediately. `--strict-tls` (with optional `--pinned-ca <path>`)
-opts into CA-validated outbound WSS for deployments where real
-certificates are issued. `--max-msgs-per-sec N` adds a daemon-wide
-defense-in-depth cap on top of the existing per-peer limits.
-`ironmesh trust verify <node-id> <expected-fp>` provides
-point-and-shoot fingerprint verification. New audit events:
-`TRUST_STORE_ENCRYPTED`, `STRICT_TLS_ENABLED`,
-`GLOBAL_RATE_LIMIT_TRIGGERED`. New metrics:
-`ironmesh_trust_store_version`, `ironmesh_strict_tls_enabled`,
-`ironmesh_global_msg_rate_limit_total`. Wire format unchanged at
-`ironmesh/0.8`. Dependency upper bounds added throughout. See
-[`docs/RELEASE_NOTES_v0.9.3.md`](docs/RELEASE_NOTES_v0.9.3.md).
+**v0.9.4.2 — operator-polish sweep.** Eight operator-facing fixes on
+top of v0.9.4.1, with no protocol or wire-format change: multi-homed
+peer address selection (prefer the candidate whose `/24` matches a
+local interface), an `ironmesh doctor --peer HOST:PORT` reachability
+dry-run, two deployment helpers in `tools/` (SSH-detached daemon launch
+and verified wheel transfer), and LLM-bridge example polish. See
+[`docs/RELEASE_NOTES_v0.9.4.2.md`](docs/RELEASE_NOTES_v0.9.4.2.md).
+
+**v0.9.4 / v0.9.4.1 — pre-audit hardening + dual-use migration.** The
+trust-store at-rest encryption, strict-TLS, global rate cap, and trust
+CLI subcommands developed in the v0.9.3 cycle shipped together with the
+v0.9.4 hardening pass: Ed25519/X25519 dual-use key migration, signed
+`CAPABILITY_ANNOUNCE`, frame-length ceiling, JSON depth guard, replay
+upper bound, fail-closed TOFU, and dependency upper bounds. v0.9.4.1
+fixed a Windows / Python 3.13 concurrent-migration race. Wire format
+unchanged at `ironmesh/0.8`. See
+[`docs/RELEASE_NOTES_v0.9.4.md`](docs/RELEASE_NOTES_v0.9.4.md).
 
 **v0.9.2 — 1.0 prep mega-release.** Every piece originally
 scheduled across v0.9.2 → v0.9.7 landed in this single release so that
@@ -592,14 +591,14 @@ path: `pip install --upgrade ironmesh`. See
 
 Where to get it and what's still rough:
 
-- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport, `[keychain]` for OS-keychain passphrase storage, `[otel]` for OpenTelemetry tracing). Latest: **v0.9.2**.
-- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.9.2` (or `:latest`). Non-root UID 1000. See [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml), and [`docker-compose.demo.yml`](docker-compose.demo.yml) for an instant 2-node demo.
-- **GitHub releases** — signed tags, wheel + sdist attached: [releases page](https://github.com/WizTheAgent/IronMesh/releases).
+- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport, `[keychain]` for OS-keychain passphrase storage, `[otel]` for OpenTelemetry tracing). Latest: **v0.9.4.2**.
+- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.9.4.2` (or `:latest`). Non-root UID 1000. See [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml), and [`docker-compose.demo.yml`](docker-compose.demo.yml) for an instant 2-node demo.
+- **GitHub releases** — annotated tags, wheel + sdist attached: [releases page](https://github.com/WizTheAgent/IronMesh/releases).
 - **Go client** — `clients/go/` (reference implementation, crypto primitives verified against Python).
 - **LoRa end-to-end latency** — Measured live at 915 MHz SF8/BW125 between two RNode-equipped nodes (1 hop, strong signal): 16-byte probe 1.07 — 1.23 s, 64-byte probe 1.17 — 1.25 s, 256-byte probe 1.77 — 1.98 s, 100% delivery across 9 probes. Multi-hop + long-range interference sweeps are still pending — see [`docs/LORA_VALIDATION.md`](docs/LORA_VALIDATION.md).
 - **`scripts/install.sh`** — The systemd installer works against the repo layout, but hasn't been re-tested on a clean Ubuntu VM recently. File itself is unchanged from v0.7.1.
 - **Android** — Use [Sideband](https://unsigned.io/sideband/) + the bundled LXMF gateway (`examples/lxmf_gateway.py`). Proven end-to-end with a Google Pixel. No first-party Android app planned — LXMF is the correct layer for that.
-- **Windows service** — No native service wrapper shipped. Run under WSL2, a terminal session, or Docker.
+- **Windows service** — A native service wrapper ships via [`scripts/install-windows-service.ps1`](scripts/install-windows-service.ps1) (NSSM-based); see [`docs/WINDOWS_SERVICE.md`](docs/WINDOWS_SERVICE.md). You can also run under WSL2, a terminal session, or Docker.
 - **GUI dashboard auth** — Per-session 32-byte token only. If you ever expose the dashboard beyond localhost (NOT recommended), front it with a reverse proxy that enforces your own auth.
 - **No third-party protocol audit.** The cryptographic primitives are NaCl / libsodium, but the IronMesh protocol itself has not been externally reviewed. Read [SECURITY.md](SECURITY.md) for the threat model and [docs/PROTOCOL_SPEC.md](docs/PROTOCOL_SPEC.md) for the wire format before relying on this for anything critical.
 
