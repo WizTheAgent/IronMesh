@@ -256,6 +256,17 @@ else
     ok "README: ${readme_lines} lines, no duplicate H2 headings"
 fi
 
+# ───── 13. doc-sync: version strings + CHANGELOG chain + retired claims ──
+echo "[13] doc-sync (README/CITATION versions, Docker tags, CHANGELOG chain, retired-claim denylist)"
+doc_sync_rc=0
+doc_sync_out="$(bash scripts/doc-sync-check.sh 2>&1)" || doc_sync_rc=$?
+printf '%s\n' "$doc_sync_out" | sed 's/^/      /'
+if [ "$doc_sync_rc" -eq 0 ]; then
+    ok "doc-sync-check passed (version strings, CHANGELOG chain, retired-claim denylist)"
+else
+    fail "doc-sync-check reported drift (see indented output above)"
+fi
+
 # ───── Summary ───────────────────────────────────────────────────
 echo
 echo "═══════════════════════════════════════════════════════════════"
