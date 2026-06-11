@@ -39,7 +39,7 @@ The arc, version by version:
 - **Three reference clients** beyond Python: Go (full wire protocol, crypto verified against Python), TypeScript (`@wiztheagent/ironmesh-client`), and the OpenClaw channel adapter (`@wiztheagent/openclaw-ironmesh`).
 - **Wire format `ironmesh/0.8`** with two opt-in feature flags (`hskip` for handshake-skip on identified RNS Links, `group` for shared-secret broadcast) — every existing wire path is unchanged, so v0.9.x peers stay interoperable and v0.8.x peers continue to interoperate on the legacy surfaces.
 - **Operator surface:** `ironmesh setup` (interactive first-run wizard), `ironmesh demo` (60-second two-agent local demo), `ironmesh doctor` (mesh-health diagnostic), `ironmesh upgrade` (PyPI version check), 9 new metrics + 4 Prometheus alert rules + a Grafana dashboard, OpenTelemetry spans on the v0.9.x agent surfaces.
-- **Distribution:** PyPI, Docker Hub, GitHub Releases, mkdocs site at [docs.ironmesh.org](https://docs.ironmesh.org). Each release follows `.github/RELEASE_CHECKLIST.md` end-to-end with a wheel-packaging smoke gate (`scripts/release-smoke.sh`) before any `twine upload`.
+- **Distribution:** PyPI, Docker Hub, and GitHub Releases (a `docs.ironmesh.org` mkdocs site is planned). Each release follows `.github/RELEASE_CHECKLIST.md` end-to-end with a wheel-packaging smoke gate (`scripts/release-smoke.sh`) before any `twine upload`.
 
 ## What's coming
 

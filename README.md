@@ -574,7 +574,7 @@ skeleton with language-agnostic golden vectors. The headline doc —
 [`docs/STABILITY_PROMISE.md`](docs/STABILITY_PROMISE.md) — enumerates
 every wire-protocol surface, Python API, CLI flag, config-file field,
 metric name, and OTel span name that is frozen at v1.0. mkdocs site
-scaffold for [docs.ironmesh.org](https://docs.ironmesh.org). 100-node
+scaffold (docs.ironmesh.org, not yet deployed). 100-node
 synthetic scale harness + 14-phase comprehensive E2E driver. RNS
 multiprocess RPC authkey collision mitigation (opt-in). Full upgrade
 path: `pip install --upgrade ironmesh`. See
