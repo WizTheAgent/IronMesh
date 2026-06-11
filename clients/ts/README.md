@@ -4,13 +4,13 @@ TypeScript / Node.js client for the IronMesh agent-to-agent mesh
 protocol. Connects, handshakes, and exchanges messages with an
 IronMesh daemon over WebSocket.
 
-> **Status:** `0.2.0` — published to npm. Compatible with IronMesh
+> **Status:** `0.2.0` — not yet on npm; install from the GitHub repo. Compatible with IronMesh
 > daemons at v0.9.x (and forward across v1.0 per
 > [`STABILITY_PROMISE.md`](../../docs/STABILITY_PROMISE.md)). The full
 > wire protocol — 3-stage passphrase + ECDH + signed-HELLO handshake,
 > binary frame v4, SecretBox + Ed25519 — is implemented and end-to-end
 > tested against a live Python `BridgeDaemon`. Reconnect with backoff
-> is wired. Install: `npm install @wiztheagent/ironmesh-client`.
+> is wired. Install from the GitHub repo (`clients/ts`) until it is published to npm.
 
 ## Why this exists
 
@@ -31,7 +31,7 @@ doesn't re-pay the cost.
 npm install @wiztheagent/ironmesh-client
 ```
 
-Until 0.1.0 ships to npm, depend directly on the workspace path or
+Until it ships to npm, depend directly on the workspace path or
 install from the GitHub repo.
 
 ## Planned API

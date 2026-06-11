@@ -1,4 +1,4 @@
-# @wiztheagent/openclaw-ironmesh-channel
+# @wiztheagent/openclaw-ironmesh
 
 OpenClaw channel plugin for IronMesh. Lets OpenClaw agents send and
 receive messages over the IronMesh peer-to-peer mesh — end-to-end
@@ -33,11 +33,16 @@ underlying transport is the encrypted IronMesh wire protocol via the
   not surfaced when it comes back up
 - **Streaming partial replies**
 
-These remain on the v0.8.6+ roadmap.
+These remain on the roadmap.
 
 ## Install
 
-Until 1.0 ships to npm, install from the workspace path:
+```bash
+npm install @wiztheagent/openclaw-ironmesh
+```
+
+The published package bundles a vendored copy of the IronMesh client, so
+it installs standalone. For local development from the workspace instead:
 
 ```bash
 npm install file:./clients/ts-channel
