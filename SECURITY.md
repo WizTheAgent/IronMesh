@@ -168,12 +168,12 @@ release may add a global daemon-wide bandwidth cap as belt-and-suspenders.
   means a local attacker with disk access can see who talked to whom
   and when, just not what was said.
 - **Trust store** (`known_peers.json`) is both integrity-protected
-  and **confidential at rest as of v0.9.3**: the on-disk envelope is
+  and **confidential at rest as of v0.9.4**: the on-disk envelope is
   SecretBox-encrypted (XSalsa20-Poly1305) with a key derived from the
   daemon's identity secret, and the surrounding HMAC-SHA256 covers
   the ciphertext for tamper evidence and multi-daemon collision
   detection. A host-disk leak no longer exposes the peer graph (node
-  IDs, fingerprints, capability sets). Pre-v0.9.3 plaintext stores
+  IDs, fingerprints, capability sets). Pre-v0.9.4 plaintext stores
   load through the legacy v1 path and migrate forward automatically
   on the next save — no operator action required.
 - **Audit log** (`audit.log`) is plaintext JSON with an HMAC chain.

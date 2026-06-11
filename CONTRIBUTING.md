@@ -78,7 +78,7 @@ pip install -e ".[dev,rns]"
 pytest tests/ -v
 ```
 
-As of v0.9.4 the suite runs **1068 tests** (8 skipped, 1 xpassed) on
+As of v0.9.4.2 the suite runs **1083 tests** (8 skipped, 1 xpassed) on
 the matrix Ubuntu + Windows + macOS × Python 3.10–3.13. Anything
 substantially below that on a clean checkout is a regression — open
 an issue with the platform + Python version.

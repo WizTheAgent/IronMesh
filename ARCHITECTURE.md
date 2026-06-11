@@ -1,11 +1,11 @@
-# IronMesh v0.5 — Architecture & Protocol Specification
+# IronMesh — Architecture & Protocol Specification
 
 **Purpose**: Local-first, offline-capable, encrypted agent-to-agent communication. No cloud. No internet. No compromises.
 
 **Origin**: Built because no existing A2A protocol works without the internet. Google A2A needs HTTPS. MCP is tool calls, not P2P. ACP can't cross machines. ANP needs DIDs and internet. IronMesh is the protocol that works when you pull the plug on your router.
 
 **Reference operators**: Linux node (Raspberry Pi 5) + Windows node (desktop PC)
-**Protocol Version**: 0.5.0
+**Wire protocol**: ironmesh/0.8
 **Date**: 2026-04-10
 
 ---
@@ -186,9 +186,9 @@ All subsequent messages use SecretBox(session_key) for encryption AND Ed25519 fo
 | GUI token auth | Dashboard requires per-session bearer token for `/metrics`, `/api/state`, `/ws` endpoints |
 | Longer fingerprints | 32 hex chars (128 bits) for collision resistance |
 | TLS-first connections | Client tries wss:// before ws://. Plaintext fallback requires explicit `--allow-plaintext-ws` |
-| TLS validation modes (v0.9.3) | Default mesh mode: `CERT_NONE`, peers authenticate at the application layer (passphrase HMAC + Ed25519 + TOFU). `--strict-tls` opts into hostname check + `CERT_REQUIRED`; `--pinned-ca <path>` selects a private CA bundle. |
-| Trust store encrypted at rest (v0.9.3) | `known_peers.json` is SecretBox-encrypted with a key derived from the agent identity secret. Pre-v0.9.3 plaintext stores migrate forward on the next save. |
-| Global message rate cap (v0.9.3) | Optional `--max-msgs-per-sec` daemon-wide cap on inbound message rate, defense-in-depth on top of the existing per-peer caps. Off by default. |
+| TLS validation modes (v0.9.4) | Default mesh mode: `CERT_NONE`, peers authenticate at the application layer (passphrase HMAC + Ed25519 + TOFU). `--strict-tls` opts into hostname check + `CERT_REQUIRED`; `--pinned-ca <path>` selects a private CA bundle. |
+| Trust store encrypted at rest (v0.9.4) | `known_peers.json` is SecretBox-encrypted with a key derived from the agent identity secret. Pre-v0.9.4 plaintext stores migrate forward on the next save. |
+| Global message rate cap (v0.9.4) | Optional `--max-msgs-per-sec` daemon-wide cap on inbound message rate, defense-in-depth on top of the existing per-peer caps. Off by default. |
 | Immutable hook/bus context | Hook and MessageBus callbacks receive frozen (read-only) MappingProxyType data |
 | Hook circuit breaker | Failing hook callbacks auto-unregistered after 3 consecutive failures |
 | Required passphrase | No default — IronMesh refuses to start without a passphrase (min 12 chars) |
@@ -406,4 +406,4 @@ The full surface contract for the v1.0 stability promise is in [`docs/STABILITY_
 
 ---
 
-*IronMesh v0.9.2 — Local-first encrypted agent-to-agent mesh protocol — No cloud, no internet, no compromises.*
+*IronMesh v0.9.4.2 — Local-first encrypted agent-to-agent mesh protocol — No cloud, no internet, no compromises.*

@@ -32,12 +32,12 @@ keywords:
 
 # Update on every release. The version + date below are the current
 # stable release; the release-notes URL points at the matching tag.
-version: 0.9.2
-date-released: 2026-04-30
+version: 0.9.4.2
+date-released: 2026-05-23
 identifiers:
   - type: url
-    value: "https://github.com/WizTheAgent/IronMesh/releases/tag/v0.9.2"
-    description: "GitHub release v0.9.2"
+    value: "https://github.com/WizTheAgent/IronMesh/releases/tag/v0.9.4.2"
+    description: "GitHub release v0.9.4.2"
   - type: url
-    value: "https://pypi.org/project/ironmesh/0.9.2/"
-    description: "PyPI release v0.9.2"
+    value: "https://pypi.org/project/ironmesh/0.9.4.2/"
+    description: "PyPI release v0.9.4.2"
