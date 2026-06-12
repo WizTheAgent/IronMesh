@@ -106,6 +106,8 @@ changes — drop-in replacement for v0.9.4.1.
 
 Combined release. The v0.9.3 security hardening point release (strict TLS, trust-store at-rest encryption, global rate cap, trust CLI subcommands) and the v0.9.4 pre-audit hardening pass (Ed25519/X25519 dual-use migration phases 1 & 2, signed `CAPABILITY_ANNOUNCE`, frame-length ceiling, JSON depth guard, replay upper bound, narrowed exception handling, fail-closed TOFU, dependency upper bounds) ship together as v0.9.4. See `docs/RELEASE_NOTES_v0.9.4.md` for the full operator-facing write-up.
 
+**Why there is no v0.9.2 or v0.9.3 on PyPI:** both versions were tagged during development but never published — the PyPI release history goes `0.9.1 → 0.9.4` (and on from `0.9.4` to `0.9.4.1`, `0.9.4.2`). The v0.9.2 "1.0 prep" work and the v0.9.3 security point release both reached users inside v0.9.4, so `pip install ironmesh` always resolves to a published version; there is no installable 0.9.2 or 0.9.3.
+
 ### Fixed (live-mesh hardening pass)
 
 Six operator-facing fixes from a live multi-node dialogue verification
