@@ -15,6 +15,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:        # manual run = dry-run: gate + build only, no publish
 
 permissions:
   contents: read
@@ -64,6 +65,7 @@ jobs:
   pypi:
     name: publish to PyPI (Trusted Publishing)
     needs: build
+    if: github.event_name == 'push'          # real release only; skipped on dry-run dispatch
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -81,6 +83,7 @@ jobs:
   docker:
     name: build + push Docker image
     needs: gate
+    if: github.event_name == 'push'          # real release only; skipped on dry-run dispatch
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -103,6 +106,7 @@ jobs:
   github-release:
     name: create GitHub Release
     needs: [pypi, docker]
+    if: github.event_name == 'push'          # real release only; skipped on dry-run dispatch
     runs-on: ubuntu-latest
     permissions:
       contents: write
