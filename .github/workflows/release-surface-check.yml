@@ -1,0 +1,74 @@
+# Nightly post-publish surface check.
+#
+# Confirms the four public release surfaces agree on the current version:
+#   - PyPI                 (pypi.org/pypi/ironmesh/json -> info.version)
+#   - GitHub latest release
+#   - Docker Hub           (a :<version> tag exists and :latest is the same digest)
+#   - ironmesh.org         (/SITE_VERSION.json -> version)
+#
+# On any mismatch it opens — or updates — a single "Release surface drift"
+# issue. When everything agrees again it comments and closes that issue.
+name: release-surface-check
+
+on:
+  schedule:
+    - cron: '23 9 * * *'      # daily, ~09:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gather + compare release surfaces
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+
+          PYPI=$(curl -fsSL https://pypi.org/pypi/ironmesh/json | jq -r '.info.version' 2>/dev/null || echo ERR)
+          [ -n "$PYPI" ] || PYPI=ERR
+          GH=$(gh release view --repo "$REPO" --json tagName --jq '.tagName' 2>/dev/null | sed 's/^v//')
+          [ -n "$GH" ] || GH=ERR
+          SITE=$(curl -fsSL https://ironmesh.org/SITE_VERSION.json | jq -r '.version // "ERR"' 2>/dev/null || echo ERR)
+          [ -n "$SITE" ] || SITE=ERR
+
+          DJSON=$(curl -fsSL "https://hub.docker.com/v2/repositories/wiztheagent/ironmesh/tags?page_size=100" || echo '{}')
+          DOCKER_HAS=$(printf '%s' "$DJSON" | jq -r --arg v "$PYPI" 'if any((.results // [])[]; .name==$v) then "yes" else "no" end' 2>/dev/null || echo ERR)
+          DOCKER_LATEST_MATCH=$(printf '%s' "$DJSON" | jq -r --arg v "$PYPI" \
+            '([.results[]? | {(.name): .digest}] | add) as $m | if ($m["latest"] != null and $m["latest"] == $m[$v]) then "yes" else "no" end' 2>/dev/null || echo ERR)
+
+          echo "PyPI=$PYPI  GitHub=$GH  Site=$SITE  Docker:$PYPI=$DOCKER_HAS  DockerLatestMatches=$DOCKER_LATEST_MATCH"
+
+          DRIFT=0; REASONS=""
+          [ "$PYPI" = "$GH" ]                || { DRIFT=1; REASONS="$REASONS\n- GitHub latest release \`$GH\` != PyPI \`$PYPI\`"; }
+          [ "$PYPI" = "$SITE" ]              || { DRIFT=1; REASONS="$REASONS\n- ironmesh.org \`$SITE\` != PyPI \`$PYPI\`"; }
+          [ "$DOCKER_HAS" = "yes" ]          || { DRIFT=1; REASONS="$REASONS\n- Docker Hub has no \`:$PYPI\` tag"; }
+          [ "$DOCKER_LATEST_MATCH" = "yes" ] || { DRIFT=1; REASONS="$REASONS\n- Docker \`:latest\` digest != \`:$PYPI\`"; }
+          case "$PYPI$GH$SITE" in *ERR*) DRIFT=1; REASONS="$REASONS\n- A surface could not be read (see values above)";; esac
+
+          TITLE="Release surface drift"
+          NUM=$(gh issue list --repo "$REPO" --state open --search "$TITLE in:title" --json number,title \
+                  --jq "map(select(.title==\"$TITLE\"))[0].number" 2>/dev/null)
+
+          STAMP=$(date -u '+%Y-%m-%d %H:%M')
+          BODY=$(printf 'Automated release-surface check.\n\n| Surface | Version |\n|---|---|\n| PyPI | `%s` |\n| GitHub latest release | `%s` |\n| ironmesh.org | `%s` |\n| Docker `:%s` present | %s |\n| Docker `:latest` == `:%s` | %s |\n\n**Mismatches:**%b\n\n_Checked %s UTC by `release-surface-check.yml`._' \
+            "$PYPI" "$GH" "$SITE" "$PYPI" "$DOCKER_HAS" "$PYPI" "$DOCKER_LATEST_MATCH" "$REASONS" "$STAMP")
+
+          if [ "$DRIFT" = "1" ]; then
+            if [ -n "$NUM" ] && [ "$NUM" != "null" ]; then
+              gh issue comment "$NUM" --repo "$REPO" --body "$BODY"
+            else
+              gh issue create --repo "$REPO" --title "$TITLE" --body "$BODY"
+            fi
+          else
+            echo "All release surfaces agree at $PYPI."
+            if [ -n "$NUM" ] && [ "$NUM" != "null" ]; then
+              gh issue comment "$NUM" --repo "$REPO" --body "All surfaces agree at \`$PYPI\` as of $STAMP UTC — closing."
+              gh issue close "$NUM" --repo "$REPO"
+            fi
+          fi
