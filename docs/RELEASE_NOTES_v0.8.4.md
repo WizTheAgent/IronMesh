@@ -15,7 +15,7 @@ protocol changes — every v0.8.x peer stays on the mesh.
   request routing, broadcast, capability advertise/withdraw, and
   in-flight observability. See [`docs/OPENCLAW_MCP_SETUP.md`](OPENCLAW_MCP_SETUP.md).
 - **TypeScript client library** (`@wiztheagent/ironmesh-client@0.1.0-alpha.2`)
-  at [`clients/ts/`](../clients/ts/) — full wire-protocol port,
+  at [`clients/ts/`](https://github.com/WizTheAgent/IronMesh/tree/main/clients/ts) — full wire-protocol port,
   live end-to-end tested against a real Python `BridgeDaemon`.
 - **Python 3.10 compatibility bug fixed** at root. `concurrent.futures.TimeoutError`
   vs `builtins.TimeoutError` class split on 3.10 is documented internally
@@ -61,11 +61,11 @@ ways:
   correlation-id JSON envelope
 
 Setup walkthrough: [`docs/OPENCLAW_MCP_SETUP.md`](OPENCLAW_MCP_SETUP.md).
-SOUL.md snippet for OpenClaw agents: [`examples/openclaw/soul_mesh_snippet.md`](../examples/openclaw/soul_mesh_snippet.md).
+SOUL.md snippet for OpenClaw agents: [`examples/openclaw/soul_mesh_snippet.md`](https://github.com/WizTheAgent/IronMesh/blob/main/examples/openclaw/soul_mesh_snippet.md).
 
 ### TypeScript client — functional alpha
 
-`@wiztheagent/ironmesh-client@0.1.0-alpha.2` in [`clients/ts/`](../clients/ts/)
+`@wiztheagent/ironmesh-client@0.1.0-alpha.2` in [`clients/ts/`](https://github.com/WizTheAgent/IronMesh/tree/main/clients/ts)
 implements the full IronMesh wire protocol:
 
 - **3-stage handshake** — passphrase challenge (HMAC-SHA256) + mutual
@@ -146,7 +146,7 @@ Twelve stability fixes (each with a regression test):
   `:latest`). Non-root UID 1000.
 - **GitHub Release:** wheel + sdist attached.
 - **TypeScript client:** not yet on npm — use the GitHub repo or
-  workspace reference; see [`clients/ts/README.md`](../clients/ts/README.md).
+  workspace reference; see [`clients/ts/README.md`](https://github.com/WizTheAgent/IronMesh/blob/main/clients/ts/README.md).
 
 ## Verification before release
 
@@ -160,4 +160,4 @@ Twelve stability fixes (each with a regression test):
 
 ---
 
-_Full changelog:_ [`CHANGELOG.md`](../CHANGELOG.md)
+_Full changelog:_ [`CHANGELOG.md`](https://github.com/WizTheAgent/IronMesh/blob/main/CHANGELOG.md)

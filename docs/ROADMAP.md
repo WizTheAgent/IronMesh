@@ -1,7 +1,7 @@
 # IronMesh Roadmap
 
 Living document. What's actually committed is in
-[CHANGELOG.md](../CHANGELOG.md); everything below is *intent*, not a
+[CHANGELOG.md](https://github.com/WizTheAgent/IronMesh/blob/main/CHANGELOG.md); everything below is *intent*, not a
 promise. Priorities get re-ordered whenever a user scenario shows up
 that the current version doesn't handle well.
 

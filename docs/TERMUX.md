@@ -6,7 +6,7 @@ some caveats).  This gives you a full IronMesh node in your pocket with
 no app-store friction.
 
 > **Recommended path for most mobile users:** use the
-> [LXMF gateway](../examples/lxmf_gateway.py) with
+> [LXMF gateway](https://github.com/WizTheAgent/IronMesh/blob/main/examples/lxmf_gateway.py) with
 > [Sideband](https://unsigned.io/sideband) (native iOS/Android Reticulum
 > messenger). Termux is for operators who want CLI access.
 

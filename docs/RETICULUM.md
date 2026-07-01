@@ -238,7 +238,7 @@ paths added in a later release use `ALLOW_LIST` gated to identity
 hashes in the trust store.
 
 A working example client lives at
-[`examples/rns_capability_client.py`](../examples/rns_capability_client.py).
+[`examples/rns_capability_client.py`](https://github.com/WizTheAgent/IronMesh/blob/main/examples/rns_capability_client.py).
 It imports only the `rns` package — no ironmesh dependency.
 
 ## Admin RPC paths (gated)
