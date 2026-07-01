@@ -1564,11 +1564,14 @@ class BridgeDaemon:
         self._running = False
         self._mdns_service = None
         self._mdns_listener = None
-        # Derive storage key from passphrase for encrypting SQLite payloads at rest.
-        storage_key = hashlib.sha256(
-            (passphrase + "ironmesh-storage-v1").encode()
-        ).digest()
-        self._db = MessageStore(db_path, storage_key=storage_key)
+        # The key for encrypting SQLite payloads at rest is derived inside
+        # MessageStore.open(): Argon2id over the daemon passphrase with a
+        # per-database persisted salt, then an HKDF-SHA256 storage subkey
+        # (see store.py). The slow KDF means a leaked disk image no longer
+        # allows a fast offline dictionary attack on the passphrase.
+        # Databases written by earlier releases with the legacy unsalted
+        # SHA-256 key are re-encrypted forward transparently on open.
+        self._db = MessageStore(db_path, storage_passphrase=passphrase)
         self._keypair: Optional[ew_keys.AgentKeys] = None
         self._known_peer_addresses: Dict[str, str] = {}
         # v0.8.5: per-instance trust store path. None ⇒ legacy default

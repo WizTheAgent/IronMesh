@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **At-rest storage key now derived via Argon2id + HKDF-SHA256**
+  (previously a single unsalted SHA-256 of the mesh passphrase), with
+  a per-database persisted salt — a leaked disk image no longer
+  allows a fast offline dictionary attack on the passphrase.
+  Existing databases are re-encrypted under the new key automatically
+  on the first daemon start; no operator action required.
+
 ## [0.9.4.2] — 2026-05-23 — Operator-polish sweep
 
 A focused sweep of operator-facing fixes surfaced by the v0.9.4

@@ -5,6 +5,8 @@ Replaces the old database.py (sync) and MessageStore embedded in bridge.py.
 """
 
 import asyncio
+import base64
+import hashlib
 import logging
 import os
 import time
@@ -15,6 +17,45 @@ import aiosqlite
 logger = logging.getLogger("ironmesh.store")
 
 SCHEMA_VERSION = 3
+
+# ---------------------------------------------------------------------------
+# At-rest storage-key derivation (v0.9.5)
+# ---------------------------------------------------------------------------
+# Payload ciphertext written by the current format carries this magic
+# prefix so the reader can dispatch between the current key and the
+# legacy key without trial decryption. A legacy SecretBox blob starts
+# with a 24-byte random nonce, so an accidental prefix collision is
+# negligible (2^-80).
+STORAGE_V2_MAGIC = b"IMSTOREv2\x00"
+
+# HKDF-SHA256 info label for the storage subkey. NUL-terminated to
+# avoid any future label being a prefix of another label (mirrors the
+# HKDF_INFO_* convention in keys.py).
+HKDF_INFO_STORAGE = b"ironmesh-storage-key-v2\x00"
+
+# The pre-v0.9.5 storage key was a single unsalted SHA-256 of the
+# daemon passphrase plus this constant. Kept only so existing
+# databases can be read and re-encrypted forward; never used for new
+# ciphertext.
+_LEGACY_KEY_SUFFIX = "ironmesh-storage-v1"
+
+# _meta keys for the persisted per-database KDF salt and the
+# storage-format upgrade marker.
+_META_STORAGE_SALT = "storage_salt"
+_META_STORAGE_FORMAT = "storage_format"
+STORAGE_FORMAT_AEAD_V2 = "aead-v2"
+
+
+def _derive_legacy_storage_key(passphrase: str) -> bytes:
+    """The pre-v0.9.5 storage key: unsalted SHA-256 of the passphrase.
+
+    Fast to compute by design of SHA-256, which is exactly why it was
+    replaced — a leaked disk image allowed an offline dictionary attack
+    on the passphrase. Retained solely for reading (and migrating)
+    databases written by earlier releases.
+    """
+    return hashlib.sha256((passphrase + _LEGACY_KEY_SUFFIX).encode()).digest()
+
 
 # v0.7.2 Wiz hardening: bound the offline queue so a perpetually-offline
 # peer can't consume unbounded disk. When at cap, the oldest LOW/NORMAL
@@ -28,21 +69,40 @@ class MessageStore:
 
     def __init__(self, db_path: str = "~/.ironmesh/data.db",
                  storage_key: Optional[bytes] = None,
-                 max_pending_per_peer: int = DEFAULT_MAX_PENDING_PER_PEER):
+                 max_pending_per_peer: int = DEFAULT_MAX_PENDING_PER_PEER,
+                 storage_passphrase: Optional[str] = None):
         """
         Args:
             db_path: Path to SQLite database file.
-            storage_key: Optional 32-byte key for encrypting payloads at rest (#8).
-                         Derive from passphrase via SHA-256(passphrase + salt).
+            storage_key: Optional explicit 32-byte key for encrypting payloads
+                at rest. Mutually exclusive with ``storage_passphrase``.
             max_pending_per_peer: Cap on undelivered messages per peer. 0 disables
                 the cap (legacy behavior). Over cap, the oldest LOW/NORMAL is
                 evicted; CRITICAL/HIGH always admitted, evicting lower priority
                 first.
+            storage_passphrase: Passphrase from which the at-rest storage key
+                is derived during ``open()``: Argon2id (moderate limits,
+                matching the identity-key envelope in keys.py) over the
+                passphrase with a per-database random salt persisted in the
+                ``_meta`` table, then an HKDF-SHA256 expand with a
+                domain-separated info label. Databases written by earlier
+                releases with the legacy unsalted-SHA-256 key are read via a
+                legacy fallback and re-encrypted forward on first open.
         """
+        if storage_key is not None and storage_passphrase is not None:
+            raise ValueError(
+                "storage_key and storage_passphrase are mutually exclusive"
+            )
         self.db_path = os.path.expanduser(db_path)
         os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
         self._db: Optional[aiosqlite.Connection] = None
         self._storage_key: Optional[bytes] = storage_key
+        self._storage_passphrase: Optional[str] = storage_passphrase
+        # Key used only to READ (and migrate forward) payloads written by
+        # earlier releases. In explicit-key mode the caller's key doubles
+        # as the legacy key: pre-upgrade databases written by explicit-key
+        # callers used the same key without the format prefix.
+        self._legacy_storage_key: Optional[bytes] = storage_key
         self._max_pending_per_peer = max_pending_per_peer
         # Observability: evictions + refused admits, keyed by reason.
         self.pending_dropped = 0  # offline queue: total dropped (never queued)
@@ -67,6 +127,10 @@ class MessageStore:
             await self._db.execute("PRAGMA journal_mode=WAL")
             await self._db.execute("PRAGMA foreign_keys=ON")
             await self._migrate()
+            if self._storage_passphrase is not None:
+                await self._derive_storage_key()
+            if self._storage_key is not None:
+                await self._upgrade_storage_format()
             self._opened = True
             logger.info("Database opened: %s (schema v%d)", self.db_path, SCHEMA_VERSION)
 
@@ -345,31 +409,171 @@ class MessageStore:
     # Payload encryption at rest (#8)
     # ------------------------------------------------------------------
 
-    def _encrypt_payload(self, payload: bytes) -> bytes:
-        """Encrypt payload before INSERT if storage_key is set.
+    async def _derive_storage_key(self):
+        """Derive the at-rest storage key from the store passphrase.
 
-        No plaintext fallback. Encryption failure is a hard error —
-        silent downgrade to plaintext would be a security regression.
+        Argon2id (moderate opslimit/memlimit — the same cost parameters
+        that protect the identity-key envelope in keys.py) over the
+        passphrase with a per-database 16-byte random salt, followed by
+        an HKDF-SHA256 expand under a domain-separated info label that
+        binds the subkey to its storage role. The salt is generated on
+        first open and persisted in the ``_meta`` table (it is not
+        secret), so the derivation is stable across restarts and travels
+        with the database file.
+
+        The slow KDF is the point: a leaked disk image no longer allows
+        a fast offline dictionary attack on the passphrase, matching the
+        at-rest strength of the identity key file. The Argon2id pass runs
+        in a thread executor so daemon startup doesn't block the event
+        loop for its duration.
+        """
+        from nacl.pwhash import argon2id
+
+        from ironmesh.keys import _hkdf_sha256
+
+        cursor = await self._db.execute(
+            "SELECT value FROM _meta WHERE key = ?", (_META_STORAGE_SALT,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            salt = base64.b64decode(row[0])
+            if len(salt) != argon2id.SALTBYTES:
+                raise ValueError(
+                    f"Persisted storage salt has wrong length: {len(salt)}"
+                )
+        else:
+            salt = os.urandom(argon2id.SALTBYTES)
+            await self._db.execute(
+                "INSERT INTO _meta (key, value) VALUES (?, ?)",
+                (_META_STORAGE_SALT, base64.b64encode(salt).decode()),
+            )
+            await self._db.commit()
+
+        passphrase = self._storage_passphrase
+        loop = asyncio.get_running_loop()
+        ikm = await loop.run_in_executor(
+            None,
+            lambda: argon2id.kdf(
+                32,
+                passphrase.encode(),
+                salt,
+                opslimit=argon2id.OPSLIMIT_MODERATE,
+                memlimit=argon2id.MEMLIMIT_MODERATE,
+            ),
+        )
+        self._storage_key = _hkdf_sha256(
+            ikm, salt, HKDF_INFO_STORAGE, length=32,
+        )
+        self._legacy_storage_key = _derive_legacy_storage_key(passphrase)
+
+    async def _upgrade_storage_format(self):
+        """One-shot re-encryption of legacy-key payloads to the current key.
+
+        Databases written before v0.9.5 hold SecretBox blobs under the
+        fast unsalted-SHA-256 key (or, for explicit-key callers, blobs
+        without the format prefix). On the first open with a storage key
+        active, every payload that decrypts under the legacy key is
+        re-encrypted under the current key and stamped with the format
+        prefix. Payloads that don't decrypt (rows written before at-rest
+        encryption existed, or under a different credential) are left
+        byte-for-byte untouched — they stay exactly as readable as they
+        were before the upgrade.
+
+        A ``_meta`` marker records completion so subsequent opens skip
+        the table scan.
+        """
+        cursor = await self._db.execute(
+            "SELECT value FROM _meta WHERE key = ?", (_META_STORAGE_FORMAT,)
+        )
+        row = await cursor.fetchone()
+        if row and row[0] == STORAGE_FORMAT_AEAD_V2:
+            return
+
+        from nacl.secret import SecretBox
+        legacy_box = SecretBox(self._legacy_storage_key)
+        migrated = 0
+        skipped = 0
+        # Static table list — every table with an encrypted payload column.
+        for table in ("messages", "pending_messages", "pending_trust_messages"):
+            cursor = await self._db.execute(
+                f"SELECT rowid, payload FROM {table} WHERE payload IS NOT NULL"
+            )
+            rows = await cursor.fetchall()
+            for rowid, payload in rows:
+                if isinstance(payload, str):
+                    payload = payload.encode()
+                if not payload or payload.startswith(STORAGE_V2_MAGIC):
+                    continue
+                try:
+                    plaintext = bytes(legacy_box.decrypt(bytes(payload)))
+                except Exception:
+                    # Not legacy ciphertext under this credential —
+                    # leave untouched (still served as-is on read).
+                    skipped += 1
+                    continue
+                await self._db.execute(
+                    f"UPDATE {table} SET payload = ? WHERE rowid = ?",
+                    (self._encrypt_payload(plaintext), rowid),
+                )
+                migrated += 1
+        await self._db.execute(
+            "INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)",
+            (_META_STORAGE_FORMAT, STORAGE_FORMAT_AEAD_V2),
+        )
+        await self._db.commit()
+        if migrated or skipped:
+            logger.info(
+                "Storage-format upgrade: %d payload(s) re-encrypted under "
+                "the KDF-derived key, %d left untouched (not legacy "
+                "ciphertext)", migrated, skipped,
+            )
+
+    def _encrypt_payload(self, payload: bytes) -> bytes:
+        """Encrypt payload before INSERT if a storage key is set.
+
+        Output is the format-prefix magic followed by a SecretBox blob
+        (XSalsa20-Poly1305, random 24-byte nonce). No plaintext
+        fallback. Encryption failure is a hard error — silent downgrade
+        to plaintext would be a security regression.
         """
         if not self._storage_key or not payload:
             return payload
         from nacl.secret import SecretBox
         box = SecretBox(self._storage_key)
-        return bytes(box.encrypt(payload))
+        return STORAGE_V2_MAGIC + bytes(box.encrypt(payload))
 
     def _decrypt_payload(self, payload) -> bytes:
-        """Decrypt payload after SELECT if storage_key is set."""
+        """Decrypt payload after SELECT if a storage key is set.
+
+        Dispatches on the format prefix: prefixed blobs decrypt under
+        the current KDF-derived key; unprefixed blobs are tried against
+        the legacy key (databases written by earlier releases). When
+        neither applies, the raw bytes are returned as-is — that
+        preserves rows written before at-rest encryption existed, and
+        ensures a tampered or wrong-key ciphertext never yields
+        plaintext (the Poly1305 authenticator rejects it).
+        """
         if not self._storage_key or not payload:
             return payload if isinstance(payload, bytes) else (payload.encode() if payload else b"")
         if isinstance(payload, str):
             payload = payload.encode()
-        try:
-            from nacl.secret import SecretBox
-            box = SecretBox(self._storage_key)
-            return bytes(box.decrypt(payload))
-        except Exception:
-            # Migration: if decrypt fails, return as-is (existing plaintext data)
-            return payload
+        from nacl.secret import SecretBox
+        if payload.startswith(STORAGE_V2_MAGIC):
+            try:
+                box = SecretBox(self._storage_key)
+                return bytes(box.decrypt(payload[len(STORAGE_V2_MAGIC):]))
+            except Exception:
+                logger.debug("Payload failed AEAD verification under the "
+                             "current storage key; returning ciphertext")
+                return payload
+        if self._legacy_storage_key:
+            try:
+                box = SecretBox(self._legacy_storage_key)
+                return bytes(box.decrypt(payload))
+            except Exception:
+                pass
+        # Rows written before at-rest encryption existed.
+        return payload
 
     # ------------------------------------------------------------------
     # Message history

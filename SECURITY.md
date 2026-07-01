@@ -155,6 +155,17 @@ release may add a global daemon-wide bandwidth cap as belt-and-suspenders.
   `_encrypt_payload` (XSalsa20-Poly1305 with a storage key derived
   from the mesh passphrase). The `messages`, `pending_messages`, and
   `pending_trust_messages` tables all store ciphertext bodies.
+- **Storage-key derivation is Argon2id-hardened**: the storage key is
+  derived by running Argon2id (moderate cost parameters, the same that
+  protect the identity key file) over the mesh passphrase with a
+  per-database random salt persisted in the `_meta` table, then
+  expanding a domain-separated storage subkey via HKDF-SHA256. A
+  leaked disk image therefore does not permit a fast offline
+  dictionary attack on the passphrase. Databases written by earlier
+  releases (which used a single unsalted SHA-256 of the passphrase)
+  are re-encrypted under the new key automatically on the first
+  daemon start; payloads that predate at-rest encryption entirely are
+  left untouched and remain readable.
 - SQLite journal files (`*.db-wal`, `*.db-shm`) inherit the same
   property: because the encryption happens in the application layer
   before the INSERT, the WAL and shared-memory pages hold ciphertext
