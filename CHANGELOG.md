@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Docs: project-status language aligned with the Alpha classifier
+  ("production-grade" claim removed; crypto described as built on
+  audited libsodium primitives, distinct from the still-pending
+  external protocol audit) and a post-quantum migration plan
+  (hybrid X25519 + ML-KEM-768, pre-v1.0) added to `SECURITY.md`.
+
 ## [0.9.4.2] — 2026-05-23 — Operator-polish sweep
 
 A focused sweep of operator-facing fixes surfaced by the v0.9.4

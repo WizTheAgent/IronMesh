@@ -190,8 +190,8 @@ stay online, messages keep flowing.
 
 - **End-to-end encrypted agent mesh on RF.** No WiFi, no cell, no
   internet. Two Pi Zeros + two Heltecs + one passphrase.
-- **Audit-graded crypto** (Ed25519 + X25519 + XSalsa20-Poly1305) on a
-  bandwidth-constrained transport.
+- **Audited crypto primitives** (Ed25519 + X25519 + XSalsa20-Poly1305,
+  via libsodium) on a bandwidth-constrained transport.
 - **Zero infrastructure dependence.** No DNS, no STUN, no relay
   servers, no cloud. The only thing you need is RF spectrum.
 - **Days of runtime per power bank.** A daemon under typical agent
