@@ -88,9 +88,11 @@ you; hardening is planned for a future release):
   truncated frames can briefly grow the buffer; RNS link timeout
   eventually cleans it up, but memory pressure during the attack
   window is possible. Mitigation: only enable RNS with trusted peers.
-- **rns dependency** is pinned as `rns>=0.9.0` with no upper bound
-  in v0.8.5.2. For strict environments, pin `rns>=0.9.0,<0.10.0` in
-  your own install.
+- **rns dependency** is pinned as `rns>=1.1.9,<2` — patch and minor
+  releases flow through automatically while unreviewed major bumps
+  are blocked. For strict environments, install from the hash-pinned
+  lockfile at the repository root instead:
+  `pip install --require-hashes -r requirements.lock`.
 
 If RNS isn't enabled, none of this applies.
 

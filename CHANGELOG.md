@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Supply-chain hardening: CI installs dependencies from a hash-pinned lockfile (`requirements.lock`), pip-audit now audits the lockfile pins, and the mypy step is blocking via an error-count baseline gate (`.mypy-baseline`).
+
 ## [0.9.4.2] — 2026-05-23 — Operator-polish sweep
 
 A focused sweep of operator-facing fixes surfaced by the v0.9.4

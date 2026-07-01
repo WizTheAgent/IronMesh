@@ -36,9 +36,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
+        # Dependencies come from the hash-pinned lockfile so a
+        # compromised release of a transitive dependency can't be
+        # pulled silently at install time. The project itself is then
+        # installed with --no-deps so the resolver can't reach outside
+        # the lockfile. Regeneration instructions live in the lockfile
+        # header and CONTRIBUTING.md.
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,rns]"
+          pip install --require-hashes -r requirements.lock
+          pip install -e . --no-deps
 
       # Lint / type-check — the IronMesh package lives at the repo root
       # (see pyproject.toml: package-dir.ironmesh = ".").  Ruff + mypy
@@ -46,10 +53,54 @@ jobs:
       - name: Lint with ruff
         run: ruff check . --exclude tests --exclude examples --exclude ironmesh_mcp/__pycache__
 
-      - name: Type check with mypy
-        # Non-blocking until the existing type-error backlog is cleared.
-        run: mypy . --ignore-missing-imports --exclude tests --exclude examples
-        continue-on-error: true
+      # Type check — the distribution maps the repository root to the
+      # `ironmesh` package (see [tool.setuptools.package-dir] in
+      # pyproject.toml), so an in-place `mypy .` sees every module under
+      # two names and aborts with "Source file found twice" before
+      # checking a single file. Instead, stage a copy shaped like the
+      # installed layout and run mypy against the real package names.
+      # `--platform linux` keeps the error count identical across
+      # runner OSes.
+      #
+      # The gate is blocking: the step fails if the error count exceeds
+      # the frozen backlog recorded in .mypy-baseline. New type errors
+      # fail CI; clearing old ones lets the baseline ratchet down.
+      # TODO(2026-07-01): ratchet .mypy-baseline to 0, then replace this
+      # counting gate with a plain blocking `mypy` invocation.
+      - name: Type check with mypy (baseline-gated)
+        shell: bash
+        run: |
+          STAGE=.mypy-staging
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/ironmesh"
+          cp *.py "$STAGE/ironmesh/"
+          cp -r adapters "$STAGE/ironmesh/adapters"
+          cp -r ironmesh_mcp ironmesh_acp ironmesh_a2a "$STAGE/"
+          cp pyproject.toml "$STAGE/"
+          find "$STAGE" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+          (cd "$STAGE" && mypy ironmesh ironmesh_mcp ironmesh_acp ironmesh_a2a \
+              --ignore-missing-imports --platform linux > mypy-report.txt 2>&1) || true
+          cat "$STAGE/mypy-report.txt"
+          if ! grep -qE '(Found [0-9]+ error|Success: no issues found)' "$STAGE/mypy-report.txt"; then
+            echo "FAIL: mypy did not produce a result (crash or config error)."
+            exit 1
+          fi
+          COUNT=$(grep -oE 'Found [0-9]+ error' "$STAGE/mypy-report.txt" | grep -oE '[0-9]+' || echo 0)
+          BASELINE=$(grep -m1 -oE '^[0-9]+' .mypy-baseline || true)
+          rm -rf "$STAGE"
+          if [ -z "$BASELINE" ]; then
+            echo "FAIL: .mypy-baseline is missing or unparseable."
+            exit 1
+          fi
+          echo "mypy errors: $COUNT (baseline: $BASELINE)"
+          if [ "$COUNT" -gt "$BASELINE" ]; then
+            echo "FAIL: mypy error count $COUNT exceeds the recorded baseline $BASELINE."
+            echo "Fix the new type errors rather than bumping the baseline."
+            exit 1
+          fi
+          if [ "$COUNT" -lt "$BASELINE" ]; then
+            echo "NOTE: error count is below baseline — ratchet .mypy-baseline down to $COUNT."
+          fi
 
       # Security scanning — bandit on the repo root, pip-audit on the deps.
       - name: Install security tools
@@ -63,7 +114,9 @@ jobs:
         run: bandit -r . -lll --exclude ./tests,./examples,./ironmesh_mcp/__pycache__
 
       - name: Dependency vulnerability audit (pip-audit)
-        run: pip-audit
+        # Audits the lockfile pins — the exact dependency set installed
+        # above — rather than whatever happens to be in the environment.
+        run: pip-audit -r requirements.lock --no-deps
         continue-on-error: true
         # Informational — a new CVE shouldn't break CI until we've
         # evaluated the impact. Flip to `continue-on-error: false` once
@@ -116,10 +169,13 @@ jobs:
       - name: Install IronMesh + real framework deps
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-          # Real third-party frameworks, not mocks. Each test file
-          # pytest.importorskips the ones it needs so a failure here
-          # isn't fatal to the others.
+          # Same hash-pinned lockfile as the unit-test job.
+          pip install --require-hashes -r requirements.lock
+          pip install -e . --no-deps
+          # Real third-party frameworks, not mocks — deliberately
+          # unpinned so the tests track what users actually install.
+          # Each test file pytest.importorskips the ones it needs so a
+          # failure here isn't fatal to the others.
           pip install langchain-core crewai pyautogen || true
       - name: Run integration tests
         env:

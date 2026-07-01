@@ -52,7 +52,7 @@ or env var sources — never inline secrets in JSON config.
 | `--allowed-peers` | csv | — | mDNS allowlist. Default-deny if not set. |
 | `--open-discovery` | flag | off | **INSECURE.** Auto-connect to any mDNS peer. Localhost testing only. |
 | `--allow-plaintext-ws` | flag | off | **INSECURE.** Allow `ws://` fallback. Localhost testing only. |
-| `--require-message-promotion` | flag | off (v0.8.x) | Enable the pending-trust message gate. Default-on in v0.9. |
+| `--require-message-promotion` | flag | off | Enable the pending-trust message gate (opt-in). See `docs/TRUST_GATE_ARCHITECTURE.md`. |
 | `--gui` | flag | off | Enable the operator dashboard on `--port + 1`. |
 | `--gui-bind` | str | `127.0.0.1` | Dashboard bind address. **Anything other than loopback emits an `INSECURE BIND` warning.** See `docs/REVERSE_PROXY.md`. |
 | `--rotate-keys` | flag | off | Rotate identity keypair before starting (one-shot). |
