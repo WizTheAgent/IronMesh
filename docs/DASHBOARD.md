@@ -4,7 +4,7 @@ Real-time monitoring and management GUI for IronMesh agent-to-agent communicatio
 
 ## Overview
 
-The web dashboard is built into the bridge daemon — no extra software, dependencies, or configuration needed. It serves a complete single-page application as embedded HTML directly from `bridge.py`, using the same `websockets` library that powers agent-to-agent communication.
+The web dashboard is built into the bridge daemon — no extra software, dependencies, or configuration needed. It serves a complete single-page application as embedded HTML directly from the daemon (the page lives in `dashboard_html.py`, served by `dashboard.py`), using the same `websockets` library that powers agent-to-agent communication.
 
 **URL:** `http://127.0.0.1:{port+1}/`
 **Example:** If your bridge runs on port 8765, the dashboard is at `http://127.0.0.1:8766/`

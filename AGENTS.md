@@ -15,7 +15,14 @@ dependencies. See `README.md` for the product-level summary.
 
 ```
 ironmesh/                  # main Python package
-├── bridge.py              # daemon — WebSocket server + dashboard + mesh
+├── bridge.py              # daemon core — server + lifecycle (composes the mixins below)
+├── handshake.py           # client handshake + outbound connect + rekey
+├── routing.py             # inbound dispatch + outbound send pipeline
+├── trust_ops.py           # revocation + pending-trust gate + TOFU check
+├── ratelimit.py           # auth-failure lockout + bandwidth throttle
+├── metrics.py             # counters + Prometheus/JSON exposition
+├── dashboard.py           # GUI HTTP/WebSocket server + operator commands
+├── dashboard_html.py      # embedded dashboard page (GUI_HTML)
 ├── trust.py               # TOFU pin store + capability-set binding
 ├── audit.py               # HMAC-chained audit log + cross-process flock
 ├── mesh.py                # distance-vector router + DedupCache

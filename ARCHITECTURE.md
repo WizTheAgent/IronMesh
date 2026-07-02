@@ -61,7 +61,14 @@
 | `keys.py` | Ed25519 identity keygen, X25519 ephemeral keygen, save/load with Argon2id (mandatory encryption by default) |
 | `keychain.py` | Optional OS-keychain passphrase storage (macOS Keychain, Windows Credential Manager, Linux Secret Service) — `pip install ironmesh[keychain]` |
 | `protocol.py` | `MessageType` enum, `Frame` binary wire format (signed), `ReplayGuard`, `TokenBucket`, `PeerState`, `Handshake`, immutable `MessageBus` |
-| `bridge.py` | Main daemon: WebSocket server, auth flow, handshake, binary frame routing, offline queue, metrics, token-authenticated dashboard, audit logging, mDNS fingerprint pinning, auth-failure IP blocking |
+| `bridge.py` | Main daemon: `BridgeDaemon` lifecycle, WebSocket server, server-side auth flow, discovery/reconnect/heartbeat loops, audit logging, mDNS fingerprint pinning. Composes the mixin modules below |
+| `handshake.py` | Protocol version constants + helpers, client-side handshake (passphrase auth + ephemeral ECDH), outbound connection establishment, X25519 key-binding advertisement/verification, handshake-skip eligibility, in-session rekey (`HandshakeMixin`) |
+| `routing.py` | Inbound frame parsing/dispatch (binary + legacy JSON), encrypted control messages, outbound send pipeline with offline queue, unified transport selection, capability-aware routing (`RoutingMixin`) |
+| `trust_ops.py` | Revocation broadcast/handling, pending-trust message gate + operator actions, capability continuity observation, TOFU identity check (`TrustOpsMixin`) |
+| `ratelimit.py` | Per-IP auth-failure lockout window + per-peer outbound bandwidth throttle (`RateLimitMixin`) |
+| `metrics.py` | `Metrics` counter block, audit-mirrored counter bookkeeping, Prometheus/JSON exposition, fallback `/metrics` endpoint (`MetricsMixin`) |
+| `dashboard.py` | Token-authenticated dashboard HTTP/WebSocket server + operator command dispatcher (`GuiMixin`) |
+| `dashboard_html.py` | The embedded operator dashboard page (`GUI_HTML`) served by `dashboard.py` |
 | `mesh.py` | Multi-hop routing — link-state announces, sequence numbers, RTT-weighted shortest path, broadcast suppression, hop-count cap |
 | `mesh_crypto.py` | E2E `SealedBox` encryption for relayed messages (recipient-only decrypt; relays only see envelope) |
 | `agent.py` | High-level `Agent` SDK — `send_to(name)`, `send_to_capability(pattern)`, `@on_message` handler decorator, capability advertisement |

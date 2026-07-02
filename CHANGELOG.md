@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`bridge.py` decomposed into focused modules — no behavior change.**
+  The daemon module previously carried ~7,850 lines, including the
+  embedded dashboard page. Pure code movement, verified against the
+  full test suite:
+  - `dashboard_html.py` — the embedded operator dashboard page
+    (`GUI_HTML`; the served bytes are byte-identical).
+  - `dashboard.py` — the GUI HTTP/WebSocket server and operator
+    command dispatcher (`GuiMixin`).
+  - `handshake.py` — protocol version constants and helpers, the
+    client-side handshake, outbound connection establishment, X25519
+    key-binding advertisement/verification, handshake-skip
+    eligibility, and in-session rekey (`HandshakeMixin`).
+  - `routing.py` — inbound frame parsing/dispatch and the outbound
+    send pipeline, including unified transport selection and
+    capability-aware routing (`RoutingMixin`).
+  - `trust_ops.py` — revocation broadcast/handling, the pending-trust
+    message gate with its operator actions, capability continuity
+    observation, and the TOFU identity check (`TrustOpsMixin`).
+  - `metrics.py` — the `Metrics` counter block plus audit-mirrored
+    counter bookkeeping, the Prometheus/JSON renderers, and the
+    fallback `/metrics` endpoint (`MetricsMixin`).
+  - `ratelimit.py` — the per-IP auth-failure lockout and per-peer
+    bandwidth throttle (`RateLimitMixin`).
+  `BridgeDaemon` composes the mixins via inheritance, and `bridge.py`
+  re-exports every name it previously exposed, so existing import
+  paths (`from ironmesh.bridge import ...`) keep working unchanged.
+
 ### Security
 
 - **At-rest storage key now derived via Argon2id + HKDF-SHA256**
