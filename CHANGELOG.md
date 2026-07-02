@@ -78,6 +78,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at-rest encryption existed re-run the (single bounded SELECT) sweep
   each open — an accepted trade-off for the migration guarantee.
 
+- **Documented the scope of the RNS buffering cap.** SECURITY.md and
+  docs/RETICULUM.md now state explicitly that the 64 MB cumulative
+  buffering cap is per-link, not per-identity — an identity opening N
+  links can buffer roughly N × 64 MB — with an aggregate per-identity
+  bound noted as planned follow-up work.
+
 ## [0.9.4.2] — 2026-05-23 — Operator-polish sweep
 
 A focused sweep of operator-facing fixes surfaced by the v0.9.4

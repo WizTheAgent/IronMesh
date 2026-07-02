@@ -514,7 +514,11 @@ is in that single dict.
 - **Per-peer buffering cap.** Each RNS link bounds the total memory
   it will buffer (reassembly + unconsumed receive queue) at 64 MB;
   overrunning it closes the link, frees the buffers, and logs
-  `RNS: per-peer buffered-bytes cap exceeded`.
+  `RNS: per-peer buffered-bytes cap exceeded`. Note the cap is scoped
+  to a single link, not to the remote identity: an identity that opens
+  several links gets the 64 MB bound on each one, so its aggregate
+  buffering is that bound times the number of links. An aggregate
+  per-identity cap is planned follow-up work.
 
 ## Tuning
 

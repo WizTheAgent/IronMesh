@@ -105,6 +105,11 @@ residual risks are mitigated as of protocol `ironmesh/0.9`:
 
 Remaining residual:
 
+- **The buffering cap is per-link, not per-identity.**
+  `MAX_PEER_BUFFERED_BYTES` bounds each RNS link independently, so a
+  single RNS identity that opens N links can buffer roughly N × 64 MB
+  before the caps trip. This is a known, accepted limitation; an
+  aggregate per-identity bound is planned follow-up work.
 - **rns dependency** is pinned as `rns>=0.9.0` with no upper bound
   in v0.8.5.2. For strict environments, pin `rns>=0.9.0,<0.10.0` in
   your own install.
