@@ -120,11 +120,23 @@ jobs:
         continue-on-error: true
         # Informational — a new CVE shouldn't break CI until we've
         # evaluated the impact. Flip to `continue-on-error: false` once
-        # the dep set is stable.
+        # the dep set is stable (review by 2026-10-01: if the lockfile
+        # has been quiet for a quarter, make this blocking).
 
       - name: Run tests with coverage
         env:
           PYTHONIOENCODING: utf-8
+          # Result floors — assert the suite actually ran, not merely that
+          # pytest exited 0. pytest stays green when a conftest regression
+          # or broken optional dependency mass-skips or mass-deselects
+          # tests, so "green" alone doesn't prove the checks executed.
+          # The suite currently passes ~1067 tests with ~5 skips (the
+          # skips are optional-dependency and platform conditionals);
+          # floors sit at ~70% of the pass count and ~8x the skip count
+          # so routine suite churn never false-alarms while a structural
+          # no-op fails loudly. Adjust only as a deliberate change.
+          CI_PYTEST_MIN_PASSED: 750
+          CI_PYTEST_MAX_SKIPPED: 40
         # scripts/ci-pytest.sh runs pytest, watches its stdout for the
         # passing-summary line, and exits 0 as soon as that line shows
         # up — even if the Python interpreter then hangs in atexit. We
@@ -174,12 +186,48 @@ jobs:
           pip install -e . --no-deps
           # Real third-party frameworks, not mocks — deliberately
           # unpinned so the tests track what users actually install.
-          # Each test file pytest.importorskips the ones it needs so a
-          # failure here isn't fatal to the others.
-          pip install langchain-core crewai pyautogen || true
+          # Install each one separately (so one broken package doesn't
+          # mask the others' status in the log), then fail the job if
+          # any of them didn't install. This must NOT be best-effort:
+          # the adapter tests pytest.importorskip these packages, so a
+          # silently failed install would turn the whole integration
+          # suite into skips while CI stayed green.
+          failed=""
+          for pkg in langchain-core crewai pyautogen; do
+            pip install "$pkg" || failed="$failed $pkg"
+          done
+          if [ -n "$failed" ]; then
+            echo "FAIL: framework install broke for:$failed"
+            echo "The adapter integration tests would silently skip without them."
+            exit 1
+          fi
+          # Belt and suspenders: installing is not the same as importing.
+          # An import-time crash in an unpinned framework release would
+          # also feed importorskip and skip the suite silently.
+          # (pyautogen >= 0.10 is a proxy distribution that no longer
+          # ships a legacy `autogen` module, so it isn't import-checked
+          # here; the one test that needs that module skips, and that
+          # single skip is the exact budget of the skip ceiling on the
+          # test step below.)
+          python -c "import langchain_core, crewai" || {
+            echo "FAIL: a framework installed but does not import."
+            exit 1
+          }
       - name: Run integration tests
         env:
           PYTHONIOENCODING: utf-8
+          # Result floors — assert the adapter tests actually executed.
+          # With all three frameworks importable the suite currently runs
+          # 14 tests with exactly 1 skip (the legacy-`autogen`-module
+          # test; pyautogen >= 0.10 no longer ships that module). The
+          # pass floor is ~70% of that, so adding or removing a couple
+          # of tests never false-alarms, but a framework that stops
+          # importing (mass importorskip) drops the count far below it.
+          # The skip ceiling of 1 budgets the single known skip: any new
+          # skip means adapter coverage silently vanished and must be a
+          # deliberate, reviewed change here.
+          CI_PYTEST_MIN_PASSED: 10
+          CI_PYTEST_MAX_SKIPPED: 1
         timeout-minutes: 10
         # Same wrapper as the unit-test job — pytest occasionally hangs
         # in atexit on hosted runners after reporting all tests done
@@ -243,10 +291,23 @@ jobs:
             fi
           done
           # Run the conformance vector tests from the extracted sdist
-          # against the locally-built wheel. Catches the silent
-          # "0 tests collected" failure mode end-to-end.
+          # against the locally-built wheel — then assert they actually
+          # ran. An empty vectors directory parametrizes the runner to
+          # zero cases, which pytest reports as a skip and exits 0, so a
+          # green step alone doesn't prove the wire-compat contract was
+          # checked. Floor = 4 passed (~70% of the current 6 vectors) so
+          # retiring a vector or two never false-alarms while a missing
+          # vectors directory fails loudly.
           pip install --quiet "dist/$(ls dist | grep .whl | head -1)"
-          cd "$SRC" && python -m pytest tests/test_conformance_vectors.py --no-header -q
+          cd "$SRC"
+          set -o pipefail
+          python -m pytest tests/test_conformance_vectors.py --no-header -q | tee conformance-run.txt
+          passed=$(grep -oE '[0-9]+ passed' conformance-run.txt | grep -oE '[0-9]+' | head -1)
+          if [ "${passed:-0}" -lt 4 ]; then
+            echo "FAIL: only ${passed:-0} conformance vector tests passed (floor: 4)."
+            echo "The vector suite silently shrank — check tests/conformance/vectors/ in the sdist."
+            exit 1
+          fi
 
 # bench-smoke removed 2026-04-17. The background-responder pattern it used
 # was the direct cause of a ~6-hour stuck CI run, and its multicast/mDNS

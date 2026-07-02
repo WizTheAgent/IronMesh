@@ -37,7 +37,14 @@ jobs:
           pip install -e ".[dev,rns]"
           pip install ruff pyyaml build
       - name: Tests
-        run: pytest -q -p no:cacheprovider --ignore=tests/integration
+        env:
+          # Same result floors as the CI unit-test job (see ci.yml): a
+          # release gate that exits 0 because the suite mass-skipped or
+          # mass-deselected is worse than a red one. The wrapper fails
+          # the gate unless at least this many tests actually passed.
+          CI_PYTEST_MIN_PASSED: 750
+          CI_PYTEST_MAX_SKIPPED: 40
+        run: ./scripts/ci-pytest.sh pytest -q -p no:cacheprovider --ignore=tests/integration
       - name: Doc-sync + release-qc gate
         run: bash scripts/release-qc.sh --skip-smoke
 
