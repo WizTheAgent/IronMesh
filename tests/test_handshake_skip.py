@@ -67,20 +67,22 @@ class _FakeBridge:
 def _make_rns_adapter(remote_identity_hash):
     # Build an object that ``isinstance(_, RNSLinkAdapter)`` returns
     # True for, without the heavy real adapter. The eligibility check
-    # in bridge.py uses bridge's own bound RNSLinkAdapter import, so
-    # mock against that exact class to avoid module-import ordering
-    # issues across test files.
+    # in handshake.py uses that module's own bound RNSLinkAdapter
+    # import, so mock against that exact class to avoid module-import
+    # ordering issues across test files.
     import ironmesh.bridge as bridge_mod
-    if bridge_mod.RNSLinkAdapter is None:
-        # bridge couldn't import the adapter (rns not installed in
-        # bridge's import path) — fabricate a stand-in class and
-        # patch it onto bridge so the isinstance check sees it.
+    import ironmesh.handshake as handshake_mod
+    if handshake_mod.RNSLinkAdapter is None:
+        # handshake couldn't import the adapter (rns not installed in
+        # its import path) — fabricate a stand-in class and patch it
+        # onto both modules so the isinstance checks see it.
         class _StandIn:
             def __init__(self, h):
                 self.remote_identity_hash = h
+        handshake_mod.RNSLinkAdapter = _StandIn
         bridge_mod.RNSLinkAdapter = _StandIn
         return _StandIn(remote_identity_hash)
-    adapter = MagicMock(spec=bridge_mod.RNSLinkAdapter)
+    adapter = MagicMock(spec=handshake_mod.RNSLinkAdapter)
     adapter.remote_identity_hash = remote_identity_hash
     return adapter
 
