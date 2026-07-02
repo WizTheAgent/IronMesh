@@ -374,6 +374,7 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
                  rns_admin_identities: Optional[list] = None,
                  rns_skip_handshake: bool = False,
                  rns_group_broadcast: bool = False,
+                 rns_require_link_binding: bool = False,
                  # v0.9.1: optional LXMF interop (Sideband / Nomadnet)
                  lxmf_enabled: bool = False,
                  lxmf_storage: str = "~/.ironmesh/lxmf",
@@ -652,6 +653,13 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
         # Advertised in announce as the `hskip` feature. Both peers must
         # advertise + transport must be RNS Link before the skip kicks in.
         self._rns_skip_handshake = rns_skip_handshake
+        # ironmesh/0.9: when True, RNS HELLOs from peers that cannot
+        # produce the rns_link_id binding (pre-0.9 peers) are rejected
+        # instead of falling back to the legacy unbound behavior. 0.9+
+        # peers must produce the binding regardless of this flag; it
+        # exists to let operators close the legacy-peer residual
+        # entirely on meshes where every node has upgraded.
+        self._rns_require_link_binding = rns_require_link_binding
         # v0.9.2: opt in to GROUP-destination broadcast on RNS. Advertised
         # as the `group` feature. All peers in the mesh that enable this
         # derive the same symmetric group key from the passphrase via
@@ -1248,6 +1256,32 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
             # closed instead of silently selecting the legacy path.
             peer_signature_b64 = msg.get("signature")
             client_hello_version = msg.get("protocol_version", "")
+
+            # ironmesh/0.9: enforce the RNS link-binding policy BEFORE the
+            # signature check. On RNS Links, 0.9+ clients (and every client
+            # after a stage-1 skip) must bind their HELLO to the id of the
+            # link it arrived on; on the WebSocket path the field must be
+            # absent. The returned claimed binding feeds the canonical-body
+            # reconstruction below, so the HELLO signature covers it — a
+            # matching-but-forged claim still fails at the signature step.
+            bind_ok, claimed_link_binding, bind_reason = (
+                self._evaluate_rns_hello_binding(
+                    websocket, msg, client_hello_version, skip_stage1,
+                )
+            )
+            if not bind_ok:
+                logger.warning(
+                    "HELLO link-binding check FAILED for %s: %s",
+                    claimed_peer_id, bind_reason,
+                )
+                await websocket.send(json.dumps({
+                    "type": ew_protocol.MessageType.ERROR,
+                    "error": f"HELLO link binding rejected: {bind_reason}",
+                    "code": ew_protocol.ErrorCode.AUTH_FAILED,
+                }))
+                self.metrics.handshake_failures += 1
+                return
+
             hello_sig_scheme = "unsigned"
             if peer_identity_b64 and peer_signature_b64:
                 try:
@@ -1260,6 +1294,7 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
                         identity_public=peer_identity_b64,
                         name=peer_name,
                         protocol_version=client_hello_version,
+                        rns_link_id=claimed_link_binding,
                     )
                     if _peer_supports_hello_ctx(client_hello_version):
                         ew_crypto.verify_detached_with_context(
@@ -1298,6 +1333,24 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
                 self.metrics.handshake_failures += 1
                 return
 
+            # ironmesh/0.9: the skip path must end in a SIGNED client
+            # HELLO — an unsigned HELLO would leave the link binding
+            # (and the constant skip sentinel) unauthenticated. "Present
+            # and verified" means covered by the HELLO signature.
+            if skip_stage1 and hello_sig_scheme == "unsigned":
+                logger.warning(
+                    "Unsigned HELLO from %s after handshake skip — "
+                    "rejecting (skip requires a signed, link-bound HELLO)",
+                    claimed_peer_id,
+                )
+                await websocket.send(json.dumps({
+                    "type": ew_protocol.MessageType.ERROR,
+                    "error": "handshake skip requires a signed, link-bound HELLO",
+                    "code": ew_protocol.ErrorCode.AUTH_FAILED,
+                }))
+                self.metrics.handshake_failures += 1
+                return
+
             # Derive peer_id from identity key (don't trust claimed ID)
             if peer_identity_b64:
                 peer_id = ew_keys.get_fingerprint(base64.b64decode(peer_identity_b64))
@@ -1331,12 +1384,20 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
             # above): 0.9+ clients get the detached domain-separated
             # signature under SIG_CTX_HELLO; older clients get the legacy
             # attached signature so mixed-version meshes keep working.
+            # ironmesh/0.9: on RNS Links toward 0.9+ clients, bind the
+            # server HELLO to this specific RNS link (None on WebSocket
+            # or toward pre-0.9 clients — the field is then omitted and
+            # the canonical body keeps its five-key form).
+            my_link_binding = self._rns_hello_link_binding(
+                websocket, client_hello_version,
+            )
             hello_canonical = ew_protocol.canonical_hello_bytes(
                 channel_binding=server_nonce.hex(),
                 ephemeral_public=base64.b64encode(bytes(my_ephemeral_public)).decode(),
                 identity_public=self._keypair.get_public_key_base64(),
                 name=self.name,
                 protocol_version=PROTOCOL_VERSION,
+                rns_link_id=my_link_binding,
             )
             if _peer_supports_hello_ctx(client_hello_version):
                 signature = ew_crypto.sign_detached_with_context(
@@ -1358,6 +1419,8 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
                 "channel_binding": server_nonce.hex(),
                 "signature": base64.b64encode(signature).decode(),
             }
+            if my_link_binding is not None:
+                outgoing_hello["rns_link_id"] = my_link_binding
             outgoing_hello.update(self._hello_x25519_advertisement())
             await websocket.send(json.dumps(outgoing_hello))
 

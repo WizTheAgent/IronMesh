@@ -499,6 +499,23 @@ low latency), queue for later (LoRa peer, high latency), or skip
 (unreachable). All the context it needs to make scheduling decisions
 is in that single dict.
 
+## Security notes (protocol `ironmesh/0.9`)
+
+- **RNS link binding.** Peers on protocol `ironmesh/0.9+` bind their
+  HELLO to the id of the specific RNS Link it travels on
+  (`rns_link_id`, inside the signed HELLO body), and each side rejects
+  a HELLO whose claimed link doesn't match the link it arrived on.
+  This ties the IronMesh identity to the RNS link session; pre-0.9
+  RNS peers keep the legacy unbound behavior unless you pass
+  `--rns-require-link-binding` (see SECURITY.md for the scoped
+  residual). The `--rns-skip-handshake` fast path refuses to run
+  without a verified binding, so both ends of an `hskip` pair must
+  speak `ironmesh/0.9+`.
+- **Per-peer buffering cap.** Each RNS link bounds the total memory
+  it will buffer (reassembly + unconsumed receive queue) at 64 MB;
+  overrunning it closes the link, frees the buffers, and logs
+  `RNS: per-peer buffered-bytes cap exceeded`.
+
 ## Tuning
 
 | Flag | Default | Notes |

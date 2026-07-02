@@ -72,22 +72,39 @@ The short version:
 
 Reticulum is an **opt-in** transport enabled by installing
 `ironmesh[rns]` and passing `--reticulum`. The WebSocket path is the
-default; most deployments never touch RNS. If you enable it, be
-aware of these residual risks (documented so they don't surprise
-you; hardening is planned for a future release):
+default; most deployments never touch RNS. Two previously documented
+residual risks are mitigated as of protocol `ironmesh/0.9`:
 
-- **Identity binding to RNS layer is not strictly enforced.** A peer
-  that holds a valid RNS identity can open an RNS link and then send
-  a HELLO claiming a *different* IronMesh identity. The HELLO's
-  Ed25519 signature still verifies the claimed identity's keypair,
-  so the peer can't impersonate someone they don't have keys for —
-  but the RNS-layer identity doesn't have to match the IronMesh one.
-  Use trusted RNS fabrics only.
-- **Reassembly buffer** in `reticulum_transport.py` has a per-frame
-  cap (1 MB) but no per-peer cumulative cap. A chatty peer that sends
-  truncated frames can briefly grow the buffer; RNS link timeout
-  eventually cleans it up, but memory pressure during the attack
-  window is possible. Mitigation: only enable RNS with trusted peers.
+- **RNS link binding (mitigated as of `ironmesh/0.9`, scoped to 0.9+
+  peers).** On RNS Links, 0.9+ peers include the id of the specific
+  RNS link inside the signed HELLO canonical body (`rns_link_id`),
+  and the receiver rejects any HELLO whose claimed link id does not
+  match the link it actually arrived on. This couples the IronMesh
+  Ed25519 identity to the RNS link session: a signed HELLO cannot be
+  relayed onto a different link, and on the handshake-skip path
+  (`--rns-skip-handshake`) the skip is REFUSED outright unless the
+  binding is present and signature-verified — the constant skip
+  sentinel is no longer replayable across links. **Honest scope:**
+  pre-0.9 RNS peers cannot produce the binding, so their handshakes
+  keep the old behavior — a pre-0.9 peer holding a valid RNS identity
+  can still send a HELLO claiming a different IronMesh identity (the
+  Ed25519 signature still prevents impersonating anyone whose keys it
+  doesn't hold). The residual therefore remains for legacy RNS peers
+  only. Operators can pass `--rns-require-link-binding` to reject
+  RNS peers that send no binding, closing the residual completely on
+  fully-upgraded meshes; the handshake skip already requires it
+  unconditionally. The WebSocket path is unaffected (the field is
+  rejected there).
+- **Per-peer cumulative buffering cap (mitigated as of 0.9).** In
+  addition to the per-frame 1 MB cap, each RNS link now enforces a
+  cumulative bound (`MAX_PEER_BUFFERED_BYTES`, 64 MB) across the
+  reassembly buffer plus every received-but-unconsumed message and
+  Resource payload. A peer that overruns it trips the cap **before**
+  memory pressure: the link is closed, buffers are freed, and a
+  warning is logged (`RNS: per-peer buffered-bytes cap exceeded`).
+
+Remaining residual:
+
 - **rns dependency** is pinned as `rns>=0.9.0` with no upper bound
   in v0.8.5.2. For strict environments, pin `rns>=0.9.0,<0.10.0` in
   your own install.

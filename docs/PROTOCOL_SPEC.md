@@ -1,11 +1,15 @@
 # IronMesh Wire Protocol Specification
 
-**Version:** 4 (ironmesh/0.6 → ironmesh/0.8)
+**Version:** 4 (ironmesh/0.6 → ironmesh/0.9)
 **Status:** Stable. Describes the wire format as implemented in v0.8.3
-through v0.9.3. **No wire-protocol change in v0.9.3** — every v0.8.x
-and v0.9.x peer remains interoperable. v0.9.3 ships at-rest, transport,
-and observability hardening only; the wire envelope, message types,
-and handshake stages are byte-identical to v0.9.2.
+through the `ironmesh/0.9` protocol line. The binary frame envelope is
+unchanged across this whole range — every v0.8.x and v0.9.x peer
+remains interoperable. The `ironmesh/0.9` line changes the HELLO
+contents only: a domain-separated HELLO signature, and — on the
+Reticulum transport — a mandatory RNS link binding inside the signed
+HELLO body. Both are version-gated with a legacy fallback so pre-0.9
+peers keep working (see "HELLO signature domain separation" and
+"RNS link binding" in Section 2).
 
 This specification is the canonical reference for implementing IronMesh
 in any language. The Python implementation in `protocol.py` and `bridge.py`
@@ -79,6 +83,19 @@ IronMesh-layer passphrase is also unused on the skip path — Identity
 authentication via the Link replaces it. The passphrase remains the
 gate on every other transport.
 
+**Binding requirement (protocol `ironmesh/0.9`).** Because the skip
+sentinel is constant, a skip-path HELLO signature would be replayable
+across links without an IronMesh-layer per-session bind. As of
+`ironmesh/0.9` the skip therefore additionally REQUIRES the RNS link
+binding (see "RNS link binding" below): both HELLOs MUST carry a
+signed `rns_link_id` matching the link they arrive on, and both sides
+REFUSE the skip otherwise — a client refuses a `SKIP_OFFER` when the
+connection has no verifiable link id or the server advertises a
+pre-0.9 version, and a server rejects a post-skip HELLO that is
+unsigned or unbound. Pre-0.9 peers cannot produce the binding, so
+mixed-version meshes that enable `hskip` must either upgrade both
+ends or run the full stage-1 handshake.
+
 **Negotiation rule (v0.9.2 corrected design — server-driven).**
 The server is the active party and SPEAKS FIRST. After Stage 1 begins
 on an RNS Link, the server checks both peers' eligibility (RNS
@@ -141,6 +158,7 @@ HELLO payload (JSON, signed with Ed25519):
 - **identity_public:** Long-lived Ed25519 identity public key (base64).
 - **signature:** Ed25519 signature over the canonical HELLO bytes (see "HELLO signature domain separation" below). Binds the identity to the ephemeral key. The signature scheme is version-gated: `ironmesh/0.9+` peers use a 64-byte detached domain-separated signature; older peers use the legacy attached signature.
 - **channel_binding:** The server's original nonce from Stage 1, included in the signed payload to prevent relay attacks.
+- **rns_link_id (protocol `ironmesh/0.9+`, Reticulum transport only):** Hex link id of the RNS Link the HELLO travels on. Part of the signed canonical body when present (see "RNS link binding" below). MUST be absent on the WebSocket transport — receivers reject a WebSocket HELLO that carries it.
 - **TOFU check:** After receiving the peer's HELLO, each side checks its trust store. If the identity key is new → pin it (TOFU). If it's changed → reject and disconnect (possible MITM).
 - **x25519_public_b64 (v0.9.4+, optional, RESERVED):** Long-lived X25519 identity public key used for E2E SealedBox encryption. When present, receivers prefer this over the legacy `ed25519_to_curve25519(identity_public)` derivation. Pre-v0.9.4 receivers ignore the field. The field name is formally reserved by this spec — future versions MUST NOT repurpose it.
 - **x25519_binding_signature_b64 (v0.9.4+, optional, RESERVED):** 64-byte Ed25519 detached signature of `x25519_public_b64` (raw 32 bytes, not the base64) under the `SIG_CTX_X25519_BINDING = b"ironmesh-sig-v1/x25519-identity-binding\x00"` domain-separation context. Cryptographically binds the advertised X25519 to the pinned Ed25519 identity. Receivers MUST verify this binding under the peer's `identity_public` before trusting the advertised X25519 — otherwise the field is ignored and legacy derivation runs. The field name is formally reserved.
@@ -158,6 +176,11 @@ clients reproduce the bytes exactly):
 ```
 {"channel_binding":"<nonce-hex>","ephemeral_public":"<b64>","identity_public":"<b64>","name":"<agent-name>","protocol_version":"ironmesh/X.Y"}
 ```
+
+On the Reticulum transport, `ironmesh/0.9+` HELLOs add `rns_link_id`
+as a sixth key (sorted into place by the same canonicalization); the
+five-key form above remains the canonical body for the WebSocket
+transport and for pre-0.9 RNS peers. See "RNS link binding" below.
 
 The reference implementation exposes this as
 `protocol.canonical_hello_bytes()`. The `channel_binding` nonce inside
@@ -230,6 +253,59 @@ Ed25519 over `SIG_CTX_HELLO || canonical_hello_bytes` (detached,
 64 bytes), and require the same form on the peer's HELLO whenever the
 peer's HELLO advertises `0.9+`. Advertising `0.9+` while still
 attaching a legacy signature will be rejected by 0.9+ daemons.
+
+### RNS link binding (protocol `ironmesh/0.9`, Reticulum transport)
+
+Before 0.9, the HELLO's Ed25519 signature proved control of the
+claimed IronMesh identity but said nothing about the RNS link it
+travelled on — any holder of a valid RNS identity could open a link
+and present a HELLO for an unrelated IronMesh identity, and on the
+stage-1 skip path (constant sentinel) a captured HELLO signature was
+replayable across links.
+
+**Mechanism.** On RNS Links, `ironmesh/0.9+` peers include
+`rns_link_id` — the lowercase hex link id of the RNS Link — both as a
+top-level HELLO field and as a sixth key inside the signed canonical
+body. The link id is the truncated hash of the RNS link-request
+packet, observed identically by both endpoints without being
+exchanged, so each receiver independently reads the id of the link
+the HELLO actually arrived on and compares. It was chosen over the
+RNS destination hash because it is per-session (a destination hash is
+static, so it could not restore per-session binding on the skip path)
+and because both sides can derive it directly from the link object
+rather than from announce state.
+
+**Receiver rules (0.9+ daemons):**
+
+1. WebSocket transport: `rns_link_id` MUST be absent. Presence is a
+   protocol violation — reject.
+2. RNS, field present: MUST equal the local link's id
+   (constant-time comparison); the signature MUST verify over the
+   six-key canonical body. Mismatch — reject.
+3. RNS, field absent: reject when the peer advertises
+   `ironmesh/0.9+` (the binding is a mandatory part of the 0.9 RNS
+   contract), when stage 1 was skipped, or when the operator enabled
+   `--rns-require-link-binding`. Otherwise the peer is pre-0.9 and
+   the legacy (unbound) behavior applies — see SECURITY.md for the
+   honestly-scoped residual.
+4. Stage-1 skip path: the binding is REQUIRED unconditionally and the
+   HELLO MUST be signed — an unsigned or unbound post-skip HELLO is
+   rejected, and a client refuses a `SKIP_OFFER` from a pre-0.9
+   server or on a connection with no readable link id.
+
+**Version gating.** The binding rides the `ironmesh/0.9` version gate
+rather than a separate feature flag: the 0.9 protocol line is
+introduced in the same release, so no deployed peer advertises 0.9
+without the binding, and reusing the gate avoids adding a second
+negotiation knob that could itself become a downgrade surface. The
+advertised version sits inside the signed canonical body, so the
+binding requirement inherits the same tamper-evidence as the
+signature-scheme negotiation above.
+
+**Cross-language clients.** The bundled TypeScript and Go clients are
+WebSocket-only — they never produce or verify `rns_link_id` and are
+unaffected. A future RNS-speaking client MUST implement this section
+to advertise `ironmesh/0.9+` on an RNS Link.
 
 ### Stage 3: ECDH Key Agreement
 
@@ -574,11 +650,15 @@ A v5 peer interoperates fully with v4 peers — without the announce
 flag, the full Stage 1 handshake runs as before.
 
 The `ironmesh/0.9` line activates the domain-separated HELLO
-signature (see "HELLO signature domain separation" in Section 2).
-The binary frame format is unchanged. A 0.9 peer interoperates fully
-with older peers: when either side advertises a pre-0.9 version, the
-HELLO falls back to the legacy attached signature. When BOTH sides
-advertise 0.9+, the context signature is REQUIRED in both directions.
+signature (see "HELLO signature domain separation" in Section 2) and,
+on the Reticulum transport, the mandatory RNS link binding (see "RNS
+link binding" in Section 2). The binary frame format is unchanged. A
+0.9 peer interoperates fully with older peers: when either side
+advertises a pre-0.9 version, the HELLO falls back to the legacy
+attached signature (and, on RNS, the unbound legacy HELLO — unless
+the operator enabled `--rns-require-link-binding`). When BOTH sides
+advertise 0.9+, the context signature is REQUIRED in both directions,
+and on RNS Links the `rns_link_id` binding is REQUIRED as well.
 The server additionally advertises `protocol_version` in its Stage 1
 first message (`PASSPHRASE_CHALLENGE` / `SKIP_OFFER`) so the client
 can select its HELLO signing scheme before signing; daemons have
@@ -753,6 +833,7 @@ documented migration path until v1.0 ships.
 | Binary frame format v4 | v0.4 | No breaking changes since |
 | HELLO Ed25519 signature | v0.5.1 | Identity binding to ephemeral keys |
 | HELLO domain-separated signature | protocol `ironmesh/0.9` | `SIG_CTX_HELLO` context signature when both peers advertise 0.9+; legacy attached fallback for older peers |
+| RNS link binding | protocol `ironmesh/0.9` | `rns_link_id` inside the signed HELLO body couples the IronMesh identity to the RNS link session; required for 0.9+ RNS peers and on the stage-1 skip path |
 | TOFU pinning | v0.6 | Trust store with HMAC integrity |
 | Capability registry | v0.4 | Persisted with HMAC since v0.9.0 |
 | Pending-trust gate | v0.8.5 | Opt-in until v1.0 (default-deny under review) |

@@ -170,6 +170,13 @@ def parse_args():
                                 "advertise the `hskip` feature. Saves three round-"
                                 "trips on LoRa. Identity authentication is provided "
                                 "by the RNS Link itself. Default: off.")
+    run_parser.add_argument("--rns-require-link-binding", action="store_true",
+                           help="Reject RNS peers whose HELLO does not carry the "
+                                "ironmesh/0.9 RNS link binding (rns_link_id). "
+                                "0.9+ peers always send it on RNS Links; enabling "
+                                "this additionally refuses pre-0.9 RNS peers, "
+                                "which otherwise keep the legacy unbound "
+                                "behavior. Default: off.")
     run_parser.add_argument("--rns-group-broadcast", action="store_true",
                            help="Join a mesh-wide RNS Destination.GROUP whose "
                                 "symmetric key is derived from the mesh passphrase "
@@ -1022,6 +1029,7 @@ def cmd_run(args):
             or os.environ.get("IRONMESH_RNS_ADMIN_IDENTITIES")
         ),
         rns_skip_handshake=getattr(args, "rns_skip_handshake", False),
+        rns_require_link_binding=getattr(args, "rns_require_link_binding", False),
         rns_group_broadcast=getattr(args, "rns_group_broadcast", False),
         # v0.9.1: LXMF
         lxmf_enabled=getattr(args, "lxmf", False),

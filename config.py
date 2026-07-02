@@ -101,6 +101,15 @@ class IronMeshConfig:
     # the full handshake until operators opt in.
     rns_skip_handshake: bool = False
 
+    # ironmesh/0.9: require the RNS HELLO link binding from every RNS
+    # peer. 0.9+ peers always bind their HELLO to the id of the RNS
+    # Link it travels on; pre-0.9 peers cannot produce the binding.
+    # Default off = pre-0.9 RNS peers keep the legacy (unbound)
+    # behavior; on = their handshakes are rejected, closing the
+    # RNS/IronMesh identity-binding residual completely on meshes
+    # where every node has upgraded. No effect on WebSocket peers.
+    rns_require_link_binding: bool = False
+
     # v0.9.2: optional RNS Destination.GROUP for mesh-wide broadcast.
     # Every peer in the mesh derives the same symmetric group key
     # from the passphrase via HKDF, so a single packet sent to the

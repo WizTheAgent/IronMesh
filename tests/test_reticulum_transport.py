@@ -1260,3 +1260,121 @@ class TestGroupBroadcastE2E:
         # broadcast_via_group should have been called exactly once
         # (we don't retry phase 1 on the same broadcast).
         assert bad_t.broadcast_via_group.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Cumulative per-peer buffering cap (MAX_PEER_BUFFERED_BYTES)
+# ---------------------------------------------------------------------------
+
+class TestPeerBufferedCap:
+    """The per-frame MAX_RNS_MSG bound alone doesn't stop a peer from
+    holding unbounded memory across many frames; the cumulative cap
+    (reassembly buffer + unconsumed receive queue + concluded Resource
+    payloads) does. Tripping it closes the link and frees the buffers.
+    """
+
+    def _make_adapter(self, loop):
+        link = MagicMock()
+        link.status = _mock_rns.Link.ACTIVE
+        link.get_channel = MagicMock(return_value=MagicMock())
+        link.link_id = b"\x01" * 16
+        adapter = RNSLinkAdapter(link, loop, dest_hash_hex="cap-test")
+        return adapter, link
+
+    @staticmethod
+    def _frame(payload: bytes) -> bytes:
+        import struct
+        return struct.pack(">I", len(payload)) + payload
+
+    def _feed(self, adapter, chunk: bytes) -> None:
+        adapter._buffer.read = MagicMock(return_value=chunk)
+        adapter._on_data_ready(len(chunk))
+
+    @pytest.mark.asyncio
+    async def test_cap_trips_frees_and_closes(self, monkeypatch):
+        monkeypatch.setattr(rt_mod, "MAX_PEER_BUFFERED_BYTES", 4096)
+        loop = asyncio.get_running_loop()
+        adapter, link = self._make_adapter(loop)
+        # Four 1000-byte messages fit under the 4096-byte cap...
+        for _ in range(4):
+            self._feed(adapter, self._frame(b"x" * 1000))
+        assert adapter.reassembly_cap_trips == 0
+        assert adapter._pending_bytes == 4000
+        # ...the fifth crosses it BEFORE the buffer grows.
+        self._feed(adapter, self._frame(b"x" * 1000))
+        assert adapter.reassembly_cap_trips == 1
+        assert adapter._closed is True
+        assert adapter._recv_buf == b""
+        assert adapter._pending_bytes == 0
+        link.teardown.assert_called_once()
+        # The scheduled drain empties the queue and pushes the close
+        # sentinel, so the consumer sees ConnectionClosed (freed memory,
+        # message loop exits).
+        await asyncio.sleep(0.05)
+        with pytest.raises(websockets.ConnectionClosed):
+            await asyncio.wait_for(adapter.recv(), timeout=1.0)
+
+    @pytest.mark.asyncio
+    async def test_consuming_frees_budget(self, monkeypatch):
+        """A well-behaved consumer never trips the cap: recv() releases
+        each message's share of the budget."""
+        monkeypatch.setattr(rt_mod, "MAX_PEER_BUFFERED_BYTES", 4096)
+        loop = asyncio.get_running_loop()
+        adapter, _ = self._make_adapter(loop)
+        # 10 x 1000 bytes is far beyond the cap in aggregate, but the
+        # consumer drains after every message.
+        for _ in range(10):
+            self._feed(adapter, self._frame(b"y" * 1000))
+            msg = await asyncio.wait_for(adapter.recv(), timeout=1.0)
+            assert msg == b"y" * 1000
+        assert adapter.reassembly_cap_trips == 0
+        assert adapter._pending_bytes == 0
+
+    @pytest.mark.asyncio
+    async def test_incomplete_reassembly_counts_against_cap(self, monkeypatch):
+        """Truncated frames sitting in the reassembly buffer count too —
+        the original SECURITY.md scenario."""
+        import struct
+        monkeypatch.setattr(rt_mod, "MAX_PEER_BUFFERED_BYTES", 4096)
+        loop = asyncio.get_running_loop()
+        adapter, link = self._make_adapter(loop)
+        # Header claims 5000 bytes but only 3000 arrive — the partial
+        # message parks in the reassembly buffer.
+        self._feed(adapter, struct.pack(">I", 5000) + b"z" * 3000)
+        assert adapter.reassembly_cap_trips == 0
+        assert len(adapter._recv_buf) == 3004
+        # The next 2000 bytes would push the total past the cap.
+        self._feed(adapter, b"z" * 2000)
+        assert adapter.reassembly_cap_trips == 1
+        assert adapter._closed is True
+        assert adapter._recv_buf == b""
+        link.teardown.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_resource_payload_counts_against_cap(self, monkeypatch):
+        from io import BytesIO
+        monkeypatch.setattr(rt_mod, "MAX_PEER_BUFFERED_BYTES", 4096)
+        loop = asyncio.get_running_loop()
+        adapter, link = self._make_adapter(loop)
+        resource = MagicMock()
+        resource.status = _mock_rns.Resource.COMPLETE
+        resource.data = BytesIO(b"r" * 5000)
+        adapter._on_resource_concluded(resource)
+        assert adapter.reassembly_cap_trips == 1
+        assert adapter._closed is True
+        link.teardown.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_resource_within_cap_is_accounted_and_released(self):
+        from io import BytesIO
+        loop = asyncio.get_running_loop()
+        adapter, _ = self._make_adapter(loop)
+        resource = MagicMock()
+        resource.status = _mock_rns.Resource.COMPLETE
+        resource.data = BytesIO(b"r" * 1000)
+        adapter._on_resource_concluded(resource)
+        assert adapter._pending_bytes == 1000
+        msg = await asyncio.wait_for(adapter.recv(), timeout=1.0)
+        assert msg == b"r" * 1000
+        assert adapter._pending_bytes == 0
+        assert adapter.reassembly_cap_trips == 0

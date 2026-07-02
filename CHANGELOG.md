@@ -38,6 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **RNS link binding + per-peer buffering cap on the Reticulum
+  transport (protocol `ironmesh/0.9`).** On RNS Links, 0.9+ peers bind
+  their HELLO to the id of the link it travels on (`rns_link_id`
+  inside the signed canonical body) and receivers reject any mismatch,
+  coupling the IronMesh identity to the RNS link session; the
+  `--rns-skip-handshake` path now refuses to run without a verified
+  binding, pre-0.9 RNS peers keep the legacy behavior unless
+  `--rns-require-link-binding` is set, and each RNS link additionally
+  enforces a 64 MB cumulative buffering cap that closes the link and
+  frees memory when overrun. See SECURITY.md ("Reticulum transport
+  caveats") and docs/PROTOCOL_SPEC.md ("RNS link binding").
+
 - **HELLO signature is now domain-separated (protocol `ironmesh/0.9`).**
   When both peers advertise `ironmesh/0.9+`, the HELLO is signed with a
   detached Ed25519 signature under the dedicated `SIG_CTX_HELLO` context

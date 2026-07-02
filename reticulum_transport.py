@@ -68,6 +68,20 @@ RESOURCE_THRESHOLD_BYTES = 32_768
 # traffic. Operators can raise this for trusted-network deployments.
 MAX_RESOURCE_BYTES = 64 * 1024 * 1024  # 64 MB
 
+# Cumulative per-peer buffering cap across everything an RNS Link
+# adapter holds in memory at once: the deframing reassembly buffer
+# (_recv_buf) PLUS every deframed message and concluded Resource
+# payload sitting in the receive queue that the daemon hasn't consumed
+# yet. The per-frame MAX_RNS_MSG bound alone doesn't stop a peer from
+# pumping many maximum-size frames faster than the consumer drains
+# them; this cap does. Sized to MAX_RESOURCE_BYTES so a single
+# maximum-size Resource transfer always fits, while total memory per
+# link stays bounded at roughly this value. Tripping the cap closes
+# the link, frees the buffered data, and logs a warning — a peer that
+# overruns it is either misbehaving or talking to a wedged consumer,
+# and reconnecting is cheaper than unbounded growth either way.
+MAX_PEER_BUFFERED_BYTES = 64 * 1024 * 1024  # 64 MB
+
 # Announces are bandwidth-sensitive on LoRa (3.12 kbps at SF8/BW125),
 # so the announce app_data uses single-character keys to keep the
 # encoded payload small. The schema is forward-compatible: peers
@@ -191,6 +205,16 @@ class RNSLinkAdapter:
         self._closed = False
         self._recv_buf = b""
         self._buf_lock = threading.Lock()
+        # Cumulative per-peer buffering accounting (MAX_PEER_BUFFERED_BYTES).
+        # _pending_bytes counts payload bytes sitting in _queue that the
+        # daemon hasn't recv()'d yet; the reassembly buffer is counted
+        # via len(_recv_buf) directly. Both mutations happen under
+        # _buf_lock because the RNS thread adds while asyncio subtracts.
+        self._pending_bytes = 0
+        # Observability: number of times the cumulative cap tripped on
+        # this link (the trip closes the link, so this is 0 or 1 in
+        # practice — the counter shape keeps tests and dashboards simple).
+        self.reassembly_cap_trips: int = 0
         # v0.9.1: peer node_id once the IronMesh handshake binds it,
         # so the stats poller knows which PeerState to update.
         self.peer_id: Optional[str] = None
@@ -329,6 +353,15 @@ class RNSLinkAdapter:
                 chunk = self._buffer.read(ready_bytes)
                 if not chunk:
                     return
+                # Cumulative per-peer cap: reassembly buffer + unconsumed
+                # queue + the incoming chunk must stay under the bound.
+                # Checked BEFORE the buffer grows, so the cap trips ahead
+                # of memory pressure rather than after.
+                projected = (len(self._recv_buf) + self._pending_bytes
+                             + len(chunk))
+                if projected > MAX_PEER_BUFFERED_BYTES:
+                    self._trip_buffered_cap(projected)
+                    return
                 self._recv_buf += chunk
 
                 # Deframe: [4-byte big-endian length][payload]
@@ -347,10 +380,56 @@ class RNSLinkAdapter:
                         break  # incomplete message, wait for more data
                     message = self._recv_buf[4:4 + msg_len]
                     self._recv_buf = self._recv_buf[4 + msg_len:]
+                    self._pending_bytes += len(message)
                     self._loop.call_soon_threadsafe(
                         self._queue.put_nowait, message)
         except Exception:
             logger.exception("RNS _on_data_ready error")
+
+    def _trip_buffered_cap(self, projected: int) -> None:
+        """Enforce MAX_PEER_BUFFERED_BYTES: free buffers and close the link.
+
+        Called from the RNS thread with ``_buf_lock`` held. Clears the
+        reassembly buffer immediately, tears the link down (freeing the
+        RNS-side state), and schedules a queue drain + close sentinel on
+        the asyncio loop so the daemon's message loop exits and the
+        queued payload bytes become collectable.
+        """
+        self.reassembly_cap_trips += 1
+        logger.warning(
+            "RNS: per-peer buffered-bytes cap exceeded for %s "
+            "(%d > %d bytes across reassembly + receive queue) — "
+            "closing link and freeing buffers",
+            self._dest_hash_hex, projected, MAX_PEER_BUFFERED_BYTES,
+        )
+        self._recv_buf = b""
+        self._pending_bytes = 0
+        self._closed = True
+        link = self._link
+        self._link = None
+        try:
+            self._buffer.close()
+        except Exception:
+            pass
+        if link is not None:
+            try:
+                link.teardown()
+            except Exception:
+                pass
+
+        def _drain_and_close() -> None:
+            try:
+                while True:
+                    self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            self._queue.put_nowait(None)
+
+        try:
+            self._loop.call_soon_threadsafe(_drain_and_close)
+        except RuntimeError:
+            # Loop already closed during shutdown — nothing left to free.
+            pass
 
     def _on_link_closed(self, link) -> None:
         """Enqueue sentinel so ``recv()`` raises ConnectionClosed."""
@@ -393,6 +472,16 @@ class RNSLinkAdapter:
                     len(payload), MAX_RESOURCE_BYTES,
                 )
                 return
+            # The concluded Resource payload enters the same receive
+            # queue as deframed stream messages, so it counts against
+            # the same cumulative per-peer cap.
+            with self._buf_lock:
+                projected = (len(self._recv_buf) + self._pending_bytes
+                             + len(payload))
+                if projected > MAX_PEER_BUFFERED_BYTES:
+                    self._trip_buffered_cap(projected)
+                    return
+                self._pending_bytes += len(payload)
             self._loop.call_soon_threadsafe(self._queue.put_nowait, payload)
         except Exception:
             logger.exception("_on_resource_concluded failed")
@@ -403,6 +492,28 @@ class RNSLinkAdapter:
     def remote_address(self) -> Tuple[str, int]:
         """Return (address_string, port) tuple."""
         return (f"rns:{self._dest_hash_hex}", 0)
+
+    @property
+    def link_id_hex(self) -> Optional[str]:
+        """Hex link id of the underlying RNS Link, or None.
+
+        The link id is the truncated hash of the link-request packet, so
+        both endpoints of a Link observe the exact same value without
+        exchanging it — which is what makes it usable as the HELLO's
+        ``rns_link_id`` binding: each side signs the id of the link it is
+        actually speaking on, and each side checks the peer's claim
+        against the link the HELLO really arrived on. Returns None when
+        the link is gone or an RNS version doesn't expose ``link_id``
+        (callers treat that as "binding unavailable" and fail closed
+        where the binding is required).
+        """
+        link = self._link
+        if link is None:
+            return None
+        link_id = getattr(link, "link_id", None)
+        if isinstance(link_id, (bytes, bytearray)) and link_id:
+            return bytes(link_id).hex()
+        return None
 
     @property
     def open(self) -> bool:
@@ -479,6 +590,10 @@ class RNSLinkAdapter:
         msg = await self._queue.get()
         if msg is None:
             raise websockets.ConnectionClosed(None, None)
+        # Consuming a message releases its share of the cumulative
+        # per-peer buffering budget (MAX_PEER_BUFFERED_BYTES).
+        with self._buf_lock:
+            self._pending_bytes = max(0, self._pending_bytes - len(msg))
         return msg
 
     async def close(self) -> None:

@@ -170,6 +170,16 @@ def canonical_capability_announce_bytes(
 # the signature under either scheme. See docs/PROTOCOL_SPEC.md
 # ("HELLO signature domain separation") for the negotiation and downgrade
 # analysis.
+#
+# RNS link binding (protocol ironmesh/0.9, Reticulum transport only):
+# on RNS Links, 0.9+ peers additionally include ``rns_link_id`` — the hex
+# link id of the RNS Link the HELLO travels on — as a sixth key in the
+# canonical body. The receiver independently reads the link id off the
+# link the HELLO actually arrived on and rejects any mismatch, which
+# cryptographically couples the IronMesh Ed25519 identity to the RNS-layer
+# link session. When ``rns_link_id`` is None the body is byte-identical
+# to the five-key form, so the WebSocket path (which never carries the
+# field) and pre-0.9 RNS peers are unaffected.
 
 
 def canonical_hello_bytes(
@@ -178,6 +188,7 @@ def canonical_hello_bytes(
     identity_public: str,
     name: str,
     protocol_version: str,
+    rns_link_id: "Optional[str]" = None,
 ) -> bytes:
     """Build the canonical byte sequence that the HELLO Ed25519 signature
     binds to. Both senders and verifiers MUST use this exact function so
@@ -186,6 +197,11 @@ def canonical_hello_bytes(
     ``channel_binding`` (the hex server nonce) is part of the canonical
     body — this is what prevents cross-connection replay of a captured
     HELLO signature.
+
+    ``rns_link_id`` is the Reticulum-transport link binding (hex link id
+    of the RNS Link the HELLO is sent over). ``None`` — the default, and
+    the only valid value on the WebSocket path — omits the key entirely,
+    keeping the canonical bytes identical to the original five-key form.
     """
     if not isinstance(ephemeral_public, str) or not ephemeral_public:
         raise ValueError("ephemeral_public must be non-empty string")
@@ -208,6 +224,10 @@ def canonical_hello_bytes(
         "name": name,
         "protocol_version": protocol_version,
     }
+    if rns_link_id is not None:
+        if not isinstance(rns_link_id, str) or not rns_link_id:
+            raise ValueError("rns_link_id must be a non-empty string when provided")
+        body["rns_link_id"] = rns_link_id
     return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 from collections import OrderedDict
 from enum import Enum

@@ -264,6 +264,113 @@ class HandshakeMixin:
             return None
 
     # ------------------------------------------------------------------
+    # ironmesh/0.9: RNS link binding (HELLO <-> RNS Link coupling)
+    # ------------------------------------------------------------------
+    #
+    # On the Reticulum transport, the HELLO's Ed25519 signature proves
+    # control of the claimed IronMesh identity but — before 0.9 — said
+    # nothing about the RNS link it travelled on, so the RNS-layer
+    # identity and the IronMesh identity were decoupled. ironmesh/0.9
+    # closes that gap: 0.9+ peers include the hex link id of the RNS
+    # Link (``rns_link_id``) inside the signed HELLO canonical body, and
+    # the receiver checks the claim against the link the HELLO actually
+    # arrived on. The link id is per-session (the truncated hash of the
+    # link-request packet, observed identically by both endpoints), so a
+    # signed HELLO can never be relayed onto a different RNS link — in
+    # particular on the handshake-skip path, where the IronMesh channel
+    # binding is a constant sentinel and would otherwise be replayable.
+    #
+    # The field never appears on the WebSocket path: WebSocket HELLOs
+    # keep the five-key canonical body, and a WebSocket HELLO that
+    # carries ``rns_link_id`` is rejected outright.
+
+    def _rns_hello_link_binding(self, websocket, peer_version: str) -> Optional[str]:
+        """Sender side: the ``rns_link_id`` value to bind into an outgoing
+        HELLO, or None when the field must be omitted.
+
+        Included only when the connection is an RNS Link AND the peer
+        advertised ironmesh/0.9+ (pre-0.9 peers reconstruct the five-key
+        canonical body and would fail signature verification on a
+        six-key one). On the WebSocket path this always returns None.
+        """
+        if RNSLinkAdapter is None or not isinstance(websocket, RNSLinkAdapter):
+            return None
+        if not _peer_supports_hello_ctx(peer_version):
+            return None
+        link_id = getattr(websocket, "link_id_hex", None)
+        if not isinstance(link_id, str) or not link_id:
+            logger.warning(
+                "RNS link id unavailable — sending HELLO without the "
+                "rns_link_id binding; a 0.9+ peer will reject this handshake",
+            )
+            return None
+        return link_id
+
+    def _evaluate_rns_hello_binding(
+        self, websocket, hello_msg: dict, peer_version: str, skip_used: bool,
+    ) -> tuple:
+        """Receiver side: enforce the RNS link-binding policy on a HELLO.
+
+        Returns ``(ok, claimed_binding, reason)``. ``claimed_binding`` is
+        the exact ``rns_link_id`` string to feed into the canonical-body
+        reconstruction (None when the field is legitimately absent);
+        callers MUST still verify the HELLO signature over that canonical
+        body — this check authenticates nothing by itself, it only pins
+        the claim to the link the HELLO arrived on.
+
+        Policy:
+
+        - WebSocket transport: the field MUST be absent (it is defined
+          only for RNS Links); presence is a protocol violation.
+        - RNS, field present: must equal the local link's id.
+        - RNS, field absent: rejected when the peer advertised
+          ironmesh/0.9+ (the 0.9 RNS contract requires the binding),
+          when stage 1 was skipped (the skip path is refused without a
+          binding), or when the operator set ``rns_require_link_binding``.
+          Otherwise the peer is pre-0.9 and the legacy behavior applies
+          — the RNS/IronMesh identity-binding residual remains scoped to
+          exactly these peers (see SECURITY.md).
+        """
+        claimed = hello_msg.get("rns_link_id")
+        is_rns = RNSLinkAdapter is not None and isinstance(websocket, RNSLinkAdapter)
+        if not is_rns:
+            # Explicitly not implied: the WebSocket path never carries
+            # the binding field. Reject rather than ignore, so a
+            # confused (or probing) peer fails loudly.
+            if claimed is not None:
+                return (False, None,
+                        "rns_link_id is only valid on the Reticulum transport")
+            return (True, None, "")
+        if claimed is not None:
+            if not isinstance(claimed, str) or not claimed:
+                return (False, None, "malformed rns_link_id")
+            local = getattr(websocket, "link_id_hex", None)
+            if not isinstance(local, str) or not local:
+                return (False, None,
+                        "local RNS link id unavailable — cannot verify the "
+                        "claimed binding")
+            if not hmac.compare_digest(
+                claimed.lower().encode("utf-8"), local.lower().encode("utf-8"),
+            ):
+                return (False, None,
+                        "rns_link_id does not match the link the HELLO "
+                        "arrived on")
+            return (True, claimed, "")
+        # Field absent.
+        if skip_used:
+            return (False, None,
+                    "handshake skip requires the rns_link_id binding")
+        if _peer_supports_hello_ctx(peer_version):
+            return (False, None,
+                    "peers advertising ironmesh/0.9+ must bind the HELLO "
+                    "to the RNS link")
+        if getattr(self, "_rns_require_link_binding", False):
+            return (False, None,
+                    "rns_require_link_binding is enabled and the peer sent "
+                    "no binding")
+        return (True, None, "")
+
+    # ------------------------------------------------------------------
     # Outbound connection (client-side handshake)
     # ------------------------------------------------------------------
 
@@ -340,6 +447,40 @@ class HandshakeMixin:
                     label,
                 )
                 return None
+            # ironmesh/0.9: REFUSE to skip stage 1 unless the RNS link
+            # binding can be produced and verified. The skip path signs a
+            # constant channel-binding sentinel, so without the per-link
+            # rns_link_id the HELLO would be replayable across links.
+            # Three refusal conditions:
+            #  1. Not an RNS Link at all — a WebSocket server has no
+            #     business offering a skip (it would bypass the
+            #     passphrase stage entirely).
+            #  2. The local link id is unreadable — the binding cannot be
+            #     produced or checked.
+            #  3. The server advertised a pre-0.9 version — it cannot
+            #     produce a bound HELLO, so the skip would run without
+            #     the binding. Legacy hskip peers must either upgrade or
+            #     run the full stage-1 handshake.
+            if (RNSLinkAdapter is None
+                    or not isinstance(ws, RNSLinkAdapter)
+                    or not getattr(ws, "link_id_hex", None)):
+                self._inc_metric("handshake_skips_rejected")
+                logger.warning(
+                    "SKIP_OFFER from %s refused — no verifiable RNS link "
+                    "id on this connection (handshake skip requires the "
+                    "RNS link binding)",
+                    label,
+                )
+                return None
+            if not _peer_supports_hello_ctx(server_advertised_version):
+                self._inc_metric("handshake_skips_rejected")
+                logger.warning(
+                    "SKIP_OFFER from %s refused — server advertised %r, "
+                    "but the handshake skip requires the ironmesh/0.9+ "
+                    "RNS link binding",
+                    label, server_advertised_version,
+                )
+                return None
             self._inc_metric("handshake_skips_activated")
             logger.debug(
                 "Handshake skip ACK for %s — server offered, client accepted",
@@ -399,12 +540,20 @@ class HandshakeMixin:
         # attached signature so mixed-version meshes keep working.
         my_ephemeral_b64 = base64.b64encode(bytes(my_ephemeral_public)).decode()
         my_identity_b64 = self._keypair.get_public_key_base64()
+        # ironmesh/0.9: on RNS Links to 0.9+ servers, bind this HELLO to
+        # the specific RNS link it travels on (None on the WebSocket
+        # path or toward pre-0.9 servers — the field is then omitted and
+        # the canonical body keeps its five-key form).
+        my_link_binding = self._rns_hello_link_binding(
+            ws, server_advertised_version,
+        )
         hello_canonical = ew_protocol.canonical_hello_bytes(
             channel_binding=server_nonce.hex(),
             ephemeral_public=my_ephemeral_b64,
             identity_public=my_identity_b64,
             name=self.name,
             protocol_version=PROTOCOL_VERSION,
+            rns_link_id=my_link_binding,
         )
         if _peer_supports_hello_ctx(server_advertised_version):
             signature = ew_crypto.sign_detached_with_context(
@@ -426,6 +575,8 @@ class HandshakeMixin:
             "channel_binding": server_nonce.hex(),
             "signature": base64.b64encode(signature).decode(),
         }
+        if my_link_binding is not None:
+            outgoing_hello["rns_link_id"] = my_link_binding
         # v0.9.4 Phase 2 advertisement — same shape as the server-side
         # HELLO. See _hello_x25519_advertisement docstring for compat
         # rationale.
@@ -448,6 +599,22 @@ class HandshakeMixin:
             logger.warning("Server HELLO missing ephemeral_public")
             return None
 
+        # ironmesh/0.9: enforce the RNS link-binding policy BEFORE the
+        # signature check — the returned claimed binding (if any) is part
+        # of the canonical body the signature is verified over, so a
+        # matching-but-forged claim still fails at the signature step.
+        bind_ok, server_claimed_binding, bind_reason = (
+            self._evaluate_rns_hello_binding(
+                ws, msg, msg.get("protocol_version", ""), skip_stage1,
+            )
+        )
+        if not bind_ok:
+            logger.warning(
+                "Server HELLO link-binding check FAILED for %s: %s",
+                label, bind_reason,
+            )
+            return None
+
         # Verify server's HELLO signature.
         # ironmesh/0.9 — the server's advertised version (inside the signed
         # canonical body) selects the scheme: 0.9+ REQUIRES the detached
@@ -468,6 +635,7 @@ class HandshakeMixin:
                     identity_public=peer_identity_b64,
                     name=peer_name,
                     protocol_version=server_hello_version,
+                    rns_link_id=server_claimed_binding,
                 )
                 if _peer_supports_hello_ctx(server_hello_version):
                     ew_crypto.verify_detached_with_context(
@@ -490,6 +658,18 @@ class HandshakeMixin:
                 return None
         elif peer_identity_b64 and not peer_sig_b64:
             logger.warning("Server sent identity key but no signature — rejecting")
+            return None
+
+        # ironmesh/0.9: the skip path must end in a SIGNED server HELLO —
+        # otherwise the link binding (and the constant skip sentinel)
+        # would be unauthenticated. "Present and verified" means covered
+        # by the HELLO signature, not merely matching.
+        if skip_stage1 and hello_sig_scheme == "unsigned":
+            logger.warning(
+                "Server HELLO from %s is unsigned — handshake skip "
+                "requires a signed, link-bound HELLO",
+                label,
+            )
             return None
 
         # Derive peer_id from identity key
@@ -788,6 +968,13 @@ class HandshakeMixin:
         if not getattr(self, "_rns_skip_handshake", False):
             return False
         if RNSLinkAdapter is None or not isinstance(websocket, RNSLinkAdapter):
+            return False
+        # ironmesh/0.9: never offer the skip on a link whose id the local
+        # side cannot read — the skip path requires verifying the peer's
+        # rns_link_id binding against this link, and an unverifiable
+        # binding means the offer would only ever end in a rejected HELLO.
+        # Falling back to the full stage-1 handshake is the useful outcome.
+        if not getattr(websocket, "link_id_hex", None):
             return False
         return self._peer_advertises_hskip(
             getattr(websocket, "remote_identity_hash", None)
