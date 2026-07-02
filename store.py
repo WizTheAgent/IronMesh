@@ -480,7 +480,16 @@ class MessageStore:
         were before the upgrade.
 
         A ``_meta`` marker records completion so subsequent opens skip
-        the table scan.
+        the table scan. The marker is only written when the sweep
+        actually migrated something, or when there were no unprefixed
+        candidate rows at all. If unprefixed rows remain and none of
+        them decrypted — which is what a first open under the wrong
+        passphrase looks like — the marker is withheld so a later open
+        with the right passphrase still migrates them off the legacy
+        key. The trade-off: a database whose unprefixed rows are all
+        plaintext-era (they decrypt under no key) re-runs the sweep on
+        every open. That is a single bounded SELECT per payload table,
+        accepted so the migration guarantee holds over skipping a scan.
         """
         cursor = await self._db.execute(
             "SELECT value FROM _meta WHERE key = ?", (_META_STORAGE_FORMAT,)
@@ -516,17 +525,32 @@ class MessageStore:
                     (self._encrypt_payload(plaintext), rowid),
                 )
                 migrated += 1
-        await self._db.execute(
-            "INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)",
-            (_META_STORAGE_FORMAT, STORAGE_FORMAT_AEAD_V2),
-        )
-        await self._db.commit()
-        if migrated or skipped:
-            logger.info(
-                "Storage-format upgrade: %d payload(s) re-encrypted under "
-                "the KDF-derived key, %d left untouched (not legacy "
-                "ciphertext)", migrated, skipped,
+        if migrated > 0 or skipped == 0:
+            # Sweep did real work, or there were no unprefixed
+            # candidates at all: safe to record completion.
+            await self._db.execute(
+                "INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)",
+                (_META_STORAGE_FORMAT, STORAGE_FORMAT_AEAD_V2),
             )
+            if migrated or skipped:
+                logger.info(
+                    "Storage-format upgrade: %d payload(s) re-encrypted "
+                    "under the KDF-derived key, %d left untouched (not "
+                    "legacy ciphertext)", migrated, skipped,
+                )
+        else:
+            # Unprefixed rows exist and NONE decrypted. Either the
+            # passphrase is wrong (legacy rows must still migrate on a
+            # later open with the right one) or the rows are
+            # plaintext-era. We can't tell the difference, so leave the
+            # marker unset and re-scan next open rather than strand
+            # legacy ciphertext under the fast SHA-256 key forever.
+            logger.info(
+                "Storage-format upgrade deferred: %d unprefixed payload(s) "
+                "did not decrypt under the legacy key; will re-check on "
+                "next open", skipped,
+            )
+        await self._db.commit()
 
     def _encrypt_payload(self, payload: bytes) -> bytes:
         """Encrypt payload before INSERT if a storage key is set.

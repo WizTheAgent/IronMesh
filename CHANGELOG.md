@@ -69,6 +69,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Existing databases are re-encrypted under the new key automatically
   on the first daemon start; no operator action required.
 
+- **Storage-format migration no longer records completion on a
+  wrong-passphrase open.** The one-shot re-encryption sweep now only
+  writes its completion marker when it migrated at least one payload
+  or found no unprefixed candidates, so legacy rows opened first under
+  the wrong passphrase still migrate off the legacy key on a later
+  open with the right one. Databases holding only rows written before
+  at-rest encryption existed re-run the (single bounded SELECT) sweep
+  each open — an accepted trade-off for the migration guarantee.
+
 ## [0.9.4.2] — 2026-05-23 — Operator-polish sweep
 
 A focused sweep of operator-facing fixes surfaced by the v0.9.4

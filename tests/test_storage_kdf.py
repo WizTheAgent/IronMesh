@@ -168,6 +168,69 @@ class TestLegacyMigration:
         raw = await _raw_payload(db_path, "old1")
         assert raw == b"plaintext era"
 
+    async def test_wrong_passphrase_first_open_defers_migration(self, db_path):
+        """A first open under the wrong passphrase must not stamp the
+        upgrade complete — the legacy rows haven't migrated, and stamping
+        would strand them under the fast unsalted-SHA-256 key forever."""
+        await self._write_legacy_database(db_path, b"pre-upgrade message")
+
+        wrong = MessageStore(db_path, storage_passphrase="not-the-passphrase")
+        await wrong.open()
+        await wrong.close()
+
+        # No completion marker, and the legacy blob is byte-untouched.
+        assert await _meta_value(db_path, "storage_format") is None
+        raw = await _raw_payload(db_path, "legacy1")
+        assert not raw.startswith(STORAGE_V2_MAGIC)
+        plaintext = SecretBox(_derive_legacy_storage_key(PASSPHRASE)).decrypt(raw)
+        assert plaintext == b"pre-upgrade message"
+
+        # A later open with the right passphrase still migrates.
+        store = MessageStore(db_path, storage_passphrase=PASSPHRASE)
+        await store.open()
+        msgs = await store.get_messages()
+        assert msgs[0]["payload"] == b"pre-upgrade message"
+        await store.close()
+        assert await _meta_value(db_path, "storage_format") == STORAGE_FORMAT_AEAD_V2
+        raw = await _raw_payload(db_path, "legacy1")
+        assert raw.startswith(STORAGE_V2_MAGIC)
+
+        # Round-trip after migration: reopen and read back.
+        store2 = MessageStore(db_path, storage_passphrase=PASSPHRASE)
+        await store2.open()
+        msgs = await store2.get_messages()
+        assert msgs[0]["payload"] == b"pre-upgrade message"
+        await store2.close()
+
+    async def test_plaintext_era_only_store_rescans_without_marker(self, db_path):
+        """A store whose only unprefixed rows never decrypt (written
+        before at-rest encryption existed) can't be told apart from a
+        wrong-passphrase open, so the marker stays unset and the sweep
+        re-runs each open — leaving the rows byte-identical each time."""
+        store1 = MessageStore(db_path)
+        await store1.open()
+        await store1.store_message("old1", "alice", "Alice", "bob", "MSG",
+                                   b"plaintext era", "out")
+        await store1.close()
+
+        for _ in range(2):
+            store = MessageStore(db_path, storage_passphrase=PASSPHRASE)
+            await store.open()
+            msgs = await store.get_messages()
+            assert msgs[0]["payload"] == b"plaintext era"
+            await store.close()
+            assert await _meta_value(db_path, "storage_format") is None
+            raw = await _raw_payload(db_path, "old1")
+            assert raw == b"plaintext era"
+
+    async def test_fresh_store_sets_marker_immediately(self, db_path):
+        """A brand-new database has no unprefixed candidates, so the
+        completion marker is recorded on the very first open."""
+        store = MessageStore(db_path, storage_passphrase=PASSPHRASE)
+        await store.open()
+        await store.close()
+        assert await _meta_value(db_path, "storage_format") == STORAGE_FORMAT_AEAD_V2
+
     async def test_legacy_pending_queue_reencrypted(self, db_path):
         """The offline queue upgrades alongside message history."""
         store = MessageStore(db_path)
