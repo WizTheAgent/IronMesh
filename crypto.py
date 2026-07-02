@@ -166,9 +166,12 @@ def verify_detached(verify_key: VerifyKey, message: bytes, signature: bytes) -> 
 # any future label from being a prefix of another label (e.g. "frame"
 # vs "frame-outer").
 #
-# Wire compat note: existing signing operations (Frame outer + inner,
-# HELLO sig, REVOCATION) MUST NOT switch to context-signing until a
-# protocol version bump synchronises sender + receiver. See
+# Wire compat note: remaining legacy signing operations (Frame outer +
+# inner, REVOCATION) MUST NOT switch to context-signing until a protocol
+# version bump synchronises sender + receiver. The HELLO signature
+# completed this migration in ironmesh/0.9: when BOTH peers advertise
+# ironmesh/0.9+, the HELLO is signed under ``SIG_CTX_HELLO``; older
+# peers fall back to the legacy attached signature. See
 # ``docs/PROTOCOL_SPEC.md`` for the migration window.
 
 # Stable signing context labels. Append a NUL byte so labels cannot
@@ -183,8 +186,16 @@ SIG_CTX_TRUST_PIN_EXPORT: bytes = b"ironmesh-sig-v1/trust-pin-export\x00"
 SIG_CTX_X25519_BINDING: bytes = b"ironmesh-sig-v1/x25519-identity-binding\x00"
 SIG_CTX_FUTURE_FRAME_OUTER: bytes = b"ironmesh-sig-v1/frame-outer\x00"
 SIG_CTX_FUTURE_FRAME_INNER_SOURCE: bytes = b"ironmesh-sig-v1/frame-inner-source\x00"
-SIG_CTX_FUTURE_HELLO: bytes = b"ironmesh-sig-v1/hello\x00"
+# Active as of protocol version ironmesh/0.9 — when both peers advertise
+# 0.9+, the HELLO signature is a detached Ed25519 signature under this
+# context over ``protocol.canonical_hello_bytes``. Older peers fall back
+# to the legacy attached signature (mixed-version meshes keep working).
+SIG_CTX_HELLO: bytes = b"ironmesh-sig-v1/hello\x00"
 SIG_CTX_FUTURE_REVOCATION: bytes = b"ironmesh-sig-v1/revocation\x00"
+
+# Deprecated alias — the HELLO label was published under this name during
+# the pre-ironmesh/0.9 migration window. Import ``SIG_CTX_HELLO`` instead.
+SIG_CTX_FUTURE_HELLO: bytes = SIG_CTX_HELLO
 
 
 def sign_detached_with_context(

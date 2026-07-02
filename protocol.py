@@ -27,6 +27,7 @@ VALID_PROTOCOL_VERSIONS = frozenset({
     "ironmesh/0.6",
     "ironmesh/0.7",
     "ironmesh/0.8",
+    "ironmesh/0.9",
 })
 
 
@@ -140,6 +141,72 @@ def canonical_capability_announce_bytes(
         "capabilities": list(capabilities),
         "announced_at": float(announced_at),
         "version": version,
+    }
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# HELLO signature canonicalization
+# ---------------------------------------------------------------------------
+#
+# The HELLO carries an Ed25519 signature proving the sender controls the
+# advertised identity key, channel-bound to the server nonce. The canonical
+# bytes are the JSON serialization of
+# ``{channel_binding, ephemeral_public, identity_public, name,
+# protocol_version}`` with ``sort_keys=True, separators=(",", ":")`` — the
+# same convention as ``canonical_capability_announce_bytes`` so
+# cross-language clients (Go, TS) reproduce the byte sequence exactly.
+#
+# Signature scheme is negotiated by protocol version:
+#
+# - Both peers advertise ironmesh/0.9+ → 64-byte detached Ed25519 signature
+#   over ``SIG_CTX_HELLO || canonical_hello_bytes`` (domain-separated, see
+#   ``crypto.sign_detached_with_context``).
+# - Either peer is older → legacy attached signature (``crypto.sign_message``)
+#   over the same canonical bytes.
+#
+# The ``protocol_version`` field sits INSIDE the canonical body, so a peer's
+# advertised version cannot be rewritten in transit without invalidating
+# the signature under either scheme. See docs/PROTOCOL_SPEC.md
+# ("HELLO signature domain separation") for the negotiation and downgrade
+# analysis.
+
+
+def canonical_hello_bytes(
+    channel_binding: str,
+    ephemeral_public: str,
+    identity_public: str,
+    name: str,
+    protocol_version: str,
+) -> bytes:
+    """Build the canonical byte sequence that the HELLO Ed25519 signature
+    binds to. Both senders and verifiers MUST use this exact function so
+    the produced bytes match byte-for-byte across languages.
+
+    ``channel_binding`` (the hex server nonce) is part of the canonical
+    body — this is what prevents cross-connection replay of a captured
+    HELLO signature.
+    """
+    if not isinstance(ephemeral_public, str) or not ephemeral_public:
+        raise ValueError("ephemeral_public must be non-empty string")
+    if not isinstance(identity_public, str) or not identity_public:
+        raise ValueError("identity_public must be non-empty string")
+    # channel_binding / name / protocol_version may legitimately be empty
+    # strings on ancient or minimal peers; verification then simply fails
+    # to match a properly signed body. Type-check only.
+    for field_name, value in (
+        ("channel_binding", channel_binding),
+        ("name", name),
+        ("protocol_version", protocol_version),
+    ):
+        if not isinstance(value, str):
+            raise ValueError(f"{field_name} must be a string")
+    body = {
+        "channel_binding": channel_binding,
+        "ephemeral_public": ephemeral_public,
+        "identity_public": identity_public,
+        "name": name,
+        "protocol_version": protocol_version,
     }
     return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 from collections import OrderedDict
@@ -929,6 +996,13 @@ class PeerState:
         # Replay protection
         self.next_send_seq: int = 1
         self.last_recv_seq: int = 0
+
+        # ironmesh/0.9: which Ed25519 scheme signed the peer's HELLO —
+        # "context-v1" (domain-separated detached signature under
+        # crypto.SIG_CTX_HELLO, both peers 0.9+), "legacy" (attached
+        # signature, pre-0.9 peer on either end), or "unsigned" (peer
+        # presented no identity key; TOFU/allowlist policy applies).
+        self.hello_sig_scheme: str = "unsigned"
 
         # v0.4: mesh capabilities and version negotiation
         self.protocol_version: str = "ironmesh/0.3"

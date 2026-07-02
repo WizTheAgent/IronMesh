@@ -61,10 +61,12 @@ from ironmesh.capabilities import CapabilityRegistry
 from ironmesh.dashboard import GuiMixin
 from ironmesh.dashboard_html import GUI_HTML  # noqa: F401  (re-exported; served by GuiMixin)
 from ironmesh.handshake import (
+    HELLO_CTX_MIN_VERSION,  # noqa: F401  (re-exported for downstream importers)
     MIN_MESH_VERSION,  # noqa: F401  (re-exported for downstream importers)
     PROTOCOL_VERSION,
     HandshakeMixin,
     _parse_protocol_version,
+    _peer_supports_hello_ctx,
     _peer_supports_mesh,
     _peer_supports_rekey,  # noqa: F401  (re-exported; used by mixins)
 )
@@ -1236,27 +1238,47 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
                 self.metrics.handshake_failures += 1
                 return
 
-            # Verify Ed25519 signature on HELLO (proves identity owns the keys)
+            # Verify Ed25519 signature on HELLO (proves identity owns the keys).
+            # ironmesh/0.9 — the client's advertised version (inside the
+            # signed canonical body) selects the scheme: 0.9+ REQUIRES the
+            # detached domain-separated signature under SIG_CTX_HELLO;
+            # older versions use the legacy attached form. The version
+            # cannot be rewritten in transit without breaking the signature
+            # under either scheme, so a stripped/rewritten version fails
+            # closed instead of silently selecting the legacy path.
             peer_signature_b64 = msg.get("signature")
+            client_hello_version = msg.get("protocol_version", "")
+            hello_sig_scheme = "unsigned"
             if peer_identity_b64 and peer_signature_b64:
                 try:
                     from nacl.signing import VerifyKey
                     verify_key = VerifyKey(base64.b64decode(peer_identity_b64))
                     # Reconstruct the canonical signed payload (with channel binding)
-                    canonical = json.dumps({
-                        "channel_binding": server_nonce.hex(),
-                        "ephemeral_public": peer_ephemeral_b64,
-                        "identity_public": peer_identity_b64,
-                        "name": peer_name,
-                        "protocol_version": msg.get("protocol_version", ""),
-                    }, separators=(",", ":"), sort_keys=True)
-                    extracted = ew_crypto.verify_signature(
-                        verify_key, base64.b64decode(peer_signature_b64)
+                    canonical = ew_protocol.canonical_hello_bytes(
+                        channel_binding=server_nonce.hex(),
+                        ephemeral_public=peer_ephemeral_b64,
+                        identity_public=peer_identity_b64,
+                        name=peer_name,
+                        protocol_version=client_hello_version,
                     )
-                    # Verify extracted payload matches reconstructed canonical
-                    if extracted != canonical.encode():
-                        raise ValueError("HELLO signature payload does not match canonical form")
-                    logger.debug("HELLO signature verified for peer %s", claimed_peer_id)
+                    if _peer_supports_hello_ctx(client_hello_version):
+                        ew_crypto.verify_detached_with_context(
+                            verify_key,
+                            ew_crypto.SIG_CTX_HELLO,
+                            canonical,
+                            base64.b64decode(peer_signature_b64),
+                        )
+                        hello_sig_scheme = "context-v1"
+                    else:
+                        extracted = ew_crypto.verify_signature(
+                            verify_key, base64.b64decode(peer_signature_b64)
+                        )
+                        # Verify extracted payload matches reconstructed canonical
+                        if extracted != canonical:
+                            raise ValueError("HELLO signature payload does not match canonical form")
+                        hello_sig_scheme = "legacy"
+                    logger.debug("HELLO signature verified for peer %s (%s)",
+                                 claimed_peer_id, hello_sig_scheme)
                 except Exception as e:
                     logger.warning("HELLO signature verification FAILED for %s: %s", claimed_peer_id, e)
                     await websocket.send(json.dumps({
@@ -1303,16 +1325,29 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
             # SIG_CTX_X25519_BINDING, so receivers that DO understand the
             # advertisement get cryptographic binding without breaking the
             # mixed-mesh sig-verify path.
-            hello_payload = json.dumps({
-                "channel_binding": server_nonce.hex(),
-                "ephemeral_public": base64.b64encode(bytes(my_ephemeral_public)).decode(),
-                "identity_public": self._keypair.get_public_key_base64(),
-                "name": self.name,
-                "protocol_version": PROTOCOL_VERSION,
-            }, separators=(",", ":"), sort_keys=True)
-            signature = ew_crypto.sign_message(
-                self._keypair.get_signing_key(), hello_payload.encode()
+            #
+            # ironmesh/0.9 — signature scheme is gated on the version the
+            # client advertised inside ITS signed HELLO (already verified
+            # above): 0.9+ clients get the detached domain-separated
+            # signature under SIG_CTX_HELLO; older clients get the legacy
+            # attached signature so mixed-version meshes keep working.
+            hello_canonical = ew_protocol.canonical_hello_bytes(
+                channel_binding=server_nonce.hex(),
+                ephemeral_public=base64.b64encode(bytes(my_ephemeral_public)).decode(),
+                identity_public=self._keypair.get_public_key_base64(),
+                name=self.name,
+                protocol_version=PROTOCOL_VERSION,
             )
+            if _peer_supports_hello_ctx(client_hello_version):
+                signature = ew_crypto.sign_detached_with_context(
+                    self._keypair.get_signing_key(),
+                    ew_crypto.SIG_CTX_HELLO,
+                    hello_canonical,
+                )
+            else:
+                signature = ew_crypto.sign_message(
+                    self._keypair.get_signing_key(), hello_canonical
+                )
             outgoing_hello = {
                 "type": ew_protocol.MessageType.HELLO,
                 "from": self.node_id,
@@ -1354,6 +1389,10 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
             peer_state.ephemeral_public = base64.b64decode(peer_ephemeral_b64)
             peer_state.identity_public = base64.b64decode(peer_identity_b64) if peer_identity_b64 else None
             peer_state.verified = True
+            # ironmesh/0.9: record which HELLO signature scheme the peer
+            # used ("context-v1", "legacy", or "unsigned") for
+            # observability + tests.
+            peer_state.hello_sig_scheme = hello_sig_scheme
             # v0.9.4 Phase 2: capture the peer's advertised X25519 identity
             # public ONLY if the binding signature verifies under their
             # pinned Ed25519. Receiver-prefer / legacy-fallback semantics

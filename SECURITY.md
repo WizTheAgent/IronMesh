@@ -103,6 +103,21 @@ If RNS isn't enabled, none of this applies.
   and a signed HELLO that covers the channel-binding nonce. An
   attacker with a self-signed TLS cert still fails the Ed25519
   signature check on HELLO and cannot impersonate a pinned peer.
+- As of protocol version `ironmesh/0.9`, the HELLO signature is
+  **domain-separated**: when both peers advertise 0.9+, the HELLO is
+  signed with a detached Ed25519 signature under the dedicated
+  `SIG_CTX_HELLO` context label, so a signature obtained from any
+  other protocol surface can never be replayed as a HELLO (and vice
+  versa). Peers on older versions fall back to the legacy attached
+  signature so mixed-version meshes interoperate. The advertised
+  version travels inside the signed HELLO body, so for pinned peers
+  the scheme cannot be silently downgraded in transit — tampering
+  fails the handshake. On TOFU first contact an active on-path
+  attacker can still present itself as a pre-0.9 peer (or impersonate
+  outright — the inherent TOFU first-contact exposure); operators can
+  set `--min-protocol-version ironmesh/0.9` to refuse legacy HELLO
+  signatures entirely. See docs/PROTOCOL_SPEC.md, "HELLO signature
+  domain separation".
 - For deployments where WSS endpoints are issued real certificates
   (operator CA, internal Let's Encrypt, public ACME), pass
   **`--strict-tls`** to require CA-validated certs on the outbound

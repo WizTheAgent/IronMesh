@@ -38,6 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **HELLO signature is now domain-separated (protocol `ironmesh/0.9`).**
+  When both peers advertise `ironmesh/0.9+`, the HELLO is signed with a
+  detached Ed25519 signature under the dedicated `SIG_CTX_HELLO` context
+  label instead of the context-free attached signature, closing the
+  cross-protocol signature-reuse surface on the most security-critical
+  handshake message. Version-gated with a legacy fallback, so
+  mixed-version meshes (including the bundled TypeScript client, which
+  advertises `ironmesh/0.6`) keep interoperating; the advertised version
+  sits inside the signed HELLO body, so the scheme cannot be silently
+  downgraded for pinned peers. See docs/PROTOCOL_SPEC.md, "HELLO
+  signature domain separation".
+
 - **At-rest storage key now derived via Argon2id + HKDF-SHA256**
   (previously a single unsalted SHA-256 of the mesh passphrase), with
   a per-database persisted salt — a leaked disk image no longer

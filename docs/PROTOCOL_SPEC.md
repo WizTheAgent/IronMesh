@@ -139,13 +139,97 @@ HELLO payload (JSON, signed with Ed25519):
 
 - **ephemeral_public:** Freshly generated X25519 public key for this session (base64).
 - **identity_public:** Long-lived Ed25519 identity public key (base64).
-- **signature:** Ed25519 detached signature over the canonical JSON of the HELLO body (sorted keys, no whitespace). Binds the identity to the ephemeral key.
+- **signature:** Ed25519 signature over the canonical HELLO bytes (see "HELLO signature domain separation" below). Binds the identity to the ephemeral key. The signature scheme is version-gated: `ironmesh/0.9+` peers use a 64-byte detached domain-separated signature; older peers use the legacy attached signature.
 - **channel_binding:** The server's original nonce from Stage 1, included in the signed payload to prevent relay attacks.
 - **TOFU check:** After receiving the peer's HELLO, each side checks its trust store. If the identity key is new → pin it (TOFU). If it's changed → reject and disconnect (possible MITM).
 - **x25519_public_b64 (v0.9.4+, optional, RESERVED):** Long-lived X25519 identity public key used for E2E SealedBox encryption. When present, receivers prefer this over the legacy `ed25519_to_curve25519(identity_public)` derivation. Pre-v0.9.4 receivers ignore the field. The field name is formally reserved by this spec — future versions MUST NOT repurpose it.
 - **x25519_binding_signature_b64 (v0.9.4+, optional, RESERVED):** 64-byte Ed25519 detached signature of `x25519_public_b64` (raw 32 bytes, not the base64) under the `SIG_CTX_X25519_BINDING = b"ironmesh-sig-v1/x25519-identity-binding\x00"` domain-separation context. Cryptographically binds the advertised X25519 to the pinned Ed25519 identity. Receivers MUST verify this binding under the peer's `identity_public` before trusting the advertised X25519 — otherwise the field is ignored and legacy derivation runs. The field name is formally reserved.
 
 **Wire-compat invariant.** The two `x25519_*` fields sit OUTSIDE the signed HELLO canonical body. Pre-v0.9.4 receivers reconstruct the canonical from the original 5 keys (channel_binding, ephemeral_public, identity_public, name, protocol_version) and verify the HELLO signature identically to v0.9.4. v0.9.4 senders use the same canonical body — the X25519 binding is its own Ed25519 signature, separate from the HELLO sig. Mixed v0.9.4 ⇄ v0.9.4 meshes interoperate cleanly.
+
+### HELLO signature domain separation (protocol `ironmesh/0.9`)
+
+**Canonical bytes.** Both signature schemes bind to the same canonical
+byte sequence — the JSON serialization of exactly these five keys with
+`sort_keys=True, separators=(",", ":")`, UTF-8 encoded (the same
+canonicalization convention as `CAPABILITY_ANNOUNCE`, so cross-language
+clients reproduce the bytes exactly):
+
+```
+{"channel_binding":"<nonce-hex>","ephemeral_public":"<b64>","identity_public":"<b64>","name":"<agent-name>","protocol_version":"ironmesh/X.Y"}
+```
+
+The reference implementation exposes this as
+`protocol.canonical_hello_bytes()`. The `channel_binding` nonce inside
+the canonical body is what prevents cross-connection replay of a
+captured HELLO signature; the `protocol_version` inside the body is
+what makes the scheme negotiation tamper-evident (see below).
+
+**Two schemes, version-gated:**
+
+| Peers | Scheme |
+| --- | --- |
+| Both advertise `ironmesh/0.9+` | 64-byte detached Ed25519 signature over `SIG_CTX_HELLO \|\| canonical_hello_bytes`, where `SIG_CTX_HELLO = b"ironmesh-sig-v1/hello\x00"` (22 bytes incl. NUL) |
+| Either peer advertises `< ironmesh/0.9` | Legacy attached Ed25519 signature (`sig \|\| message`) over `canonical_hello_bytes` |
+
+Domain separation prevents a signature coerced from the daemon in one
+protocol role (e.g. a capability announce) from being replayed as a
+valid HELLO, and bounds the blast radius of any future cryptanalytic
+result against a specific signed shape. This is a load-bearing property
+for deployments running the default mesh-mode TLS (`CERT_NONE`), where
+peer authentication rests entirely on the application-layer handshake.
+
+**Negotiation.** Each side learns the other's version before it
+verifies (and, on the server, before it signs):
+
+1. The server advertises `protocol_version` in its first message
+   (`PASSPHRASE_CHALLENGE` or `SKIP_OFFER`). The client selects its
+   HELLO signing scheme from that advertisement: `0.9+` → context
+   signature, otherwise legacy.
+2. The client advertises `protocol_version` inside its signed HELLO
+   body. The server REQUIRES the context signature from any client
+   advertising `0.9+`, verifies legacy otherwise, and signs its own
+   HELLO with the scheme selected by the client's advertised version.
+3. The client REQUIRES the context signature on the server's HELLO
+   when the server's HELLO advertises `0.9+`, legacy otherwise.
+
+**Downgrade analysis.** The scheme selector (`protocol_version`) is
+inside the signed canonical body, and the two signature forms are
+mutually exclusive (a detached signature never verifies as an attached
+one and vice versa). Consequences:
+
+- Once a peer's identity key is pinned, an attacker cannot rewrite the
+  advertised version, swap the signature scheme, or replay a pre-0.9
+  legacy-signed HELLO (fresh nonce) without invalidating the
+  signature. Tampering fails closed.
+- The server's first-message advertisement is NOT signed. An active
+  attacker who strips it causes a 0.9+ client to fall back to the
+  legacy signature — but a 0.9+ server then rejects that HELLO,
+  because the client's own signed `protocol_version` demands the
+  context scheme. Between two 0.9+ peers this tampering is therefore
+  denial of service, not a silent downgrade.
+- **Honest limitation:** on TOFU first contact (no pinned identity,
+  default `CERT_NONE` TLS), an active on-path attacker can substitute
+  its own identity keys and advertise a pre-0.9 version, keeping the
+  session on the legacy path — but such an attacker can equally
+  impersonate the peer outright, which is the inherent TOFU
+  first-contact exposure, not a weakness introduced by this
+  negotiation. Operators who need to refuse legacy HELLO signatures
+  entirely can raise the minimum accepted protocol version
+  (`--min-protocol-version ironmesh/0.9`), which converts the fallback
+  into a hard reject.
+
+**Migration window / cross-language clients.** Clients that have not
+yet implemented the context signature (the bundled TypeScript client
+advertises `ironmesh/0.6`; the Go example targets the same line)
+continue to interoperate through the legacy fallback — they advertise
+a pre-0.9 version, so both directions of their handshakes stay on the
+attached-signature path. To adopt the new scheme, a client must (all
+three together): advertise `ironmesh/0.9+`, sign its HELLO with
+Ed25519 over `SIG_CTX_HELLO || canonical_hello_bytes` (detached,
+64 bytes), and require the same form on the peer's HELLO whenever the
+peer's HELLO advertises `0.9+`. Advertising `0.9+` while still
+attaching a legacy signature will be rejected by 0.9+ daemons.
 
 ### Stage 3: ECDH Key Agreement
 
@@ -480,7 +564,7 @@ Each side compares `MAJOR.MINOR`:
 - Same MAJOR + MINOR < peer's: compatible at the lower version's feature set.
 - Different MAJOR: incompatible; disconnect.
 
-Known versions: `ironmesh/0.3`, `0.4`, `0.5`, `0.5.1`, `0.6`, `0.7`, `0.8`.
+Known versions: `ironmesh/0.3`, `0.4`, `0.5`, `0.5.1`, `0.6`, `0.7`, `0.8`, `0.9`.
 
 The `ironmesh/0.8` line is **wire format v5**, introduced in
 IronMesh v0.9.2. The wire format itself is unchanged from v4; v5
@@ -488,6 +572,18 @@ captures the optional Stage 1 skip on identified RNS Links, which
 peers negotiate via the `hskip` feature flag in their RNS announces.
 A v5 peer interoperates fully with v4 peers — without the announce
 flag, the full Stage 1 handshake runs as before.
+
+The `ironmesh/0.9` line activates the domain-separated HELLO
+signature (see "HELLO signature domain separation" in Section 2).
+The binary frame format is unchanged. A 0.9 peer interoperates fully
+with older peers: when either side advertises a pre-0.9 version, the
+HELLO falls back to the legacy attached signature. When BOTH sides
+advertise 0.9+, the context signature is REQUIRED in both directions.
+The server additionally advertises `protocol_version` in its Stage 1
+first message (`PASSPHRASE_CHALLENGE` / `SKIP_OFFER`) so the client
+can select its HELLO signing scheme before signing; daemons have
+emitted this field since well before the 0.9 line, and clients that
+do not understand it simply ignore it.
 
 ### Announce app_data feature flags
 
@@ -656,6 +752,7 @@ documented migration path until v1.0 ships.
 | Stage 1–3 handshake | v0.3 | Wire-stable since the line started |
 | Binary frame format v4 | v0.4 | No breaking changes since |
 | HELLO Ed25519 signature | v0.5.1 | Identity binding to ephemeral keys |
+| HELLO domain-separated signature | protocol `ironmesh/0.9` | `SIG_CTX_HELLO` context signature when both peers advertise 0.9+; legacy attached fallback for older peers |
 | TOFU pinning | v0.6 | Trust store with HMAC integrity |
 | Capability registry | v0.4 | Persisted with HMAC since v0.9.0 |
 | Pending-trust gate | v0.8.5 | Opt-in until v1.0 (default-deny under review) |

@@ -41,8 +41,12 @@ from ironmesh.telemetry import emit_event as _otel_span_event
 
 logger = logging.getLogger("ironmesh.bridge")
 
-PROTOCOL_VERSION = "ironmesh/0.8"
+PROTOCOL_VERSION = "ironmesh/0.9"
 MIN_MESH_VERSION = "ironmesh/0.4"  # Peers below this version cannot relay
+# Peers at this version or newer sign/verify the HELLO with the
+# domain-separated context signature (crypto.SIG_CTX_HELLO). Older peers
+# use the legacy attached signature — see _peer_supports_hello_ctx.
+HELLO_CTX_MIN_VERSION = "ironmesh/0.9"
 
 
 def _parse_protocol_version(v: str) -> tuple:
@@ -65,6 +69,23 @@ def _peer_supports_mesh(peer_version: str) -> bool:
 def _peer_supports_rekey(peer_version: str) -> bool:
     """Return True if the peer supports in-session rekeying (v0.5+)."""
     return _parse_protocol_version(peer_version) >= (0, 5)
+
+
+def _peer_supports_hello_ctx(peer_version: str) -> bool:
+    """Return True if the peer's advertised version uses the
+    domain-separated HELLO signature (ironmesh/0.9+).
+
+    The advertised version travels INSIDE the signed canonical HELLO
+    body, so once a peer's identity is pinned an attacker cannot strip
+    or rewrite the version to force the legacy signature path without
+    invalidating the signature — tampering fails closed rather than
+    downgrading. See docs/PROTOCOL_SPEC.md for the full downgrade
+    analysis (including the honest TOFU first-contact limitation).
+    """
+    return (
+        _parse_protocol_version(peer_version)
+        >= _parse_protocol_version(HELLO_CTX_MIN_VERSION)
+    )
 
 
 class HandshakeMixin:
@@ -274,6 +295,18 @@ class HandshakeMixin:
         msg = json.loads(raw)
         first_type = msg.get("type")
 
+        # ironmesh/0.9 — the server advertises its protocol version in its
+        # first message (both SKIP_OFFER and PASSPHRASE_CHALLENGE carry
+        # ``protocol_version``). This is where the client learns, BEFORE
+        # producing its HELLO signature, whether the server understands the
+        # domain-separated HELLO signature. Missing field (pre-advertisement
+        # servers) parses as (0, 0) → legacy path. Note this advertisement
+        # is unsigned: an attacker who strips it makes the client fall back
+        # to the legacy signature, but a 0.9+ server then REJECTS that HELLO
+        # (the client's own 0.9 version inside the signed body demands the
+        # context signature), so tampering here is denial, not downgrade.
+        server_advertised_version = msg.get("protocol_version", "")
+
         skip_stage1 = (first_type == ew_protocol.MessageType.SKIP_OFFER)
 
         if skip_stage1:
@@ -359,19 +392,30 @@ class HandshakeMixin:
         # Stage 2: Ephemeral ECDH
         my_ephemeral_private, my_ephemeral_public = ew_keys.generate_ephemeral()
 
-        # Sign the HELLO with Ed25519 + channel binding via server_nonce
+        # Sign the HELLO with Ed25519 + channel binding via server_nonce.
+        # ironmesh/0.9 — signature scheme is gated on the server's
+        # advertised version: 0.9+ gets the domain-separated detached
+        # signature under SIG_CTX_HELLO; older servers get the legacy
+        # attached signature so mixed-version meshes keep working.
         my_ephemeral_b64 = base64.b64encode(bytes(my_ephemeral_public)).decode()
         my_identity_b64 = self._keypair.get_public_key_base64()
-        hello_payload = json.dumps({
-            "channel_binding": server_nonce.hex(),
-            "ephemeral_public": my_ephemeral_b64,
-            "identity_public": my_identity_b64,
-            "name": self.name,
-            "protocol_version": PROTOCOL_VERSION,
-        }, separators=(",", ":"), sort_keys=True)
-        signature = ew_crypto.sign_message(
-            self._keypair.get_signing_key(), hello_payload.encode()
+        hello_canonical = ew_protocol.canonical_hello_bytes(
+            channel_binding=server_nonce.hex(),
+            ephemeral_public=my_ephemeral_b64,
+            identity_public=my_identity_b64,
+            name=self.name,
+            protocol_version=PROTOCOL_VERSION,
         )
+        if _peer_supports_hello_ctx(server_advertised_version):
+            signature = ew_crypto.sign_detached_with_context(
+                self._keypair.get_signing_key(),
+                ew_crypto.SIG_CTX_HELLO,
+                hello_canonical,
+            )
+        else:
+            signature = ew_crypto.sign_message(
+                self._keypair.get_signing_key(), hello_canonical
+            )
         outgoing_hello = {
             "type": ew_protocol.MessageType.HELLO,
             "from": self.node_id,
@@ -404,26 +448,43 @@ class HandshakeMixin:
             logger.warning("Server HELLO missing ephemeral_public")
             return None
 
-        # Verify server's HELLO signature
+        # Verify server's HELLO signature.
+        # ironmesh/0.9 — the server's advertised version (inside the signed
+        # canonical body) selects the scheme: 0.9+ REQUIRES the detached
+        # domain-separated signature, older versions use the legacy attached
+        # form. Because the version travels inside the signed bytes, a
+        # tampered version fails verification under either scheme.
         peer_sig_b64 = msg.get("signature")
+        hello_sig_scheme = "unsigned"
         if peer_identity_b64 and peer_sig_b64:
             try:
                 from nacl.signing import VerifyKey
                 verify_key = VerifyKey(base64.b64decode(peer_identity_b64))
                 # Reconstruct canonical from server's HELLO fields
-                server_canonical = json.dumps({
-                    "channel_binding": msg.get("channel_binding", ""),
-                    "ephemeral_public": peer_ephemeral_b64,
-                    "identity_public": peer_identity_b64,
-                    "name": peer_name,
-                    "protocol_version": msg.get("protocol_version", ""),
-                }, separators=(",", ":"), sort_keys=True)
-                extracted = ew_crypto.verify_signature(
-                    verify_key, base64.b64decode(peer_sig_b64)
+                server_hello_version = msg.get("protocol_version", "")
+                server_canonical = ew_protocol.canonical_hello_bytes(
+                    channel_binding=msg.get("channel_binding", ""),
+                    ephemeral_public=peer_ephemeral_b64,
+                    identity_public=peer_identity_b64,
+                    name=peer_name,
+                    protocol_version=server_hello_version,
                 )
-                if extracted != server_canonical.encode():
-                    raise ValueError("Server HELLO signature payload does not match canonical form")
-                logger.debug("Server HELLO signature verified")
+                if _peer_supports_hello_ctx(server_hello_version):
+                    ew_crypto.verify_detached_with_context(
+                        verify_key,
+                        ew_crypto.SIG_CTX_HELLO,
+                        server_canonical,
+                        base64.b64decode(peer_sig_b64),
+                    )
+                    hello_sig_scheme = "context-v1"
+                else:
+                    extracted = ew_crypto.verify_signature(
+                        verify_key, base64.b64decode(peer_sig_b64)
+                    )
+                    if extracted != server_canonical:
+                        raise ValueError("Server HELLO signature payload does not match canonical form")
+                    hello_sig_scheme = "legacy"
+                logger.debug("Server HELLO signature verified (%s)", hello_sig_scheme)
             except Exception as e:
                 logger.warning("Server HELLO signature FAILED: %s", e)
                 return None
@@ -455,6 +516,9 @@ class HandshakeMixin:
         peer_state.ephemeral_public = base64.b64decode(peer_ephemeral_b64)
         peer_state.identity_public = base64.b64decode(peer_identity_b64) if peer_identity_b64 else None
         peer_state.verified = True
+        # ironmesh/0.9: record which HELLO signature scheme the peer used
+        # ("context-v1", "legacy", or "unsigned") for observability + tests.
+        peer_state.hello_sig_scheme = hello_sig_scheme
         # v0.9.4 Phase 2: capture peer's advertised X25519 identity public
         # iff the binding signature verifies under their pinned Ed25519.
         peer_state.x25519_identity_public = self._verify_peer_x25519_binding(

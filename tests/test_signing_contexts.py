@@ -16,7 +16,7 @@ from ironmesh.crypto import (
     SIG_CTX_CAPABILITY_ANNOUNCE,
     SIG_CTX_FUTURE_FRAME_INNER_SOURCE,
     SIG_CTX_FUTURE_FRAME_OUTER,
-    SIG_CTX_FUTURE_HELLO,
+    SIG_CTX_HELLO,
     SIG_CTX_FUTURE_REVOCATION,
     SIG_CTX_TRUST_PIN_EXPORT,
     sign_detached_with_context,
@@ -64,7 +64,7 @@ class TestDomainSeparation:
         SIG_CTX_TRUST_PIN_EXPORT,
         SIG_CTX_FUTURE_FRAME_OUTER,
         SIG_CTX_FUTURE_FRAME_INNER_SOURCE,
-        SIG_CTX_FUTURE_HELLO,
+        SIG_CTX_HELLO,
         SIG_CTX_FUTURE_REVOCATION,
     ])
     def test_cross_context_rejection_full_matrix(self, other_ctx):
@@ -83,7 +83,7 @@ class TestDomainSeparation:
             SIG_CTX_TRUST_PIN_EXPORT,
             SIG_CTX_FUTURE_FRAME_OUTER,
             SIG_CTX_FUTURE_FRAME_INNER_SOURCE,
-            SIG_CTX_FUTURE_HELLO,
+            SIG_CTX_HELLO,
             SIG_CTX_FUTURE_REVOCATION,
         }
         assert len(labels) == 6  # no duplicates
@@ -97,10 +97,19 @@ class TestDomainSeparation:
             SIG_CTX_TRUST_PIN_EXPORT,
             SIG_CTX_FUTURE_FRAME_OUTER,
             SIG_CTX_FUTURE_FRAME_INNER_SOURCE,
-            SIG_CTX_FUTURE_HELLO,
+            SIG_CTX_HELLO,
             SIG_CTX_FUTURE_REVOCATION,
         ):
             assert label.endswith(b"\x00"), label
+
+
+class TestDeprecatedAliases:
+    def test_future_hello_alias_still_importable(self):
+        # The HELLO label was published as SIG_CTX_FUTURE_HELLO before the
+        # ironmesh/0.9 activation. The deprecated alias must stay bound to
+        # the same byte sequence so older importers keep verifying.
+        from ironmesh.crypto import SIG_CTX_FUTURE_HELLO
+        assert SIG_CTX_FUTURE_HELLO == SIG_CTX_HELLO
 
 
 class TestArgValidation:
