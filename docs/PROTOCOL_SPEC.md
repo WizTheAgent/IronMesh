@@ -1,6 +1,6 @@
 # IronMesh Wire Protocol Specification
 
-**Version:** 4 (ironmesh/0.6 → ironmesh/0.9)
+**Version:** frame envelope v4, protocol lines ironmesh/0.6 → ironmesh/0.9 (the `ironmesh/0.8` feature-flag line is designated wire format v5 — see §8)
 **Status:** Stable. Describes the wire format as implemented in v0.8.3
 through the `ironmesh/0.9` protocol line. The binary frame envelope is
 unchanged across this whole range — every v0.8.x and v0.9.x peer

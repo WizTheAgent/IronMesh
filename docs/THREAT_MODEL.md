@@ -168,7 +168,7 @@ For cryptographic primitives and the wire-level detail, see
 | **Capability advertisement forgery** | Capability advertisements ride the encrypted IronMesh wire layer (signed envelopes). Local capability registry is HMAC-protected; remote-cap learning requires an authenticated peer. v0.9.0 cap-binding pins `SHA-256(sorted-caps)` alongside the identity in the trust store — peer reconnecting with changed caps demotes to `pending-cap-change` |
 | **Cross-mesh federation forwards** | Federation gateway enforces per-edge allow/deny policy; every cross-mesh forward is audit-logged. Out-of-scope: no anonymity for a sender across federation boundaries |
 | **Resource transfer >32KB on RNS (v0.9.1+)** | Hard cap of 64 MB per `RNS.Resource` prevents lockout; integrity verified by RNS at the Resource layer; receiver accepts only when peer advertised the `resource` feature in announces |
-| **Handshake-skip downgrade attack (v0.9.2+)** | Defended at four layers. (1) The skip is opt-in on both ends + advertised in the RNS announce. (2) The announce is signed by the announcing RNS Identity, so a MITM cannot inject `hskip` on a peer's behalf. (3) The negotiation is **server-driven via `SKIP_OFFER`** — the client never decides skip unilaterally, so an attacker who suppresses one announce cannot cause a half-skipped handshake. (4) The `SKIP_OFFER`'s `channel_binding` field MUST equal the deterministic 32-byte sentinel `SHA-256(b"ironmesh-handshake-skip-channel-binding-v1")` — verified client-side via `hmac.compare_digest`. A peer that offers any other value (missing, non-hex, or 32 attacker-chosen bytes) is rejected and the connection closed; the rejection is counted in `ironmesh_handshake_skips_rejected_total` and fires a critical-severity alert in the bundled Prometheus rules |
+| **Handshake-skip downgrade attack (v0.9.2+)** | Defended at five layers. (1) The skip is opt-in on both ends + advertised in the RNS announce. (2) The announce is signed by the announcing RNS Identity, so a MITM cannot inject `hskip` on a peer's behalf. (3) The negotiation is **server-driven via `SKIP_OFFER`** — the client never decides skip unilaterally, so an attacker who suppresses one announce cannot cause a half-skipped handshake. (4) The `SKIP_OFFER`'s `channel_binding` field MUST equal the deterministic 32-byte sentinel `SHA-256(b"ironmesh-handshake-skip-channel-binding-v1")` — verified client-side via `hmac.compare_digest`. A peer that offers any other value (missing, non-hex, or 32 attacker-chosen bytes) is rejected and the connection closed; the rejection is counted in `ironmesh_handshake_skips_rejected_total` and fires a critical-severity alert in the bundled Prometheus rules. (5) As of protocol `ironmesh/0.9`, the skip additionally REFUSES to run unless the peer's signed HELLO carries a verified RNS link binding (`rns_link_id` matching the link it arrived on), so the constant skip sentinel is not replayable across links |
 
 ---
 
@@ -248,7 +248,32 @@ independent of E2E SealedBox for relay traffic.
 
 ## 7. Change Log
 
-- **v0.9.4 (in flight)**: Phase 2 of the Ed25519/X25519 dual-use migration.
+- **Unreleased (main, protocol `ironmesh/0.9`)**: Post-v0.9.4.2 hardening.
+    - **Domain-separated HELLO signature** — when both peers advertise
+      `ironmesh/0.9+`, the HELLO carries a detached Ed25519 signature
+      under the dedicated `SIG_CTX_HELLO` context label, closing the
+      cross-protocol signature-reuse surface on the handshake.
+      Version-gated with a legacy attached-signature fallback; the
+      advertised version sits inside the signed body, so the scheme
+      cannot be silently downgraded for pinned peers.
+      `--min-protocol-version ironmesh/0.9` refuses legacy HELLOs.
+    - **RNS link binding** — on RNS Links, 0.9+ peers include the id
+      of the specific link inside the signed HELLO body
+      (`rns_link_id`) and receivers reject any mismatch, coupling the
+      IronMesh identity to the RNS link session. The
+      `--rns-skip-handshake` path now refuses to run without a
+      verified binding; `--rns-require-link-binding` refuses unbound
+      pre-0.9 RNS peers entirely.
+    - **Per-link cumulative buffering cap** on the Reticulum
+      transport (64 MB per link across reassembly + unconsumed
+      messages; overrun closes the link and frees the buffers).
+    - **At-rest storage key derived via Argon2id + HKDF-SHA256** with
+      a per-database persisted salt (previously a single unsalted
+      SHA-256 of the passphrase) — a leaked disk image no longer
+      permits a fast offline dictionary attack. Existing databases
+      re-encrypt automatically on first start; the migration marker
+      is withheld on a wrong-passphrase open.
+- **v0.9.4**: Phase 2 of the Ed25519/X25519 dual-use migration.
     - **HELLO advertises master-seed X25519 public** with an Ed25519
       binding signature under `SIG_CTX_X25519_BINDING`. Receivers
       that recognize the fields verify the binding under the peer's
@@ -266,7 +291,7 @@ independent of E2E SealedBox for relay traffic.
       derivation, leaving the dual-use property of the secret unchanged
       for that node. Operators see a WARNING in the log when this
       happens.
-- **v0.9.4 (in flight)**: Pre-audit hardening pass.
+- **v0.9.4**: Pre-audit hardening pass.
     - **Master-seed key envelope (Option A Phase 1)** — `keys.json` v3
       adds an HKDF-derived X25519 subkey + per-node salt while preserving
       the Ed25519 seed byte-for-byte (TOFU pin survival). Phase 1 is a

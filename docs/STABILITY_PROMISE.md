@@ -116,6 +116,7 @@ The wire protocol itself only bumps when the on-wire bytes change incompatibly. 
 | `ironmesh/0.6` | v0.6 | Hardening pass: length caps, nonce windows |
 | `ironmesh/0.7` | v0.7 | Rekey, QoS, LoRa payload negotiation |
 | `ironmesh/0.8` | v0.9.2 | Feature flags, handshake skip, group broadcast, capability routing |
+| `ironmesh/0.9` | unreleased (main) | Domain-separated HELLO signature (`SIG_CTX_HELLO`) + RNS link binding; legacy fallback for pre-0.9 peers |
 
 Peers negotiate the highest version both sides advertise. A v0.8 peer talking to a v0.3 peer downgrades cleanly; unknown feature flags are ignored.
 

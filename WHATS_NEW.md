@@ -37,9 +37,9 @@ The arc, version by version:
 - **1083 tests** passing on Ubuntu + Windows + macOS across Python 3.10–3.13, plus live cross-host validation on every wire-surface change. The 14-phase E2E driver (`scripts/stress_e2e_round4.py`) runs 37 checks across multi-hop routing, burst load, dedup/replay defense, audit-tamper detection, connect storm, shutdown-under-load, and a 5-probe attack-surface battery — green on the v0.9.4.2 ship.
 - **27 core modules** in the wheel, a crypto stack built on audited libsodium primitives (Ed25519 + X25519 + XSalsa20-Poly1305 via PyNaCl — the IronMesh protocol layer itself has not yet been externally audited), formal threat model in `docs/THREAT_MODEL.md`, v1.0 surface contract in `docs/STABILITY_PROMISE.md`.
 - **25 MCP tools** exposed via stdio JSON-RPC, usable from Claude Desktop and any MCP-capable agent.
-- **Four transports:** WebSocket (default), Reticulum/LoRa (opt-in via `ironmesh[rns]`), LXMF (Sideband / Nomadnet interop), and the bundled NAT relay (Option A — pure relay, sealed envelopes, never holds session keys) for WAN meshes that can't direct-connect. Federation between meshes via `FederationGateway` with v2 per-source matchers.
+- **Three transports:** WebSocket (default), Reticulum/LoRa (opt-in via `ironmesh[rns]`), and LXMF (Sideband / Nomadnet interop). A bundled NAT relay server (Option A — pure relay, sealed envelopes, never holds session keys) also ships, though the daemon-side attach flag is not wired up yet — see `docs/NAT_TRAVERSAL.md`. Federation between meshes via `FederationGateway` with v2 per-source matchers.
 - **Three reference clients** beyond Python: Go (full wire protocol, crypto verified against Python), TypeScript (`@wiztheagent/ironmesh-client`), and the OpenClaw channel adapter (`@wiztheagent/openclaw-ironmesh`).
-- **Wire format `ironmesh/0.8`** with two opt-in feature flags (`hskip` for handshake-skip on identified RNS Links, `group` for shared-secret broadcast) — every existing wire path is unchanged, so v0.9.x peers stay interoperable and v0.8.x peers continue to interoperate on the legacy surfaces.
+- **Wire format `ironmesh/0.8`** with two opt-in feature flags (`hskip` for handshake-skip on identified RNS Links, `group` for shared-secret broadcast) — every existing wire path is unchanged, so v0.9.x peers stay interoperable and v0.8.x peers continue to interoperate on the legacy surfaces. On `main` (unreleased) the **`ironmesh/0.9` protocol line** adds domain-separated HELLO signatures and RNS link binding, version-gated with a legacy fallback.
 - **Operator surface:** `ironmesh setup` (interactive first-run wizard), `ironmesh demo` (60-second two-agent local demo), `ironmesh doctor` (mesh-health diagnostic), `ironmesh upgrade` (PyPI version check), 9 new metrics + 4 Prometheus alert rules + a Grafana dashboard, OpenTelemetry spans on the v0.9.x agent surfaces.
 - **Distribution:** PyPI, Docker Hub, and GitHub Releases (a `docs.ironmesh.org` mkdocs site is planned). Each release follows `.github/RELEASE_CHECKLIST.md` end-to-end with a wheel-packaging smoke gate (`scripts/release-smoke.sh`) before any `twine upload`.
 
@@ -53,8 +53,6 @@ Roughly in priority order. See the master plan for the full sequence.
 - **`PROTOCOL_SPEC.md` v1.0** — RFC 2119 spec covering wire format, handshake state machine, trust model, message types, routing, error codes, failure semantics. Plus a conformance test suite as a standalone repo.
 - **Capability Routing v2** — weighted scoring engine: each candidate node receives a composite score from measured latency, trust level, load, and capability match quality. Decision-trace metadata for every routing decision.
 - **Pending-trust default-on** in v0.9. Migration guide + `--no-message-promotion` escape hatch for legacy behavior.
-- **10-minute quickstart** + Docker compose preset + first-run wizard. Removes the single biggest onboarding drop-off.
-- **OpenTelemetry tracing + Prometheus metrics endpoint + reference Grafana dashboard** — observability stack for serious adopters.
 
 ### v1.0 hard gates
 

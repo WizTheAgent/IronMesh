@@ -5,8 +5,8 @@
 **Origin**: Built because no existing A2A protocol works without the internet. Google A2A needs HTTPS. MCP is tool calls, not P2P. ACP can't cross machines. ANP needs DIDs and internet. IronMesh is the protocol that works when you pull the plug on your router.
 
 **Reference operators**: Linux node (Raspberry Pi 5) + Windows node (desktop PC)
-**Wire protocol**: ironmesh/0.8
-**Date**: 2026-04-10
+**Wire protocol**: ironmesh/0.9 (frame envelope unchanged since v4; the 0.9 line adds domain-separated HELLO signatures + RNS link binding, version-gated for older peers)
+**Date**: 2026-07-03
 
 ---
 
@@ -107,7 +107,7 @@ All from **PyNaCl** (libsodium). No custom crypto.
 | **Auth** | HMAC-SHA256(passphrase, nonce) | Mutual pre-auth gate. Both sides prove knowledge. Constant-time comparison. |
 | **Key file protection** | Argon2id KDF + SecretBox | Encrypt secret keys at rest |
 
-**Key distinction from v2.1**: Identity keys (Ed25519) are now used ONLY for identity/signing. ECDH uses ephemeral X25519 keys generated per session. This gives true forward secrecy — compromising identity keys cannot decrypt past sessions.
+**Key distinction from early designs**: Identity keys (Ed25519) are used ONLY for identity/signing. ECDH uses ephemeral X25519 keys generated per session. This gives true forward secrecy — compromising identity keys cannot decrypt past sessions.
 
 ---
 
@@ -314,11 +314,15 @@ Hook points: `PRE_SEND`, `POST_RECEIVE`, `ON_PEER_CONNECT`, `ON_PEER_DISCONNECT`
 ## 11. Dependencies
 
 ```
-websockets>=12.0
-aiosqlite>=0.19.0
-pynacl>=1.5.0
-zeroconf>=0.80.0
+websockets>=12.0,<16
+pynacl>=1.5.0,<2
+zeroconf>=0.80.0,<1
+aiosqlite>=0.19.0,<1
 ```
+
+Upper bounds cap the next major so unreviewed breaking releases
+surface as a resolver error (see `pyproject.toml` for the rationale
+comment). CI installs from the hash-pinned `requirements.lock`.
 
 Dev: `pytest`, `pytest-asyncio`, `pytest-cov`, `ruff`, `mypy`
 
@@ -395,6 +399,9 @@ The full surface contract for the v1.0 stability promise is in [`docs/STABILITY_
 | **Federation policy v2** — per-source matchers | v0.9.2 | n/a (local config) |
 | **OpenTelemetry spans** on the v0.9.x agent surfaces (`ironmesh[otel]`) | v0.9.2 | n/a (local) |
 | **Conformance test vectors** (language-agnostic golden vectors) | v0.9.2 | n/a (test) |
+| **Domain-separated HELLO signature** (detached Ed25519 under `SIG_CTX_HELLO`; legacy fallback for pre-0.9 peers) | unreleased (main) | `ironmesh/0.9` |
+| **RNS link binding** (`rns_link_id` inside the signed HELLO body; required on the handshake-skip path; `--rns-require-link-binding` refuses unbound legacy peers) | unreleased (main) | `ironmesh/0.9` |
+| **At-rest storage key via Argon2id + HKDF-SHA256** (replaces unsalted SHA-256; auto re-encrypts existing databases) | unreleased (main) | n/a (local storage) |
 
 ### Interoperability
 
