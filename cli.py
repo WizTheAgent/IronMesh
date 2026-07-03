@@ -58,7 +58,8 @@ def _parse_admin_identities(raw):
 def parse_args():
     parser = argparse.ArgumentParser(
         description="IronMesh — Zero-config encrypted A2A protocol",
-        epilog="Example: ironmesh --name alice --port 8765 --passphrase secret123",
+        epilog="Example: ironmesh run --name alice --port 8765 "
+               "--passphrase-file ~/.ironmesh/passphrase",
     )
     sub = parser.add_subparsers(dest="command", help="Available commands")
 

@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   audited libsodium primitives, distinct from the still-pending
   external protocol audit) and a post-quantum migration plan
   (hybrid X25519 + ML-KEM-768, pre-v1.0) added to `SECURITY.md`.
+- Docs: accuracy pass against shipped behavior — protocol-line references brought up to `ironmesh/0.9` across README / ARCHITECTURE / WHATS_NEW / STABILITY_PROMISE / THREAT_MODEL, getting-started walkthroughs corrected to commands and SDK calls that exist (`ironmesh run --name` required, `trust set-state ... trusted`, `Agent.on_message()` signature, key-file passphrase caveat), the not-yet-wired `--nat-relay` daemon flag and the CLI-unread JSON-config / env-var family documented honestly, missing security flags added to `docs/CONFIGURATION.md`, and the stale top-level `--help` example fixed to a working command.
 
 ### Security
 
