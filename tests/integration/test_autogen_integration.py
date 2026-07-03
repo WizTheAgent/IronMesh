@@ -1,13 +1,16 @@
 """End-to-end integration test for the AutoGen adapter.
 
 Covers:
-- ``register_ironmesh`` on a real AutoGen agent (or a close duck-typed
-  stand-in if only the adapter path is present).
+- ``register_ironmesh`` on a duck-typed legacy-style AutoGen agent
+  (the post-construction ``function_map`` registration contract).
 - The ``ironmesh_send`` function actually delivers a MSG across a live
   2-node mesh.
 - The ``ironmesh_peers`` function returns JSON the LLM can consume.
+- A real ``autogen_agentchat.agents.AssistantAgent`` driving a mesh
+  tool call end to end (scripted model client, no real LLM).
 
-Skips cleanly if AutoGen is not installed.
+The real-agent test skips cleanly if ``autogen-agentchat`` is not
+installed; everything else runs against the adapter alone.
 """
 from __future__ import annotations
 
@@ -102,35 +105,104 @@ def test_function_descriptions_schema_is_openai_shaped():
         assert d["parameters"]["type"] == "object"
 
 
-def test_real_autogen_agent_if_installed():
-    """If pyautogen is installed, register on a real AssistantAgent too."""
-    autogen = pytest.importorskip("autogen",
-                                   reason="pyautogen not installed")
-    # pyautogen's AssistantAgent insists on a llm_config. Skip the real
-    # smoke if we can't satisfy that cheaply; the register path is
-    # already covered by the duck-typed case.
-    try:
-        agent_cls = autogen.AssistantAgent  # type: ignore[attr-defined]
-    except AttributeError:
-        pytest.skip("autogen.AssistantAgent not present in this install")
+async def test_real_autogen_agent_if_installed(two_node_mesh):
+    """If autogen-agentchat is installed, drive a real AssistantAgent.
 
-    from ironmesh import Agent as IronMeshAgent
-    from ironmesh.adapters.autogen_adapter import register_ironmesh
+    A scripted model client makes the assistant issue one
+    ``ironmesh_peers`` tool call, so this exercises the whole modern
+    integration path — AssistantAgent -> FunctionTool wrapping of the
+    adapter callables -> live mesh state — without a real LLM.
+    """
+    pytest.importorskip("autogen_agentchat",
+                        reason="autogen-agentchat not installed")
 
-    mesh_agent = IronMeshAgent(
-        "autogen-itest", port=31780,
-        passphrase="integration-test-passphrase-12",
-        open_discovery=False, allow_plaintext=True,
-        allowed_peers=["never-connects"],
+    from autogen_agentchat.agents import AssistantAgent
+    from autogen_core import FunctionCall
+    from autogen_core.models import (
+        ChatCompletionClient,
+        CreateResult,
+        ModelInfo,
+        RequestUsage,
     )
-    mesh_agent.run(foreground=False)
-    try:
-        assistant = agent_cls(
-            "assistant",
-            llm_config=False,  # disabled is valid; we're not calling the LLM
-        )
-        register_ironmesh(mesh_agent, assistant)
-        assert any(k.startswith("ironmesh_")
-                   for k in getattr(assistant, "function_map", {}))
-    finally:
-        mesh_agent.stop()
+
+    model_info = ModelInfo(
+        vision=False, function_calling=True, json_output=False,
+        family="unknown", structured_output=False,
+    )
+
+    class _ScriptedModelClient(ChatCompletionClient):
+        """Replays canned CreateResults; never contacts a real model."""
+
+        def __init__(self, script: list) -> None:
+            self._script = list(script)
+            self._usage = RequestUsage(prompt_tokens=0, completion_tokens=0)
+
+        async def create(self, messages, *, tools=(), tool_choice="auto",
+                         json_output=None, extra_create_args=None,
+                         cancellation_token=None):
+            return self._script.pop(0)
+
+        async def create_stream(self, messages, *, tools=(),
+                                tool_choice="auto", json_output=None,
+                                extra_create_args=None,
+                                cancellation_token=None):
+            raise NotImplementedError("streaming is not scripted")
+            yield  # unreachable; makes this an async generator
+
+        async def close(self) -> None:
+            return None
+
+        def actual_usage(self):
+            return self._usage
+
+        def total_usage(self):
+            return self._usage
+
+        def count_tokens(self, messages, *, tools=()) -> int:
+            return 0
+
+        def remaining_tokens(self, messages, *, tools=()) -> int:
+            return 1_000_000
+
+        @property
+        def model_info(self):
+            return model_info
+
+        @property
+        def capabilities(self):
+            return model_info
+
+    from ironmesh.adapters.autogen_adapter import create_mesh_tools
+
+    alice, _bob = two_node_mesh
+    tools, _inbox = create_mesh_tools(alice)
+    assert [t.__name__ for t in tools] == [
+        "ironmesh_send", "ironmesh_peers",
+        "ironmesh_receive", "ironmesh_discover",
+    ]
+
+    model_client = _ScriptedModelClient([
+        CreateResult(
+            finish_reason="function_calls",
+            content=[FunctionCall(id="call-1", name="ironmesh_peers",
+                                  arguments="{}")],
+            usage=RequestUsage(prompt_tokens=0, completion_tokens=0),
+            cached=False,
+        ),
+    ])
+    assistant = AssistantAgent(
+        "assistant",
+        model_client=model_client,
+        tools=tools,
+        reflect_on_tool_use=False,
+    )
+
+    result = await assistant.run(task="Which mesh peers are online?")
+
+    # With reflect_on_tool_use=False the final message is the tool-call
+    # summary, i.e. the raw JSON the ironmesh_peers adapter fn returned.
+    text = result.messages[-1].to_text()
+    assert "itest-bob" in text, (
+        "the assistant's tool call should surface alice's live peer "
+        f"list; got: {text!r}"
+    )

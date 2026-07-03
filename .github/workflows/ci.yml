@@ -164,7 +164,7 @@ jobs:
 
   integration:
     # Real framework-adapter integration tests. Installs the actual
-    # third-party packages (langchain-core, crewai, pyautogen) and
+    # third-party packages (langchain-core, crewai, autogen-agentchat) and
     # stands up live 2-node IronMesh meshes in-process.  Runs on
     # Ubuntu only — mDNS-over-localhost is more reliable there than
     # in the Windows runners, and the adapters are OS-agnostic.
@@ -193,7 +193,7 @@ jobs:
           # silently failed install would turn the whole integration
           # suite into skips while CI stayed green.
           failed=""
-          for pkg in langchain-core crewai pyautogen; do
+          for pkg in langchain-core crewai autogen-agentchat; do
             pip install "$pkg" || failed="$failed $pkg"
           done
           if [ -n "$failed" ]; then
@@ -204,12 +204,7 @@ jobs:
           # Belt and suspenders: installing is not the same as importing.
           # An import-time crash in an unpinned framework release would
           # also feed importorskip and skip the suite silently.
-          # (pyautogen >= 0.10 is a proxy distribution that no longer
-          # ships a legacy `autogen` module, so it isn't import-checked
-          # here; the one test that needs that module skips, and that
-          # single skip is the exact budget of the skip ceiling on the
-          # test step below.)
-          python -c "import langchain_core, crewai" || {
+          python -c "import langchain_core, crewai, autogen_agentchat" || {
             echo "FAIL: a framework installed but does not import."
             exit 1
           }
@@ -218,16 +213,16 @@ jobs:
           PYTHONIOENCODING: utf-8
           # Result floors — assert the adapter tests actually executed.
           # With all three frameworks importable the suite currently runs
-          # 14 tests with exactly 1 skip (the legacy-`autogen`-module
-          # test; pyautogen >= 0.10 no longer ships that module). The
+          # 15 tests with 0 skips (the AutoGen real-agent test runs on
+          # autogen-agentchat, the framework's modern package). The
           # pass floor is ~70% of that, so adding or removing a couple
           # of tests never false-alarms, but a framework that stops
           # importing (mass importorskip) drops the count far below it.
-          # The skip ceiling of 1 budgets the single known skip: any new
-          # skip means adapter coverage silently vanished and must be a
-          # deliberate, reviewed change here.
+          # The skip ceiling of 0 budgets no known skips: any skip means
+          # adapter coverage silently vanished and must be a deliberate,
+          # reviewed change here.
           CI_PYTEST_MIN_PASSED: 10
-          CI_PYTEST_MAX_SKIPPED: 1
+          CI_PYTEST_MAX_SKIPPED: 0
         timeout-minutes: 10
         # Same wrapper as the unit-test job — pytest occasionally hangs
         # in atexit on hosted runners after reporting all tests done
