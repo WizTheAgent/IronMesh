@@ -188,20 +188,33 @@ is_excluded_from_content_scan() {
 # Collect the file list for the requested mode
 # ----------------------------------------------------------------------------
 
+# Each git invocation below is checked explicitly. This script runs without
+# `set -e`, so an unchecked failure (e.g. an invalid commit range) would
+# yield an empty file list and a false "clean" verdict — the scan would
+# silently not run at all.
 case "$MODE" in
     --staged)
         # Files staged for commit, additions + modifications only
-        FILES="$(git diff --cached --name-only --diff-filter=AM)"
+        if ! FILES="$(git diff --cached --name-only --diff-filter=AM)"; then
+            echo "leak-scan: ERROR — 'git diff --cached' failed; refusing to report clean" >&2
+            exit 2
+        fi
         ;;
     --range)
         if [[ -z "$ARG" ]]; then
             echo "usage: $0 --range BASE..HEAD" >&2
             exit 2
         fi
-        FILES="$(git diff --name-only --diff-filter=AM "$ARG")"
+        if ! FILES="$(git diff --name-only --diff-filter=AM "$ARG")"; then
+            echo "leak-scan: ERROR — 'git diff $ARG' failed (bad range?); refusing to report clean" >&2
+            exit 2
+        fi
         ;;
     --all)
-        FILES="$(git ls-files)"
+        if ! FILES="$(git ls-files)"; then
+            echo "leak-scan: ERROR — 'git ls-files' failed; refusing to report clean" >&2
+            exit 2
+        fi
         ;;
     *)
         echo "usage: $0 (--staged | --range BASE..HEAD | --all)" >&2

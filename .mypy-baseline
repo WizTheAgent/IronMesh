@@ -1,0 +1,8 @@
+# mypy error-count baseline — consumed by the "Type check with mypy
+# (baseline-gated)" step in .github/workflows/ci.yml. CI fails when
+# the current error count exceeds the number below. Ratchet it down
+# as the backlog is cleared; never bump it to admit new errors.
+# Measured with mypy 1.20.2 (the requirements.lock pin), --platform
+# linux, in an environment installed from requirements.lock, against
+# the installed-layout staging tree the CI step builds.
+152

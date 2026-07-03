@@ -78,6 +78,18 @@ pip install -e ".[dev,rns]"
 pytest tests/ -v
 ```
 
+CI installs dependencies from the hash-pinned lockfile instead of
+resolving them fresh. To reproduce the CI environment exactly:
+
+```bash
+pip install --require-hashes -r requirements.lock
+pip install -e . --no-deps
+```
+
+To change a dependency, edit `pyproject.toml` and regenerate the
+lockfile — the exact command is in the header of `requirements.lock`.
+Commit both files together.
+
 As of v0.9.4.2 the suite runs **1083 tests** (8 skipped, 1 xpassed) on
 the matrix Ubuntu + Windows + macOS × Python 3.10–3.13. Anything
 substantially below that on a clean checkout is a regression — open

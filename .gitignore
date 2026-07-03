@@ -39,7 +39,9 @@ Thumbs.db
 temp.log
 temp2.log
 logs/
+# Runtime lock/sentinel files — but the dependency lockfile is tracked.
 *.lock
+!requirements.lock
 
 # Keys (NEVER commit secrets)
 keys.json

@@ -30,7 +30,7 @@ fabric. Everything below is operational detail and tuning.
 
 ### 1. Install RNS
 
-The `rns` extra pulls in `rns>=1.1.9`:
+The `rns` extra pulls in `rns>=1.1.9,<2`:
 
 ```bash
 pip install ironmesh[rns]

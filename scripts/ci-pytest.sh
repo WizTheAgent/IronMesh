@@ -18,10 +18,61 @@
 #
 # If pytest exits on its own with non-zero, we propagate that exit code.
 # If pytest never reaches the success line within HARD_TIMEOUT, we fail.
+# CI_PYTEST_MIN_PASSED / CI_PYTEST_MAX_SKIPPED (see below) additionally
+# assert the run actually executed the suite rather than skipping it.
 
 set -u
 HARD_TIMEOUT="${HARD_TIMEOUT:-600}"   # absolute ceiling; 10 min
 LOG_FILE="$(mktemp -t pytest-ci-log.XXXXXX)"
+
+# Optional result floors — guard against the "green CI, but the check never
+# ran" failure mode. pytest exits 0 when tests are skipped or deselected en
+# masse (a conftest regression, a broken optional-dependency install feeding
+# importorskip, an over-broad marker expression), so a green job does not by
+# itself prove the suite executed. Callers set:
+#
+#   CI_PYTEST_MIN_PASSED   fail unless the summary reports at least this
+#                          many passed tests
+#   CI_PYTEST_MAX_SKIPPED  fail if the summary reports more than this many
+#                          skipped tests
+#
+# Both unset = no floor (local runs are unaffected). CI sets floors at
+# roughly 70% of the current suite size so routine test additions and
+# removals never false-alarm, while a structural no-op trips immediately.
+# A "no tests ran" summary is always a failure, floors or not.
+CI_PYTEST_MIN_PASSED="${CI_PYTEST_MIN_PASSED:-}"
+CI_PYTEST_MAX_SKIPPED="${CI_PYTEST_MAX_SKIPPED:-}"
+
+enforce_result_floors() {
+  # $1 = pytest's final summary line. Returns non-zero (with a message) if
+  # the run was a structural no-op or breaches a configured floor.
+  local summary="$1" n_passed n_skipped
+  if echo "$summary" | grep -qE "no tests ran"; then
+    echo "ci-pytest: FAIL — pytest ran zero tests: $summary"
+    return 1
+  fi
+  n_passed=$(echo "$summary" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' | head -1)
+  n_skipped=$(echo "$summary" | grep -oE '[0-9]+ skipped' | grep -oE '[0-9]+' | head -1)
+  n_passed="${n_passed:-0}"
+  n_skipped="${n_skipped:-0}"
+  if [ -n "$CI_PYTEST_MIN_PASSED" ] && [ "$n_passed" -lt "$CI_PYTEST_MIN_PASSED" ]; then
+    echo "ci-pytest: FAIL — $n_passed tests passed but the floor is $CI_PYTEST_MIN_PASSED."
+    echo "           A pass count this far below the known suite size means part of the"
+    echo "           suite silently did not run (mass skip / deselect / empty collection)."
+    echo "           If the suite genuinely shrank, lower CI_PYTEST_MIN_PASSED in the"
+    echo "           workflow as a deliberate, reviewed change."
+    return 1
+  fi
+  if [ -n "$CI_PYTEST_MAX_SKIPPED" ] && [ "$n_skipped" -gt "$CI_PYTEST_MAX_SKIPPED" ]; then
+    echo "ci-pytest: FAIL — $n_skipped tests skipped but the ceiling is $CI_PYTEST_MAX_SKIPPED."
+    echo "           Extra skips usually mean an optional dependency stopped importing,"
+    echo "           so tests that used to run are now silently bypassed. Re-run with"
+    echo "           pytest -rs to list the skips; raise CI_PYTEST_MAX_SKIPPED only as a"
+    echo "           deliberate, reviewed change."
+    return 1
+  fi
+  return 0
+}
 
 trap 'rm -f "$LOG_FILE"' EXIT
 
@@ -56,6 +107,11 @@ while true; do
       kill -KILL "$WRAPPER_PID" 2>/dev/null
       exit 1
     fi
+    if ! enforce_result_floors "$SUMMARY_LINE"; then
+      pkill -KILL -P "$WRAPPER_PID" 2>/dev/null
+      kill -KILL "$WRAPPER_PID" 2>/dev/null
+      exit 1
+    fi
     PYTEST_OK="yes"
     break
   fi
@@ -65,6 +121,19 @@ while true; do
     echo ""
     echo "ci-pytest: pytest exited (code=$EXIT_CODE)"
     wait "$WRAPPER_PID" 2>/dev/null
+    # A clean exit must still clear the result floors — pytest exits 0 on
+    # a mass-skipped run, which is exactly the case the floors exist for.
+    if [ "$EXIT_CODE" = "0" ] && { [ -n "$CI_PYTEST_MIN_PASSED" ] || [ -n "$CI_PYTEST_MAX_SKIPPED" ]; }; then
+      FINAL_SUMMARY=$(
+        grep -E "^=+ .* in [0-9]+(\.[0-9]+)?s( \([0-9:]+\))? =+$" "$LOG_FILE" 2>/dev/null \
+          | tail -1
+      )
+      if [ -z "$FINAL_SUMMARY" ]; then
+        echo "ci-pytest: FAIL — result floors are configured but pytest produced no summary line."
+        exit 1
+      fi
+      enforce_result_floors "$FINAL_SUMMARY" || exit 1
+    fi
     exit "$EXIT_CODE"
   fi
   # Hard cap: pytest hasn't even reported success in HARD_TIMEOUT s.

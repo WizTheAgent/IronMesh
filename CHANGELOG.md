@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BridgeDaemon` composes the mixins via inheritance, and `bridge.py`
   re-exports every name it previously exposed, so existing import
   paths (`from ironmesh.bridge import ...`) keep working unchanged.
+- Supply-chain hardening: CI installs dependencies from a hash-pinned lockfile (`requirements.lock`), pip-audit now audits the lockfile pins, and the mypy step is blocking via an error-count baseline gate (`.mypy-baseline`).
+- CI now asserts its checks actually ran: pytest jobs enforce minimum-passed / maximum-skipped result floors (`CI_PYTEST_MIN_PASSED` / `CI_PYTEST_MAX_SKIPPED` in `scripts/ci-pytest.sh`), the integration job fails if an adapter framework fails to install or import instead of skipping silently, the packaging job verifies the conformance-vector suite wasn't empty, and `leak-scan.sh` errors out instead of reporting clean when its git file listing fails.
 
 ### Security
 

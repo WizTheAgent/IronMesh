@@ -110,9 +110,11 @@ Remaining residual:
   single RNS identity that opens N links can buffer roughly N × 64 MB
   before the caps trip. This is a known, accepted limitation; an
   aggregate per-identity bound is planned follow-up work.
-- **rns dependency** is pinned as `rns>=0.9.0` with no upper bound
-  in v0.8.5.2. For strict environments, pin `rns>=0.9.0,<0.10.0` in
-  your own install.
+- **rns dependency** is pinned as `rns>=1.1.9,<2` — patch and minor
+  releases flow through automatically while unreviewed major bumps
+  are blocked. For strict environments, install from the hash-pinned
+  lockfile at the repository root instead:
+  `pip install --require-hashes -r requirements.lock`.
 
 If RNS isn't enabled, none of this applies.
 
