@@ -95,21 +95,24 @@ residual risks are mitigated as of protocol `ironmesh/0.9`:
   fully-upgraded meshes; the handshake skip already requires it
   unconditionally. The WebSocket path is unaffected (the field is
   rejected there).
-- **Per-peer cumulative buffering cap (mitigated as of 0.9).** In
-  addition to the per-frame 1 MB cap, each RNS link now enforces a
-  cumulative bound (`MAX_PEER_BUFFERED_BYTES`, 64 MB) across the
-  reassembly buffer plus every received-but-unconsumed message and
-  Resource payload. A peer that overruns it trips the cap **before**
-  memory pressure: the link is closed, buffers are freed, and a
-  warning is logged (`RNS: per-peer buffered-bytes cap exceeded`).
+- **Two-tier cumulative buffering cap (per-link mitigated as of 0.9;
+  per-identity aggregate added after).** In addition to the per-frame
+  1 MB cap, each RNS link enforces a cumulative bound
+  (`MAX_PEER_BUFFERED_BYTES`, 64 MB) across the reassembly buffer plus
+  every received-but-unconsumed message and Resource payload, and all
+  live links keyed to the same remote RNS identity additionally share
+  an aggregate bound (`MAX_IDENTITY_BUFFERED_BYTES`, 128 MB) — so an
+  identity opening many links cannot scale its buffered memory
+  linearly with link count. Links whose remote never identified are
+  grouped into a single shared bucket, so refusing to identify grants
+  less budget, not more. Both caps trip **before** memory pressure:
+  the link that crossed the line is closed (sibling links of the same
+  identity are untouched), its buffers are freed back to the budget,
+  and a warning is logged (`RNS: per-peer buffered-bytes cap
+  exceeded` / `RNS: per-identity aggregate buffered-bytes cap
+  exceeded`).
 
 Remaining residual:
-
-- **The buffering cap is per-link, not per-identity.**
-  `MAX_PEER_BUFFERED_BYTES` bounds each RNS link independently, so a
-  single RNS identity that opens N links can buffer roughly N × 64 MB
-  before the caps trip. This is a known, accepted limitation; an
-  aggregate per-identity bound is planned follow-up work.
 - **rns dependency** is pinned as `rns>=1.1.9,<2` — patch and minor
   releases flow through automatically while unreviewed major bumps
   are blocked. For strict environments, install from the hash-pinned
