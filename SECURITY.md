@@ -232,6 +232,36 @@ release may add a global daemon-wide bandwidth cap as belt-and-suspenders.
   with a user-supplied passphrase on top of the per-message storage
   key — so a leaked backup doesn't expose payloads.
 
+## Post-quantum migration plan
+
+IronMesh's key exchange today is classical X25519 ECDH. A
+sufficiently large quantum computer would break it, and that matters
+here because of harvest-now-decrypt-later: an adversary who records
+encrypted mesh traffic today could decrypt it once such a machine
+exists. To be clear about where things stand:
+
+- **This is a plan, not an implementation.** No post-quantum
+  cryptography ships in IronMesh today.
+- **Target: a hybrid X25519 + ML-KEM-768 key exchange.** The session
+  secret will be derived from both the classical X25519 exchange and
+  an ML-KEM-768 encapsulation, so the handshake is never weaker than
+  today's even if the newer primitive turns out to be flawed.
+- **Trigger: before v1.0 GA**, or earlier if a dependency we already
+  pin ships vetted, production-suitable PQ primitives — whichever
+  comes first. We will not hand-roll or adopt unvetted
+  implementations to hit a date.
+- **Identity keys stay Ed25519** for now. Signatures are not exposed
+  to harvest-now-decrypt-later — a future quantum attacker cannot
+  retroactively forge a signature that was verified at the time — so
+  identity-key migration waits until a post-quantum signature story
+  matures.
+
+The exposure window is also bounded by the existing threat model:
+IronMesh traffic rides your LAN or LoRa RF, so a harvest-now adversary
+must already be close enough to capture it. If even that residual risk
+is unacceptable for your deployment, keep the mesh on links you
+physically control until the hybrid handshake lands.
+
 ## Hall of fame
 
 Security researchers who've reported valid findings will be listed

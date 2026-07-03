@@ -31,7 +31,7 @@ Most agent frameworks assume the cloud is always available. Google's A2A needs H
 
 None of them work when you pull the ethernet cable. None of them work in a basement. None of them work off-grid.
 
-IronMesh is the production-grade transport layer that keeps working when the router dies, the ISP is down, or you're fully air-gapped.
+IronMesh is the transport layer that keeps working when the router dies, the ISP is down, or you're fully air-gapped. It is alpha software in pre-audit hardening toward v1.0 — see [Distribution & caveats](#distribution--caveats) for exactly what's still rough.
 
 - Zero-config LAN discovery via mDNS
 - End-to-end encryption with forward secrecy (NaCl/libsodium)
