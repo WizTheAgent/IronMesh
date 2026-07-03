@@ -123,7 +123,7 @@ log redirection for a JSON-line stream that any aggregator can ingest.
   promotion via the dashboard / MCP / CLI.
 - **Use the OS keychain backend** instead of a passphrase file if
   your deployment workflow prefers it: see
-  [`keys keychain-store`](../README.md). Set
+  [`keys keychain-store`](https://github.com/WizTheAgent/IronMesh/blob/main/README.md). Set
   `IRONMESH_PASSPHRASE_KEYCHAIN=true` in the service environment.
 
 ## Troubleshooting

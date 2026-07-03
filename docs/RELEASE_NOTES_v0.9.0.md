@@ -191,7 +191,7 @@ surfaced and is now in this release.
 
 ## Reference
 
-- [`CHANGELOG.md`](../CHANGELOG.md) — full change list.
+- [`CHANGELOG.md`](https://github.com/WizTheAgent/IronMesh/blob/main/CHANGELOG.md) — full change list.
 - [`docs/OPENCLAW_CHANNEL_SETUP.md`](OPENCLAW_CHANNEL_SETUP.md) — channel plugin setup.
 - [`docs/OPENCLAW_MCP_SETUP.md`](OPENCLAW_MCP_SETUP.md) — MCP bridge setup.
 - [`docs/OPERATOR_TRUST_RUNBOOK.md`](OPERATOR_TRUST_RUNBOOK.md) — pending-trust gate operations.

@@ -223,7 +223,7 @@ identified RNS Links shipped in **v0.9.2** behind
 
 - [`TRUST_BINDING_WIRE_v0.9.md`](TRUST_BINDING_WIRE_v0.9.md) — design
   for the wire-level extensions queued for v0.9
-- [`SECURITY.md`](../SECURITY.md) — overall threat model + hardening
+- [`SECURITY.md`](https://github.com/WizTheAgent/IronMesh/blob/main/SECURITY.md) — overall threat model + hardening
   recommendations
 - [`THREAT_MODEL.md`](THREAT_MODEL.md) — formal threat model (will be
   updated for v0.8.5.6)

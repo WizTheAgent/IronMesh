@@ -152,7 +152,7 @@ SF8, BW125, CR5, 17 dBm TX), 1 hop, indoor:
 | 64 B | 3/3 (100%) | 1.17 — 1.25 s | -46 dBm, +12.4 dB SNR |
 | 256 B | 3/3 (100%) | 1.77 — 1.98 s | -45 dBm, +12.4 dB SNR |
 
-See [`docs/LORA_VALIDATION.md`](../docs/LORA_VALIDATION.md) for the full
+See [`docs/LORA_VALIDATION.md`](LORA_VALIDATION.md) for the full
 procedure and reproduction steps.
 
 ## Known limitations (please read before deploying)

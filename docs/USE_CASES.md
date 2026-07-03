@@ -36,7 +36,7 @@ One host advertises the capability `llm:llama3.2:3b`; the other
 discovers it and sends prompts. Drop in more models, more hosts — the
 capability-based lookup (`agent.discover("llm:*")`) scales.
 
-Full script: [`examples/ollama_swarm.py`](../examples/ollama_swarm.py).
+Full script: [`examples/ollama_swarm.py`](https://github.com/WizTheAgent/IronMesh/blob/main/examples/ollama_swarm.py).
 
 ---
 
@@ -64,7 +64,7 @@ The coordinator broadcasts tasks, workers report results, and if a
 worker vanishes for a minute its partial state is preserved in the
 encrypted SQLite queue.
 
-Script: [`examples/multi_agent.py`](../examples/multi_agent.py).
+Script: [`examples/multi_agent.py`](https://github.com/WizTheAgent/IronMesh/blob/main/examples/multi_agent.py).
 
 ---
 

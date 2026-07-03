@@ -131,7 +131,7 @@ async def main():
 asyncio.run(main())
 ```
 
-On machine B, either run a mirror script or one of the [`examples/`](../examples/) scripts. The simplest is `basic_chat.py`.
+On machine B, either run a mirror script or one of the [`examples/`](https://github.com/WizTheAgent/IronMesh/tree/main/examples) scripts. The simplest is `basic_chat.py`.
 
 That's the SDK. Three calls — `Agent(...)`, `await me.send_to(name, payload)`, `@me.on_message` — cover the 80% case.
 
@@ -140,7 +140,7 @@ That's the SDK. Three calls — `Agent(...)`, `await me.send_to(name, payload)`,
 You now have a working LAN mesh and a Python SDK that sends + receives. The next steps depend on what you're building:
 
 - **Add a third + fourth machine.** Same recipe — `ironmesh setup`, `ironmesh run`. Discovery scales out via mDNS up to ~50 hosts on a flat LAN.
-- **Bridge to a local LLM.** Walk through [`examples/llm_bridge.py`](../examples/llm_bridge.py). One agent owns the LLM, the others ask it questions over the mesh.
+- **Bridge to a local LLM.** Walk through [`examples/llm_bridge.py`](https://github.com/WizTheAgent/IronMesh/blob/main/examples/llm_bridge.py). One agent owns the LLM, the others ask it questions over the mesh.
 - **Cross WAN with NAT relay.** When two daemons can't reach each other's ports directly, run the bundled relay on a public host: `python -m ironmesh.nat_relay`. Both daemons configure `--nat-relay wss://your.relay/`. See [NAT_TRAVERSAL.md](NAT_TRAVERSAL.md).
 - **Cross over LoRa.** Install `'ironmesh[rns]'` and start with [Reticulum guide](RETICULUM.md). Sub-second 64-byte probes at SF8/BW125 — measured, not estimated.
 - **Capability-based routing instead of hardcoding peer names.** Read [CAPABILITIES.md](CAPABILITIES.md) and `examples/capability_routing.py`. `Agent.send_to_capability("llm:*", payload)` discovers + dispatches without you knowing which peer is online.

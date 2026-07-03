@@ -37,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paths (`from ironmesh.bridge import ...`) keep working unchanged.
 - Supply-chain hardening: CI installs dependencies from a hash-pinned lockfile (`requirements.lock`), pip-audit now audits the lockfile pins, and the mypy step is blocking via an error-count baseline gate (`.mypy-baseline`).
 - CI now asserts its checks actually ran: pytest jobs enforce minimum-passed / maximum-skipped result floors (`CI_PYTEST_MIN_PASSED` / `CI_PYTEST_MAX_SKIPPED` in `scripts/ci-pytest.sh`), the integration job fails if an adapter framework fails to install or import instead of skipping silently, the packaging job verifies the conformance-vector suite wasn't empty, and `leak-scan.sh` errors out instead of reporting clean when its git file listing fails.
+- Docs: project-status language aligned with the Alpha classifier
+  ("production-grade" claim removed; crypto described as built on
+  audited libsodium primitives, distinct from the still-pending
+  external protocol audit) and a post-quantum migration plan
+  (hybrid X25519 + ML-KEM-768, pre-v1.0) added to `SECURITY.md`.
 
 ### Security
 
@@ -85,11 +90,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   buffering cap is per-link, not per-identity — an identity opening N
   links can buffer roughly N × 64 MB — with an aggregate per-identity
   bound noted as planned follow-up work.
-- Docs: project-status language aligned with the Alpha classifier
-  ("production-grade" claim removed; crypto described as built on
-  audited libsodium primitives, distinct from the still-pending
-  external protocol audit) and a post-quantum migration plan
-  (hybrid X25519 + ML-KEM-768, pre-v1.0) added to `SECURITY.md`.
+
+### Fixed
+- Docs-site links that pointed at repository files outside `docs/` now use absolute GitHub URLs, so `mkdocs build --strict` passes with zero broken-link warnings.
 
 ## [0.9.4.2] — 2026-05-23 — Operator-polish sweep
 
