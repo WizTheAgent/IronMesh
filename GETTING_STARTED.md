@@ -59,8 +59,8 @@ ironmesh keys generate --path ~/.ironmesh/keys.json
 > `IRONMESH_KEYS_PASSPHRASE` env var (`--keys-passphrase <pass>` also
 > works but is discouraged — argv is visible in the process list).
 > Alternatively, skip this step: the daemon auto-generates a keypair
-> on first run (stored unencrypted, with an `INSECURE` warning in the
-> log).
+> on first run, encrypted with the mesh passphrase (plaintext storage
+> requires the explicit `--plaintext-keys` opt-in).
 
 ## 3. Start the bridge
 

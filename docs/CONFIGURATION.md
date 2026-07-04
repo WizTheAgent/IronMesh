@@ -46,6 +46,7 @@ secrets like the passphrase in JSON config.
 | `--keys-path` | path | `~/.ironmesh/keys.json` | Encrypted identity keypair. |
 | `--keys-passphrase` | str | — | Passphrase to decrypt the key file. **Discouraged** — argv is visible in the process list; prefer `--keys-passphrase-file` or `IRONMESH_KEYS_PASSPHRASE`. Usually unnecessary: when the key file was created by `ironmesh setup`, the daemon decrypts it with the mesh passphrase automatically, and otherwise prompts on a terminal. |
 | `--keys-passphrase-file` | path | — | Read the key-file passphrase from a file (trailing newline stripped). `chmod 600`. Preferred headless source when the key passphrase differs from the mesh passphrase. |
+| `--plaintext-keys` | flag | off | **INSECURE.** Store an auto-generated identity key file unencrypted. Without it, auto-generated keys are encrypted with the mesh passphrase. |
 | `--db-path` | path | `~/.ironmesh/data.db` | Offline message queue. |
 | `--passphrase-file` | path | — | Highest-priority passphrase source. `chmod 600`. |
 | `--tls-cert` / `--tls-key` | path | — | Enable WSS on the mesh port. Otherwise plaintext WS. |

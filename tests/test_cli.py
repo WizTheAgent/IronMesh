@@ -403,12 +403,22 @@ class TestResolveKeysPassphrase:
             )
         assert "mesh passphrase was tried" in str(exc.value)
 
-    def test_plaintext_key_file_needs_no_passphrase(self, tmp_path):
+    def test_plaintext_key_file_no_prompt_but_migration_passphrase(
+            self, tmp_path, monkeypatch):
+        """A plaintext key file never prompts; the mesh passphrase is
+        handed back so the daemon can re-encrypt the file forward —
+        unless plaintext keys were explicitly opted into."""
         from ironmesh.keys import generate_keypair, save_keys
         path = tmp_path / "plain.json"
         save_keys(generate_keypair("p"), str(path), allow_plaintext=True)
-        assert cli._resolve_keys_passphrase(
-            str(path), mesh_passphrase=MESH_PASSPHRASE) is None
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        with patch.object(cli.getpass, "getpass") as gp:
+            assert cli._resolve_keys_passphrase(
+                str(path), mesh_passphrase=MESH_PASSPHRASE) == MESH_PASSPHRASE
+            assert cli._resolve_keys_passphrase(
+                str(path), mesh_passphrase=MESH_PASSPHRASE,
+                plaintext_opt_in=True) is None
+        gp.assert_not_called()
 
     def test_missing_key_file_resolves_without_prompt(self, tmp_path,
                                                       monkeypatch):
@@ -509,6 +519,58 @@ class TestGoldenPathRunWiring:
         out = capsys.readouterr().out
         assert "IRONMESH_KEYS_PASSPHRASE" in out
         assert "--keys-passphrase-file" in out
+
+
+class TestAutogenKeysEncryptedByDefault:
+    """Bare `ironmesh run --name X` (no setup, no key file yet) must not
+    silently write a plaintext keys.json: the mesh passphrase — always
+    present by the time keys are generated — encrypts the new key file.
+    Plaintext requires the explicit --plaintext-keys opt-in."""
+
+    def _invoke_run(self, tmp_path, extra=()):
+        captured = {}
+
+        class _StubDaemon:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def run(self):
+                pass
+
+        pass_file = tmp_path / "passphrase"
+        pass_file.write_text(MESH_PASSPHRASE, encoding="utf-8")
+        argv = [
+            "ironmesh", "run", "--name", "barenode", "--port", "18997",
+            "--passphrase-file", str(pass_file),
+            "--keys-path", str(tmp_path / "keys.json"),
+            *extra,
+        ]
+        with patch("ironmesh.bridge.BridgeDaemon", _StubDaemon):
+            with patch.object(sys, "argv", argv):
+                rc = cli.main()
+        return rc, captured
+
+    def test_bare_run_encrypts_autogen_keys_with_mesh_passphrase(self, tmp_path):
+        rc, captured = self._invoke_run(tmp_path)
+        assert rc == 0
+        assert captured["keys_passphrase"] == MESH_PASSPHRASE
+        assert captured["plaintext_keys"] is False
+
+    def test_plaintext_keys_flag_is_the_only_plaintext_path(self, tmp_path):
+        rc, captured = self._invoke_run(tmp_path, extra=("--plaintext-keys",))
+        assert rc == 0
+        assert captured["keys_passphrase"] is None
+        assert captured["plaintext_keys"] is True
+
+    def test_existing_plaintext_file_gets_mesh_passphrase_for_migration(
+            self, tmp_path):
+        from ironmesh.keys import generate_keypair, save_keys
+        save_keys(generate_keypair("plain"), str(tmp_path / "keys.json"),
+                  allow_plaintext=True)
+        rc, captured = self._invoke_run(tmp_path)
+        assert rc == 0
+        # The daemon re-encrypts the plaintext file forward with this.
+        assert captured["keys_passphrase"] == MESH_PASSPHRASE
 
 
 class TestEnsureAgentKeysMeshFallback:

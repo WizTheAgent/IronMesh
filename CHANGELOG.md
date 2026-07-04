@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Identity key files are now encrypted at rest by default, matching the documented claim.** A bare `ironmesh run --name X` previously auto-generated a PLAINTEXT `keys.json` with only a log warning; auto-generated (and `--rotate-keys`-rotated) key files are now encrypted with the mesh passphrase — always present by the time keys are generated — exactly as `ironmesh setup` produces, and a plaintext key file found on disk is re-encrypted forward on the next start. Writing an unencrypted key file now requires the explicit `--plaintext-keys` opt-in (`allow_plaintext=True` from the library); with no passphrase and no opt-in, key generation fails with an actionable error. README / GETTING_STARTED / QUICKSTART / CONFIGURATION updated so claim == behavior.
 - **RNS link binding + per-peer buffering cap on the Reticulum
   transport (protocol `ironmesh/0.9`).** On RNS Links, 0.9+ peers bind
   their HELLO to the id of the link it travels on (`rns_link_id`

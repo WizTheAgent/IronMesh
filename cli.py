@@ -94,6 +94,11 @@ def parse_args():
                            help="Read the identity key-file passphrase from a "
                                 "file (trailing newline stripped; chmod 600 "
                                 "recommended).")
+    run_parser.add_argument("--plaintext-keys", action="store_true",
+                           help="INSECURE: store an auto-generated identity "
+                                "key file UNENCRYPTED. Without this flag, "
+                                "auto-generated keys are encrypted with the "
+                                "mesh passphrase (matching `ironmesh setup`).")
     run_parser.add_argument("--db-path", default="~/.ironmesh/data.db",
                            help="SQLite store for messages, peers, audit metadata (default: ~/.ironmesh/data.db)")
     run_parser.add_argument("--tls-cert", default=None, help="TLS certificate file for WSS")
@@ -828,7 +833,8 @@ def _resolve_keys_passphrase(keys_path: str,
                              passphrase_file: Optional[str] = None,
                              mesh_passphrase: Optional[str] = None,
                              allow_prompt: bool = True,
-                             warn_on_explicit: bool = True) -> Optional[str]:
+                             warn_on_explicit: bool = True,
+                             plaintext_opt_in: bool = False) -> Optional[str]:
     """Resolve the passphrase for the identity key file.
 
     Precedence:
@@ -868,9 +874,14 @@ def _resolve_keys_passphrase(keys_path: str,
 
     state = _keys_file_state(keys_path)
     if state != "encrypted":
-        # Missing (not generated yet), plaintext, or unreadable — there
-        # is nothing to decrypt; the loader handles each case itself.
-        return None
+        if state == "unreadable":
+            # Not a key envelope — let the loader surface the real error.
+            return None
+        # Missing (generated at startup) or plaintext: keys are
+        # encrypted by default, so hand back the mesh passphrase for
+        # the generation / re-encryption path — unless the operator
+        # explicitly opted into plaintext keys (--plaintext-keys).
+        return None if plaintext_opt_in else mesh_passphrase
 
     resolved = os.path.expanduser(keys_path)
     mesh_tried = False
@@ -1043,6 +1054,7 @@ def cmd_run(args):
             explicit=getattr(args, "keys_passphrase", None),
             passphrase_file=getattr(args, "keys_passphrase_file", None),
             mesh_passphrase=passphrase,
+            plaintext_opt_in=getattr(args, "plaintext_keys", False),
         )
     except ValueError as e:
         print(f"ERROR: {e}")
@@ -1072,7 +1084,10 @@ def cmd_run(args):
         # Pass the resolved key-file passphrase so rotation never
         # silently downgrades an encrypted key file to plaintext
         # (previously the passphrase was dropped here entirely).
-        asyncio.run(rotate_keys(args.keys_path, keys_passphrase))
+        asyncio.run(rotate_keys(
+            args.keys_path, keys_passphrase,
+            allow_plaintext=getattr(args, "plaintext_keys", False),
+        ))
         log.info("Key rotation complete. Starting with new keys.")
 
     from ironmesh.bridge import BridgeDaemon
@@ -1105,6 +1120,13 @@ def cmd_run(args):
             "may fall back to plaintext ws:// instead of requiring wss://. "
             "This flag is for localhost testing only. Generate a TLS cert "
             "and pass --tls-cert/--tls-key in any real deployment."
+        )
+
+    if getattr(args, "plaintext_keys", False):
+        log.warning(
+            "INSECURE: --plaintext-keys is set. Auto-generated identity "
+            "keys will be stored UNENCRYPTED on disk. Remove the flag to "
+            "get keys encrypted with the mesh passphrase."
         )
 
     strict_tls = getattr(args, "strict_tls", False)
@@ -1145,6 +1167,7 @@ def cmd_run(args):
         keys_path=args.keys_path,
         db_path=getattr(args, "db_path", "~/.ironmesh/data.db"),
         keys_passphrase=keys_passphrase,
+        plaintext_keys=getattr(args, "plaintext_keys", False),
         tls_cert=getattr(args, "tls_cert", None),
         tls_key=getattr(args, "tls_key", None),
         bind_address=getattr(args, "bind", "0.0.0.0"),
