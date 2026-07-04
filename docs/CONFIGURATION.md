@@ -6,35 +6,34 @@ also appear here.
 
 ## Precedence
 
-When multiple sources set the same value, later wins:
+For `ironmesh run`, when multiple sources set the same value, later
+wins:
 
 1. Defaults compiled into the daemon
-2. JSON config file at `~/.ironmesh/config.json` (see [JSON config file](#json-config-file) below)
+2. Environment variable (`IRONMESH_*`)
 3. CLI flag (`--name`, `--port`, etc.)
-4. Environment variable (`IRONMESH_*`)
-5. The first-run wizard's generated config (effectively a stored CLI
-   command)
 
-The only exception is the **passphrase**, which has its own priority
-chain — see [Passphrase sources](#passphrase-sources) below.
+The first-run wizard does not write a config file — it prints the
+full `ironmesh run` command to reuse (effectively a stored CLI
+command). The JSON config file below is a library surface, not read
+by `ironmesh run`. The **passphrase** has its own priority chain —
+see [Passphrase sources](#passphrase-sources) below.
 
 ## JSON config file
 
-`~/.ironmesh/config.json` is loaded on daemon startup if present and
-its top-level fields are merged into the runtime config. The schema
-mirrors the `IronMeshConfig` dataclass in `ironmesh/config.py` —
-roughly the same field names as the CLI flags but with underscores
-instead of dashes (e.g. CLI `--db-path` → JSON `"db_path"`,
-`--rns-skip-handshake` → `"rns_skip_handshake"`). Unknown fields are
-ignored. Malformed JSON falls back to defaults with a warning rather
-than crashing the daemon.
+The `IronMeshConfig` dataclass in `ironmesh/config.py` can load
+`~/.ironmesh/config.json` (`IronMeshConfig.from_file()`), with field
+names matching the CLI flags but with underscores instead of dashes
+(e.g. CLI `--db-path` → JSON `"db_path"`). Unknown fields are ignored
+and malformed JSON falls back to defaults with a warning.
 
-CLI flags and environment variables override JSON config values per
-the precedence list above. The JSON file is the right place for
-settings you want to persist across `ironmesh run` invocations
-without re-typing on every launch (timeouts, paths, feature flags);
-for secrets like the passphrase, prefer the dedicated `--passphrase-file`
-or env var sources — never inline secrets in JSON config.
+**However, `ironmesh run` does not currently read this file** — the
+CLI builds the daemon configuration from flags and environment
+variables only. The JSON loader is a library-level surface for
+embedding IronMesh in your own Python process. To persist settings
+across `ironmesh run` invocations today, use a shell alias, a systemd
+unit, or the command that `ironmesh setup` prints. Never inline
+secrets like the passphrase in JSON config.
 
 ## CLI flags — `ironmesh run`
 
@@ -45,7 +44,7 @@ or env var sources — never inline secrets in JSON config.
 | `--bind` | str | `0.0.0.0` | Mesh WebSocket bind address. |
 | `--profile` | `secure\|dev\|offline` | none | Bundled flag preset. See [Profiles](#profiles). |
 | `--keys-path` | path | `~/.ironmesh/keys.json` | Encrypted identity keypair. |
-| `--keys-passphrase` | str | — | Passphrase to decrypt the key file. Prefer the env var. |
+| `--keys-passphrase` | str | — | Passphrase to decrypt the key file. Required when the key file is encrypted (e.g. created by `ironmesh setup` / `keys generate`) — the daemon does not reuse the mesh passphrase. Visible in the process list; prefer starting interactively where possible. |
 | `--db-path` | path | `~/.ironmesh/data.db` | Offline message queue. |
 | `--passphrase-file` | path | — | Highest-priority passphrase source. `chmod 600`. |
 | `--tls-cert` / `--tls-key` | path | — | Enable WSS on the mesh port. Otherwise plaintext WS. |
@@ -56,16 +55,43 @@ or env var sources — never inline secrets in JSON config.
 | `--gui` | flag | off | Enable the operator dashboard on `--port + 1`. |
 | `--gui-bind` | str | `127.0.0.1` | Dashboard bind address. **Anything other than loopback emits an `INSECURE BIND` warning.** See `docs/REVERSE_PROXY.md`. |
 | `--rotate-keys` | flag | off | Rotate identity keypair before starting (one-shot). |
-| `--reticulum` | flag | off | Enable RNS / LoRa transport (requires `pip install ironmesh[rns]`). |
-| `--mesh-routing` | `relay\|none` | `relay` | Multi-hop routing strategy. |
+| `--strict-tls` | flag | off | Require CA-validated certs on outbound WSS (hostname check + `CERT_REQUIRED`). |
+| `--pinned-ca` | path | — | Private CA bundle used as the trust anchor for `--strict-tls`. |
+| `--max-msgs-per-sec` | float | off | Global daemon-wide cap on inbound message rate (defense-in-depth on top of per-peer caps). |
+| `--min-protocol-version` | str | `ironmesh/0.3` | Reject peers below this protocol version. Set `ironmesh/0.9` to refuse legacy HELLO signatures. |
+| `--mesh-routing` | `off\|passive\|relay` | `relay` | Multi-hop routing mode: `off` = none, `passive` = learn but don't relay, `relay` = full participation. |
 | `--max-hops` | int | `5` | Max routing hops. |
 | `--route-announce-interval` | float | `30.0` | Seconds between route announcements. |
 | `--route-ttl` | float | `90.0` | Route lifetime before timeout. |
 | `--routes-path` | path | `~/.ironmesh/routes.json` | Persisted routing table. |
 | `--capability` | str (repeatable) | — | Advertise a capability (e.g. `--capability llm:llama3.2`). |
+| `--capabilities-path` | path | `~/.ironmesh/capabilities.json` | Persisted capability registry. |
+| `--capability-announce-interval` | float | `60.0` | Seconds between capability announcements. |
+| `--pending-trust-queue-cap` | int | `100` | Per-peer cap on gated (pending-trust) messages. |
+| `--trust-path` | path | `~/.ironmesh/known_peers.json` | Trust-store file override. |
+| `--rekey-interval` | float | `1800.0` | Session key rotation interval in seconds (`0` disables). |
+| `--metrics-format` | `prometheus\|json` | `prometheus` | Metrics exposition format. |
 | `--log-level` | enum | `INFO` | `DEBUG\|INFO\|WARNING\|ERROR`. |
 | `--log-file` | path | — | Redirect logs to a file. |
 | `--log-format` | `text\|json` | `text` | Structured JSON logs are aggregator-friendly. |
+
+### Reticulum / LoRa flags (`ironmesh run`, requires `ironmesh[rns]`)
+
+| Flag | Type | Default | Notes |
+|---|---|---|---|
+| `--reticulum` | flag | off | Enable the RNS / LoRa transport. |
+| `--rns-configdir` | path | `~/.reticulum` | Reticulum config directory. |
+| `--rns-announce-interval` | float | `300.0` | Seconds between RNS announces. |
+| `--rns-connect` | csv | — | Destination hashes to connect on startup (optional — auto-discovery via announces). |
+| `--rns-no-ratchets` | flag | off | Disable per-packet ratchets (only for interop with very old RNS peers). |
+| `--rns-ratchet-interval` | float | `1800.0` | Ratchet key rotation interval. |
+| `--rns-retained-ratchets` | int | `8` | Past ratchet keys retained for late packets. |
+| `--rns-admin-identities` | csv | — | Allow-list of RNS Identity hashes for admin RPC (empty = admin RPC disabled). |
+| `--rns-skip-handshake` | flag | off | Skip the stage-1 passphrase handshake on identified RNS Links (both peers must advertise `hskip`; requires the verified `ironmesh/0.9` link binding). |
+| `--rns-require-link-binding` | flag | off | Reject RNS peers whose HELLO carries no `ironmesh/0.9` link binding (refuses pre-0.9 RNS peers). |
+| `--rns-group-broadcast` | flag | off | Join the shared-secret mesh-wide broadcast group (`group` feature). |
+| `--lora-max-payload` | int | `128` | Max payload bytes for the RNS/LoRa transport (`0` disables the cap). |
+| `--lxmf`, `--lxmf-*` | — | off | LXMF listener family (storage, display name, default peer, propagation node, telemetry) — see [RETICULUM.md](RETICULUM.md) and `ironmesh run --help`. |
 
 ## CLI subcommands
 
@@ -75,14 +101,14 @@ or env var sources — never inline secrets in JSON config.
 | `ironmesh setup` | Interactive first-run wizard. Writes passphrase + keypair. |
 | `ironmesh demo` | Spawn two local agents, exchange a ping, print RTT. |
 | `ironmesh upgrade` | Check PyPI for a newer release. |
-| `ironmesh trust list \| revoke \| set-state \| list-revoked` | Trust-store management. |
-| `ironmesh keys generate \| info` | Generate / inspect the identity keypair. |
+| `ironmesh trust list \| revoke \| set-state \| list-revoked \| verify \| pin \| export \| migrate` | Trust-store management. Capability-binding subcommands (`cap-*`) are listed under the Capability-set binding section below. |
+| `ironmesh keys generate \| info \| fingerprint \| migrate` | Generate / inspect / fingerprint / migrate the identity keypair. |
 | `ironmesh keys keychain-store \| keychain-clear \| keychain-check` | OS keychain passphrase management (requires `pip install ironmesh[keychain]`). |
 | `ironmesh backup --out <file>` | Encrypted backup of node state. |
 | `ironmesh restore --in <file>` | Restore from a backup. |
-| `ironmesh audit verify \| export \| verify-export` | Audit-log integrity tools. |
+| `ironmesh audit verify \| export \| verify-export \| tail \| stats` | Audit-log integrity + triage tools. |
 | `ironmesh session rotate` | Force session-key rotation with a peer. |
-| `ironmesh doctor` | One-shot diagnostic — keys, trust store, schema, ports, audit chain. |
+| `ironmesh doctor [--peer HOST:PORT]` | One-shot diagnostic — keys, trust store, schema, ports, audit chain; `--peer` adds a dry-run reachability check. |
 
 Run any subcommand with `--help` for the full list of options.
 
@@ -106,32 +132,32 @@ a clear error.
 
 ### Other env vars
 
+These are read by the CLI / daemon / gateways:
+
 | Variable | Effect |
 |---|---|
-| `IRONMESH_NAME` | Default `--name`. |
-| `IRONMESH_PORT` | Default `--port`. |
-| `IRONMESH_KEYS_PATH` | Default `--keys-path`. |
-| `IRONMESH_DB_PATH` | Default `--db-path`. |
-| `IRONMESH_LOG_LEVEL` | Default `--log-level` (`DEBUG`/`INFO`/`WARNING`/`ERROR`). |
-| `IRONMESH_LOG_FILE` | Default `--log-file`. Redirect logs to a file path instead of stderr. |
-| `IRONMESH_TLS_CERT` | Default `--tls-cert`. Path to TLS certificate for WSS. |
-| `IRONMESH_TLS_KEY` | Default `--tls-key`. Path to TLS private key for WSS. |
 | `IRONMESH_REQUIRE_MSG_PROMOTION` | `1\|true\|yes` enables the pending-trust gate (same as `--require-message-promotion`). |
 | `IRONMESH_PENDING_QUEUE_CAP` | Override the per-peer pending-trust queue cap (default `100`). |
 | `IRONMESH_TRUST_PATH` | Override `~/.ironmesh/known_peers.json`. |
 | `IRONMESH_ROTATE_KEYS=1` | Rotate keys before start (same as `--rotate-keys`). |
 | `IRONMESH_PASSPHRASE_NEW` | Used by `ironmesh keys keychain-store --passphrase-from-env` to read the new passphrase non-interactively. |
 | `IRONMESH_SETUP_PASSPHRASE` | Used by `ironmesh setup --non-interactive --passphrase-from-env`. |
-| `IRONMESH_RNS_ENABLED` | `1\|true\|yes` enables Reticulum transport (same as `--reticulum`). |
-| `IRONMESH_RNS_CONFIGDIR` | Override the RNS config directory (same as `--rns-configdir`). |
-| `IRONMESH_RNS_RATCHETS` | `0\|false\|no` disables RNS per-packet ratchets. |
-| `IRONMESH_RNS_RATCHET_INTERVAL` | Seconds between ratchet rotations (default `1800`). |
-| `IRONMESH_RNS_RETAINED_RATCHETS` | Past ratchets retained for late packets (default `8`). |
 | `IRONMESH_RNS_ADMIN_IDENTITIES` | Comma-separated allow-list of RNS Identity hashes for admin RPC paths. |
 | `IRONMESH_SEED_RNS_CONFIG` | `1` enables the per-daemon RNS config seeder (multi-daemon-per-host without rnsd). Off by default. |
-| `IRONMESH_PASSPHRASE_KEYCHAIN` | OS-keychain passphrase backend. |
+| `IRONMESH_PASSPHRASE_KEYCHAIN` | OS-keychain passphrase backend (see [Passphrase sources](#passphrase-sources)). |
 | `IRONMESH_A2A_TOKEN` | Bearer token enforced by the `ironmesh-a2a` HTTP gateway. |
 | `IRONMESH_ACP_TIMEOUT` | Per-call timeout (seconds) for the `ironmesh-acp` server. |
+
+A second family (`IRONMESH_NAME`, `IRONMESH_PORT`, `IRONMESH_KEYS_PATH`,
+`IRONMESH_DB_PATH`, `IRONMESH_LOG_LEVEL`, `IRONMESH_LOG_FILE`,
+`IRONMESH_TLS_CERT`, `IRONMESH_TLS_KEY`, `IRONMESH_RNS_ENABLED`,
+`IRONMESH_RNS_CONFIGDIR`, `IRONMESH_RNS_RATCHETS`,
+`IRONMESH_RNS_RATCHET_INTERVAL`, `IRONMESH_RNS_RETAINED_RATCHETS`) is
+mapped by the library-level `IronMeshConfig.from_env()` for programs
+that embed IronMesh, but **is not read by `ironmesh run`** — pass the
+corresponding CLI flags instead. In particular, `ironmesh run` always
+requires `--name` on the command line; setting `IRONMESH_NAME` alone
+is not enough.
 
 ## Files written / read
 

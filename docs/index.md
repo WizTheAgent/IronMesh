@@ -6,8 +6,8 @@ LoRa transport. No central server. No telemetry. No accounts.
 
 ```bash
 pip install ironmesh
-ironmesh setup
-ironmesh run
+ironmesh setup      # first-run wizard — prints the exact run command
+ironmesh run --name <your-node>
 ```
 
 ## What it is
@@ -35,8 +35,8 @@ the same for capability-based routing.
   walkthrough.
 * **[Reticulum guide](RETICULUM.md)** — every knob for the LoRa /
   RNS transport.
-* **[NAT traversal](NAT_TRAVERSAL.md)** — WAN deployment recipes,
-  including the bundled NAT relay shipped in v0.9.2.
+* **[NAT traversal](NAT_TRAVERSAL.md)** — WAN deployment recipes
+  (overlay networks, port-forwarding, and the bundled relay server).
 * **[Protocol spec](PROTOCOL_SPEC.md)** — wire-level details for
   third-party implementers.
 * **[Threat model](THREAT_MODEL.md)** — what IronMesh defends

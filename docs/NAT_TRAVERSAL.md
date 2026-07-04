@@ -15,12 +15,15 @@ ICE infrastructure, no public ports to expose.
 This doc walks through the three overlay options that work well
 with IronMesh today.
 
-> **v0.9.2 ships the relay half of the hybrid design.** An operator-run
-> rendezvous server (`python -m ironmesh.nat_relay`) forwards sealed
-> envelopes between NATted peers. The relay never sees plaintext — it
-> reads only the outermost `{type, to}` envelope. See §4 below.
-> Hole-punching on top of the relay fallback is still on the roadmap
-> for a later release. The full design doc lives at
+> **v0.9.2 ships the relay-server half of the hybrid design.** An
+> operator-run rendezvous server (`python -m ironmesh.nat_relay`)
+> forwards sealed envelopes between registered peers. The relay never
+> sees plaintext — it reads only the outermost `{type, to}` envelope.
+> See Option 4 below. **The daemon-side attach flag (`--nat-relay`)
+> is not implemented yet**, so the relay is not an end-to-end recipe
+> for `ironmesh run` deployments today — use an overlay network
+> (Options 1–3) for those. Hole-punching on top of the relay fallback
+> is also still on the roadmap. The full design doc lives at
 > [`NAT_TRAVERSAL_DESIGN.md`](NAT_TRAVERSAL_DESIGN.md).
 >
 > For the fastest WAN deployment today, Tailscale + IronMesh (§2) is
@@ -251,10 +254,15 @@ registered peers by ``node_id``. Plaintext never touches the relay.
 
 ### Attach peers to it
 
-Every IronMesh node opts in with ``--nat-relay wss://relay.host:18787``.
-The first outbound WebSocket registers the local node_id; subsequent
+**Not yet wired into the daemon.** The planned operator surface is a
+``--nat-relay wss://relay.host:18787`` flag on ``ironmesh run`` (the
+first outbound WebSocket registers the local node_id; subsequent
 ``send_to`` calls that can't find a direct or mesh route fall back
-through the relay.
+through the relay), but that client-side flag is **not implemented in
+the current release** — today the relay's ``REGISTER`` / ``FORWARD``
+protocol is exercised by the test harness and available to custom
+clients. Until the daemon-side attach lands, use an overlay network
+(Options 1–3) for daemon-to-daemon WAN deployments.
 
 ### Threat model
 

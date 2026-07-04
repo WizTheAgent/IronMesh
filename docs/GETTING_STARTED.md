@@ -9,7 +9,7 @@ pip install ironmesh
 ironmesh demo
 ```
 
-When that prints `PASS`, your install works. The demo spawned two daemons in subprocesses on localhost, ran the handshake, exchanged a hello, and tore them down. No config files, no two machines, no credentials. Now we go further.
+When it prints the `[ok] handshake complete` and `[ok] ... received b'ping'` lines, your install works. The demo spawned two daemons in subprocesses on localhost, ran the handshake, exchanged a hello, and tore them down. No config files, no two machines, no credentials. Now we go further.
 
 ## What you'll have at the end
 
@@ -49,28 +49,39 @@ This is the first-run wizard. It asks four questions:
    - A file at `~/.ironmesh/passphrase` (chmod 600). The wizard creates it.
    - The `IRONMESH_PASSPHRASE` env var (only set in your shell rc, not in `ps`-visible scripts).
    - Your OS keychain (requires `[keychain]` extra).
-4. **Trust gate** — should incoming peers default to `pending` and require an explicit `ironmesh trust set-state ALLOWED`? Recommended. Off by default for first-run-friendliness; you can flip it later.
+4. **Trust gate** — should messages from newly-pinned peers queue until you promote the peer with `ironmesh trust set-state <node_id> trusted`? The wizard recommends and defaults to **yes**; answer no to keep the legacy trust-on-first-message behavior, and you can flip it later.
 
 The passphrase MUST be identical on every machine in the mesh. It's the shared secret behind the handshake. 12+ characters; longer is better. Don't reuse a password you use anywhere else.
 
 ## 3. Start the daemon on each machine
 
-On machine A:
+At the end of the wizard, `ironmesh setup` prints the exact
+`ironmesh run` command for that machine — copy-paste it. It looks
+like:
 
 ```bash
-ironmesh run
+ironmesh run \
+    --name alice \
+    --port 8765 \
+    --passphrase-file ~/.ironmesh/passphrase \
+    --keys-path ~/.ironmesh/keys.json \
+    --require-message-promotion
 ```
 
-On machine B:
-
-```bash
-ironmesh run
-```
+> **Note — encrypted key file.** The wizard encrypts `keys.json` with
+> the mesh passphrase, but `ironmesh run` does not automatically reuse
+> the mesh passphrase to decrypt it: without `--keys-passphrase` the
+> daemon exits with `Key file is encrypted but no passphrase
+> provided`. Until the daemon learns to fall back to the mesh
+> passphrase, pass `--keys-passphrase <your mesh passphrase>` on the
+> run command (be aware this is visible in the process list) or start
+> the daemon interactively. `--name` is always required — a bare
+> `ironmesh run` exits with an argument error.
 
 Within 5–10 seconds the two should find each other via mDNS and complete the handshake. Each side prints something like:
 
 ```
-[INFO] Peer 'alice' connected: <node_id_short> via websocket
+[INFO] Peer alice (<node_id>) online via websocket — ephemeral ECDH complete
 ```
 
 If they don't find each other within ~30 seconds, run the diagnostic:
@@ -79,11 +90,15 @@ If they don't find each other within ~30 seconds, run the diagnostic:
 ironmesh doctor
 ```
 
-It reports passphrase configured? port reachable? mDNS up? RNS configdir healthy? trust file readable? Each check has a remediation hint.
+It walks eight checks — identity key file, trust store, message
+store, pending-trust queue, gate environment variables, port
+conflicts, audit-chain integrity, and on-disk feature state — each
+with a remediation hint. `ironmesh doctor --peer HOST:PORT` adds a
+dry-run reachability check against the other machine.
 
 ## 4. Pin the trust
 
-After the first handshake, each side has the other in `pending` (or `ALLOWED` if you turned the trust gate off in setup). List them:
+After the first handshake, each side has the other in `pending` (or `trusted` if you turned the trust gate off in setup). List them:
 
 ```bash
 ironmesh trust list
@@ -92,48 +107,43 @@ ironmesh trust list
 If the trust gate is on, promote the peer:
 
 ```bash
-ironmesh trust set-state <node_id_short> ALLOWED
+ironmesh trust set-state <node_id> trusted
 ```
 
 The trust file is `~/.ironmesh/known_peers.json`. Pinning is **TOFU** (trust on first use): the first time you see a peer, you accept its public key. Future reconnects must use the same key or the peer is rejected. Capability changes are also tracked — a peer that suddenly advertises new capabilities goes to `pending-cap-change` for review (`ironmesh trust cap-diff <node_id>`).
 
 ## 5. Send a message from Python
 
-Both machines now have a daemon running. Open a Python REPL on machine A:
+The `Agent` SDK runs its own daemon in-process (it does not attach to
+an `ironmesh run` daemon), so give it its own port and stop the
+machine's daemon first — or just use two fresh terminals. On machine
+A:
 
 ```python
-import asyncio
 from ironmesh import Agent
 
-async def main():
-    me = Agent(
-        name="alice",
-        port=8765,                          # daemon's port
-        # passphrase taken from IRONMESH_PASSPHRASE or ~/.ironmesh/passphrase
-    )
-    await me.start()
+# Passphrase comes from the argument or the IRONMESH_PASSPHRASE env
+# var — the SDK does not read ~/.ironmesh/passphrase on its own.
+me = Agent("alice", port=8765, passphrase="your-mesh-passphrase")
 
-    # Wait for the resolver to see "bob" via mDNS
-    await me.wait_for_peer("bob", timeout=10)
+# Receive — register a handler before starting.
+@me.on_message()
+def handler(peer_id, payload):
+    print(f"got: {payload!r} from {peer_id[:12]}")
 
-    # Send. The transport layer picks WebSocket / RNS / LXMF
-    # automatically; you don't care which one was used.
-    await me.send_to("bob", b"hello from alice")
+me.run(foreground=False)          # returns the event loop, runs in background
 
-    # Receive — register a handler before the message arrives.
-    @me.on_message
-    async def handler(msg):
-        print(f"got: {msg.payload!r} from {msg.source}")
+# Send from any thread once running. The transport layer picks
+# WebSocket / RNS / LXMF automatically.
+me.send_sync("bob", b"hello from alice")
 
-    await asyncio.sleep(5)        # let the reply land
-    await me.stop()
-
-asyncio.run(main())
+# ... when done:
+me.stop()
 ```
 
 On machine B, either run a mirror script or one of the [`examples/`](https://github.com/WizTheAgent/IronMesh/tree/main/examples) scripts. The simplest is `basic_chat.py`.
 
-That's the SDK. Three calls — `Agent(...)`, `await me.send_to(name, payload)`, `@me.on_message` — cover the 80% case.
+That's the SDK. Three calls — `Agent(...)`, `me.send_sync(name, payload)` (or `await me.send_to(...)` in async code), `@me.on_message()` — cover the 80% case.
 
 ## 6. Where to go next
 
@@ -141,10 +151,10 @@ You now have a working LAN mesh and a Python SDK that sends + receives. The next
 
 - **Add a third + fourth machine.** Same recipe — `ironmesh setup`, `ironmesh run`. Discovery scales out via mDNS up to ~50 hosts on a flat LAN.
 - **Bridge to a local LLM.** Walk through [`examples/llm_bridge.py`](https://github.com/WizTheAgent/IronMesh/blob/main/examples/llm_bridge.py). One agent owns the LLM, the others ask it questions over the mesh.
-- **Cross WAN with NAT relay.** When two daemons can't reach each other's ports directly, run the bundled relay on a public host: `python -m ironmesh.nat_relay`. Both daemons configure `--nat-relay wss://your.relay/`. See [NAT_TRAVERSAL.md](NAT_TRAVERSAL.md).
+- **Cross WAN.** When two daemons can't reach each other's ports directly, the proven recipes are an overlay network (Tailscale / Nebula) or a port-forward — see [NAT_TRAVERSAL.md](NAT_TRAVERSAL.md). A bundled relay server (`python -m ironmesh.nat_relay`) also ships, but the daemon-side attach flag is not wired up yet, so it is not an end-to-end recipe today.
 - **Cross over LoRa.** Install `'ironmesh[rns]'` and start with [Reticulum guide](RETICULUM.md). Sub-second 64-byte probes at SF8/BW125 — measured, not estimated.
 - **Capability-based routing instead of hardcoding peer names.** Read [CAPABILITIES.md](CAPABILITIES.md) and `examples/capability_routing.py`. `Agent.send_to_capability("llm:*", payload)` discovers + dispatches without you knowing which peer is online.
-- **Group broadcast.** When you want every peer in the mesh to hear the same message: `me.broadcast_via_rns_group(payload)`. Two-phase delivery handles same-segment + cross-host. See `examples/group_broadcast.py`.
+- **Group broadcast.** When you want every peer in the mesh to hear the same message: `me.daemon.broadcast_via_rns_group(payload)` (RNS transport with `--rns-group-broadcast` on every peer). Two-phase delivery handles same-segment + cross-host. See `examples/group_broadcast.py`.
 - **Production deploy.** Read [OPERATOR_RUNBOOK.md](OPERATOR_RUNBOOK.md). It covers systemd unit files, the audit-log retention story, what `ironmesh doctor` won't catch, and the locked surfaces in [STABILITY_PROMISE.md](STABILITY_PROMISE.md).
 - **Integrate with MCP / OpenClaw / A2A / ACP.** Three separate guides — [OPENCLAW_MCP_SETUP.md](OPENCLAW_MCP_SETUP.md), [OPENCLAW_CHANNEL_SETUP.md](OPENCLAW_CHANNEL_SETUP.md), [A2A_INTEGRATION.md](A2A_INTEGRATION.md), [ACP_INTEGRATION.md](ACP_INTEGRATION.md). Pick the one matching your agent stack.
 
@@ -154,7 +164,7 @@ Three things to try, in order:
 
 1. `ironmesh doctor` — fastest signal on configuration / network / RNS health.
 2. `ironmesh trust list` — confirm both sides see each other and the state is what you expect.
-3. `ironmesh run --debug` — verbose logs. The relevant lines start with `[bridge]`, `[handshake]`, or `[transport]`.
+3. `ironmesh run --log-level DEBUG` — verbose logs. The relevant lines are tagged `[ironmesh.bridge]`, `[ironmesh.protocol]`, or `[ironmesh.discovery]`.
 
 If the daemon won't start, the most common cause is a stale passphrase mismatch between the two machines. Re-run `ironmesh setup --force` on the offending side; it rewrites the passphrase file.
 

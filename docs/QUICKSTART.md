@@ -73,13 +73,19 @@ That's it. Both agents are now communicating over an encrypted channel. No inter
 
 ## 5. Generate keys (optional)
 
-Keys are auto-generated on first run and encrypted with your passphrase by default. If you want to generate them manually:
+Keys are auto-generated on first run. **Auto-generated keys are stored
+unencrypted** (the daemon logs an `INSECURE` warning) unless you pass
+`--keys-passphrase` to `ironmesh run`. To generate an encrypted key
+file up front:
 
 ```bash
 ironmesh keys generate --path ~/.ironmesh/keys.json --passphrase mykeyspassword
 ```
 
-> **Note:** Key files are now encrypted by default. If you have legacy plaintext key files, they auto-migrate to encrypted format on next startup.
+> **Note:** A daemon started with `--keys-passphrase` re-encrypts a
+> legacy plaintext key file automatically on startup. If the key file
+> is encrypted, `ironmesh run` needs the same `--keys-passphrase` to
+> open it — it does not reuse the mesh passphrase.
 
 ## 6. Send messages programmatically
 
@@ -149,8 +155,9 @@ new peer.
 ironmesh trust list
 
 # Compare the fingerprint shown on this side against what the peer
-# sees on theirs (run `ironmesh status` or `trust list` on their end).
-# If they match, you've confirmed the pin was not MITM'd.
+# sees on theirs (run `ironmesh keys fingerprint` or `ironmesh trust
+# list` on their end). If they match, you've confirmed the pin was
+# not MITM'd.
 
 # If a peer's identity key changes unexpectedly, revoke and re-verify
 ironmesh trust revoke <node_id>
@@ -182,8 +189,8 @@ Type messages and see them appear encrypted on the other side.
 Before debugging deeper, run `ironmesh doctor`. It's a one-shot
 diagnostic that walks through the eight things that go wrong on a
 fresh install (identity key file, trust store, message store,
-pending-trust queue, audit chain, hooks, port binding, on-disk
-feature state) and prints a checklist.
+pending-trust queue, gate environment variables, port binding,
+audit chain, on-disk feature state) and prints a checklist.
 
 ```bash
 ironmesh doctor
@@ -216,7 +223,7 @@ The output disambiguates the common failure modes cleanly:
   - Make sure both machines are on the same LAN/subnet
   - Check firewall rules: mDNS needs UDP port 5353, WebSocket needs TCP port 8765
   - On Linux: `sudo ufw allow 5353/udp && sudo ufw allow 8765/tcp`
-  - Multi-homed hosts (LAN + VPN): v0.9.4.2 auto-prefers the same-subnet address; on older versions confirm the announced address with `ironmesh peers`.
+  - Multi-homed hosts (LAN + VPN): v0.9.4.2 auto-prefers the same-subnet address; on older versions confirm the announced address in the daemon's `Discovered agent: <name> @ <addr>` log line.
 
 - **Auth fails ("wrong passphrase"):**
   - The passphrase must be identical on both agents. Verify the file contents match on both machines.

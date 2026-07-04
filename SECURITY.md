@@ -188,8 +188,10 @@ adversarial peer pressure (e.g. an actively-malicious pinned peer
 flooding the queue with maximum-size messages within their per-peer
 cap). If your deployment exposes the mesh to potentially-hostile peers,
 add an external rate limiter / WAF and treat the application-layer
-caps as defense-in-depth, not the primary control. A future
-release may add a global daemon-wide bandwidth cap as belt-and-suspenders.
+caps as defense-in-depth, not the primary control. Since v0.9.4 the
+optional `--max-msgs-per-sec` flag adds a global daemon-wide cap on
+inbound message rate as belt-and-suspenders (off by default); a
+byte-level bandwidth cap remains external-tooling territory.
 
 ### Storage-at-rest properties (v0.8.5+)
 
