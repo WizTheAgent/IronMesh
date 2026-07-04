@@ -1024,7 +1024,7 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
                 self._reticulum = None
         elif self._rns_enabled and not _HAS_RNS:
             logger.warning("--reticulum flag set but rns package not installed. "
-                           "Install with: pip install rns")
+                           "Install with: pip install ironmesh[rns]")
 
         # v0.9.1: optional LXMF listener for Sideband / Nomadnet interop.
         # Requires the `lxmf` extra. Reuses the Reticulum singleton the

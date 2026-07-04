@@ -954,7 +954,7 @@ class ReticulumTransport:
                  group_broadcast: bool = False,
                  group_secret: Optional[bytes] = None):
         if not _HAS_RNS:
-            raise RuntimeError("rns package is not installed — install with: pip install rns")
+            raise RuntimeError("rns package is not installed — install with: pip install ironmesh[rns]")
         self._daemon = daemon
         self._announce_interval = announce_interval
         self._configdir = configdir
