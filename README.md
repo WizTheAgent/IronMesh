@@ -23,7 +23,7 @@ ironmesh demo          # spawn two local agents, exchange an encrypted ping
 ironmesh setup         # interactive first-run wizard
 ```
 
-That's the 60-second path: zero config files, no two machines required. The demo spawns two daemons in subprocesses, runs the handshake, exchanges a hello, and tears down. When it prints the `[ok] handshake complete` and `[ok] ... received b'ping'` lines, your install is good.
+That's the 60-second path: zero config files, no two machines required. The demo spawns two daemons in one process, runs the handshake, exchanges a hello, and tears down. When it prints its final line — `[ok]   Demo complete -- mesh handshake + encrypted ping verified.` — your install is good.
 
 ## Why IronMesh
 

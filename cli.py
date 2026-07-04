@@ -2496,6 +2496,9 @@ def cmd_demo(args):
             print(flush=True)
 
             if args.gui:
+                print("[ok]   Demo complete -- mesh handshake + encrypted "
+                      "ping verified.", flush=True)
+                print(flush=True)
                 gui_port = port_a + 1
                 token = alice.daemon._gui_token
                 print("Dashboard URL (token on its own line so terminals can't crop it):",
@@ -2521,6 +2524,9 @@ def cmd_demo(args):
                   flush=True)
             print("agents. Next: examples/ollama_swarm.py for a real demo.",
                   flush=True)
+            print(flush=True)
+            print("[ok]   Demo complete -- mesh handshake + encrypted "
+                  "ping verified.", flush=True)
             return 0
         finally:
             # KeyboardInterrupt during the 5s stop-timeout is fine to

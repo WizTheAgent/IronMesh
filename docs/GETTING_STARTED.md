@@ -9,7 +9,7 @@ pip install ironmesh
 ironmesh demo
 ```
 
-When it prints the `[ok] handshake complete` and `[ok] ... received b'ping'` lines, your install works. The demo spawned two daemons in subprocesses on localhost, ran the handshake, exchanged a hello, and tore them down. No config files, no two machines, no credentials. Now we go further.
+When it prints its final line — `[ok]   Demo complete -- mesh handshake + encrypted ping verified.` — your install works. The demo spawned two daemons in one process on localhost, ran the handshake, exchanged a hello, and tore them down. No config files, no two machines, no credentials. Now we go further.
 
 ## What you'll have at the end
 
