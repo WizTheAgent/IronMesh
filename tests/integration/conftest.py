@@ -9,7 +9,8 @@ Run explicitly with:
     pytest tests/integration -q
 
 CI has a dedicated job that installs the real framework dependencies
-(langchain-core, crewai, pyautogen) before invoking this directory.
+(langchain-core, crewai, autogen-agentchat) before invoking this
+directory.
 """
 from __future__ import annotations
 

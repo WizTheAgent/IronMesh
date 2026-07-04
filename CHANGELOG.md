@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- AutoGen adapter: new `create_mesh_tools()` returns the mesh functions as construction-time tools for the modern `autogen-agentchat` API (legacy `register_ironmesh()` unchanged); the adapter integration test now drives a real `AssistantAgent` end-to-end instead of skipping, and CI installs `autogen-agentchat` in place of the discontinued legacy `pyautogen` module.
+
 - **`bridge.py` decomposed into focused modules — no behavior change.**
   The daemon module previously carried ~7,850 lines, including the
   embedded dashboard page. Pure code movement, verified against the

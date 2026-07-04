@@ -290,7 +290,12 @@ from ironmesh.adapters.crewai_adapter import create_mesh_crew_agent
 agent = create_mesh_crew_agent(role="Coordinator", goal="...", llm=my_llm,
                                 mesh_passphrase="secret")
 
-# AutoGen — register mesh functions on an assistant
+# AutoGen (autogen-agentchat) — mesh functions as assistant tools
+from ironmesh.adapters.autogen_adapter import create_mesh_tools
+tools, inbox = create_mesh_tools(my_agent)
+assistant = AssistantAgent("assistant", model_client=my_client, tools=tools)
+
+# Legacy AutoGen (pyautogen < 0.10) — post-construction registration
 from ironmesh.adapters.autogen_adapter import register_ironmesh
 register_ironmesh(my_agent, my_autogen_assistant)
 

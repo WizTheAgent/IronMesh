@@ -91,7 +91,7 @@ save.
 ## Layer 4 — integration tests (`tests/integration/`)
 
 Stand up real third-party packages (`langchain-core`, `crewai`,
-`pyautogen`) and live two-node IronMesh meshes in-process. Verify
+`autogen-agentchat`) and live two-node IronMesh meshes in-process. Verify
 that the framework adapters under `adapters/` actually carry messages
 end-to-end.
 
