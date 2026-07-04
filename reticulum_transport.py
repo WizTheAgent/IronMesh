@@ -82,6 +82,47 @@ MAX_RESOURCE_BYTES = 64 * 1024 * 1024  # 64 MB
 # and reconnecting is cheaper than unbounded growth either way.
 MAX_PEER_BUFFERED_BYTES = 64 * 1024 * 1024  # 64 MB
 
+# Aggregate buffering cap across ALL live links that belong to the same
+# remote RNS identity. MAX_PEER_BUFFERED_BYTES alone bounds each link
+# independently, so one identity opening N links could hold roughly
+# N x 64 MB; this cap closes that bypass. Sized at 2x the per-link cap
+# so legitimate multi-link use (e.g. a reconnect racing an old link's
+# teardown, or two concurrent transfers) still fits, while a fan-out
+# attack cannot scale memory linearly with link count. Links are keyed
+# by the remote's RNS identity hash when it is known; links whose
+# remote has not identified are grouped per destination-hash string —
+# for inbound links that is a single shared bucket for all
+# unidentified peers, which is deliberately conservative (a peer that
+# refuses to identify shares the anonymous budget rather than getting
+# its own). Tripping the cap closes only the link whose growth crossed
+# the line (other links of the identity keep their already-buffered
+# data), frees that link's buffered bytes back to the budget, logs a
+# warning, and increments the adapter's identity_cap_trips counter.
+MAX_IDENTITY_BUFFERED_BYTES = 128 * 1024 * 1024  # 128 MB
+
+# Registry of currently-buffered byte totals per aggregate key.
+# Guarded by _identity_buffered_lock, which is always the INNERMOST
+# lock: it is only ever taken either with no per-link _buf_lock held,
+# or inside a single link's _buf_lock section — and no _buf_lock is
+# ever acquired while holding it. Two links' _buf_locks are never held
+# at once. That ordering makes the accounting deadlock-free.
+_identity_buffered_lock = threading.Lock()
+_identity_buffered: Dict[Tuple[str, str], int] = {}
+
+
+def _bucket_adjust(key: Tuple[str, str], delta: int) -> None:
+    """Adjust an aggregate bucket; drop the entry when it reaches zero.
+
+    Caller must hold ``_identity_buffered_lock``. Dropping empty
+    entries keeps the registry from accumulating dead identities and
+    doubles as the leak check: a fully-drained mesh leaves it empty.
+    """
+    value = _identity_buffered.get(key, 0) + delta
+    if value > 0:
+        _identity_buffered[key] = value
+    else:
+        _identity_buffered.pop(key, None)
+
 # Announces are bandwidth-sensitive on LoRa (3.12 kbps at SF8/BW125),
 # so the announce app_data uses single-character keys to keep the
 # encoded payload small. The schema is forward-compatible: peers
@@ -215,6 +256,18 @@ class RNSLinkAdapter:
         # this link (the trip closes the link, so this is 0 or 1 in
         # practice — the counter shape keeps tests and dashboards simple).
         self.reassembly_cap_trips: int = 0
+        # Same shape for the aggregate per-identity cap
+        # (MAX_IDENTITY_BUFFERED_BYTES).
+        self.identity_cap_trips: int = 0
+        # Aggregate accounting: how many of this adapter's buffered
+        # bytes are currently charged to the shared per-identity
+        # registry, and under which key. Both fields are mutated only
+        # while holding _identity_buffered_lock; the invariant is
+        # _agg_charged == len(_recv_buf) + _pending_bytes after every
+        # completed ingress/consume operation, so releasing the charge
+        # on close/trip provably frees exactly what was reserved.
+        self._agg_key: Optional[Tuple[str, str]] = None
+        self._agg_charged: int = 0
         # v0.9.1: peer node_id once the IronMesh handshake binds it,
         # so the stats poller knows which PeerState to update.
         self.peer_id: Optional[str] = None
@@ -340,6 +393,85 @@ class RNSLinkAdapter:
                 stats[key] = value
         return stats
 
+    # -- Aggregate per-identity buffering accounting ------------------------
+
+    def _aggregate_key(self) -> Tuple[str, str]:
+        """The bucket this link's buffered bytes count against.
+
+        Prefers the remote RNS identity hash — the stable key the
+        receiver can derive for every link the same identity opens,
+        regardless of which destination it arrived on. When the remote
+        has not identified (yet), falls back to the destination-hash
+        string: on inbound links that string is "unknown" for every
+        unidentified peer, so all anonymous inbound links share one
+        bucket by design (see MAX_IDENTITY_BUFFERED_BYTES rationale).
+        """
+        rih = self.remote_identity_hash
+        if rih:
+            return ("identity", rih)
+        return ("dest", self._dest_hash_hex)
+
+    def _charge_identity_budget(self, n: int) -> bool:
+        """Reserve ``n`` incoming bytes against this link's identity bucket.
+
+        Returns False — with no state change beyond key migration — when
+        the reservation would push the bucket past
+        MAX_IDENTITY_BUFFERED_BYTES; the caller then trips the cap.
+        Called with this link's ``_buf_lock`` held; takes the global
+        ``_identity_buffered_lock`` strictly innermost (never while
+        another lock is being acquired), so the check-and-reserve is
+        atomic across links without any deadlock risk.
+
+        If the remote identified after this link already had bytes
+        charged (identity arrives mid-stream), the existing charge is
+        migrated from the fallback bucket to the identity bucket first,
+        so accounting follows the link across the transition.
+        """
+        key = self._aggregate_key()
+        with _identity_buffered_lock:
+            if (self._agg_key is not None and self._agg_key != key
+                    and self._agg_charged):
+                _bucket_adjust(self._agg_key, -self._agg_charged)
+                _bucket_adjust(key, self._agg_charged)
+            self._agg_key = key
+            bucket = _identity_buffered.get(key, 0)
+            if bucket + n > MAX_IDENTITY_BUFFERED_BYTES:
+                return False
+            if n > 0:
+                _identity_buffered[key] = bucket + n
+                self._agg_charged += n
+            return True
+
+    def _release_identity_budget(self, n: int) -> None:
+        """Return ``n`` consumed bytes to this link's identity bucket.
+
+        Clamped to what this adapter actually has charged, so a release
+        that races a close-time full release can never drive the bucket
+        negative or steal another link's budget.
+        """
+        with _identity_buffered_lock:
+            n = min(n, self._agg_charged)
+            if n <= 0:
+                return
+            self._agg_charged -= n
+            if self._agg_key is not None:
+                _bucket_adjust(self._agg_key, -n)
+            if self._agg_charged == 0:
+                self._agg_key = None
+
+    def _release_identity_budget_all(self) -> None:
+        """Release everything this adapter has charged (close/trip path).
+
+        Idempotent; takes only the aggregate lock so it is safe to call
+        from any thread, including RNS link-closed callbacks that may
+        fire re-entrantly while a ``_buf_lock`` is held elsewhere.
+        """
+        with _identity_buffered_lock:
+            if self._agg_charged and self._agg_key is not None:
+                _bucket_adjust(self._agg_key, -self._agg_charged)
+            self._agg_charged = 0
+            self._agg_key = None
+
     # -- RNS callbacks (called from RNS thread) ----------------------------
 
     def _on_data_ready(self, ready_bytes: int) -> None:
@@ -350,6 +482,12 @@ class RNSLinkAdapter:
         """
         try:
             with self._buf_lock:
+                # A closed adapter accepts no new data — without this
+                # guard, bytes arriving between close and RNS-side
+                # teardown would re-charge the identity budget that the
+                # close path just released.
+                if self._closed:
+                    return
                 chunk = self._buffer.read(ready_bytes)
                 if not chunk:
                     return
@@ -361,6 +499,13 @@ class RNSLinkAdapter:
                              + len(chunk))
                 if projected > MAX_PEER_BUFFERED_BYTES:
                     self._trip_buffered_cap(projected)
+                    return
+                # Aggregate per-identity cap, also checked BEFORE the
+                # buffer grows. The charge is an atomic check-and-reserve
+                # across all links of the identity, so two links racing
+                # on the RNS thread pool cannot jointly overshoot.
+                if not self._charge_identity_budget(len(chunk)):
+                    self._trip_identity_cap(len(chunk))
                     return
                 self._recv_buf += chunk
 
@@ -383,18 +528,22 @@ class RNSLinkAdapter:
                     self._pending_bytes += len(message)
                     self._loop.call_soon_threadsafe(
                         self._queue.put_nowait, message)
+
+                # Reconcile the aggregate charge down to the true
+                # footprint: deframing drops 4 header bytes per message
+                # and the invalid-length path clears the whole buffer,
+                # so the charge taken for the raw chunk can exceed what
+                # is actually still held. Release the surplus so header
+                # bytes never leak from the identity budget.
+                footprint = len(self._recv_buf) + self._pending_bytes
+                if footprint < self._agg_charged:
+                    self._release_identity_budget(
+                        self._agg_charged - footprint)
         except Exception:
             logger.exception("RNS _on_data_ready error")
 
     def _trip_buffered_cap(self, projected: int) -> None:
-        """Enforce MAX_PEER_BUFFERED_BYTES: free buffers and close the link.
-
-        Called from the RNS thread with ``_buf_lock`` held. Clears the
-        reassembly buffer immediately, tears the link down (freeing the
-        RNS-side state), and schedules a queue drain + close sentinel on
-        the asyncio loop so the daemon's message loop exits and the
-        queued payload bytes become collectable.
-        """
+        """Enforce MAX_PEER_BUFFERED_BYTES: free buffers and close the link."""
         self.reassembly_cap_trips += 1
         logger.warning(
             "RNS: per-peer buffered-bytes cap exceeded for %s "
@@ -402,8 +551,43 @@ class RNSLinkAdapter:
             "closing link and freeing buffers",
             self._dest_hash_hex, projected, MAX_PEER_BUFFERED_BYTES,
         )
+        self._free_buffers_and_close()
+
+    def _trip_identity_cap(self, incoming: int) -> None:
+        """Enforce MAX_IDENTITY_BUFFERED_BYTES: close the crossing link.
+
+        Only the link whose growth crossed the aggregate line is closed;
+        sibling links of the same identity keep their already-buffered
+        data (each still bounded per-link) and the closed link's bytes
+        are returned to the identity's budget. Closing just the
+        crossing link keeps a single misbehaving stream from tearing
+        down healthy sessions that happen to share the identity.
+        """
+        self.identity_cap_trips += 1
+        with _identity_buffered_lock:
+            bucket = _identity_buffered.get(self._aggregate_key(), 0)
+        logger.warning(
+            "RNS: per-identity aggregate buffered-bytes cap exceeded for %s "
+            "(bucket %d + incoming %d > %d bytes across all links of the "
+            "identity) — closing this link and freeing its buffers",
+            self._dest_hash_hex, bucket, incoming,
+            MAX_IDENTITY_BUFFERED_BYTES,
+        )
+        self._free_buffers_and_close()
+
+    def _free_buffers_and_close(self) -> None:
+        """Shared cap-trip teardown: free buffers and close the link.
+
+        Called from the RNS thread with ``_buf_lock`` held. Clears the
+        reassembly buffer immediately, releases this link's aggregate
+        budget charge, tears the link down (freeing the RNS-side
+        state), and schedules a queue drain + close sentinel on the
+        asyncio loop so the daemon's message loop exits and the queued
+        payload bytes become collectable.
+        """
         self._recv_buf = b""
         self._pending_bytes = 0
+        self._release_identity_budget_all()
         self._closed = True
         link = self._link
         self._link = None
@@ -432,8 +616,18 @@ class RNSLinkAdapter:
             pass
 
     def _on_link_closed(self, link) -> None:
-        """Enqueue sentinel so ``recv()`` raises ConnectionClosed."""
+        """Enqueue sentinel so ``recv()`` raises ConnectionClosed.
+
+        Also releases this link's aggregate per-identity budget charge —
+        a closed link's buffered bytes free headroom for the identity's
+        other links immediately, rather than lingering until GC. The
+        release deliberately takes only the aggregate lock (not
+        ``_buf_lock``): RNS can fire this callback re-entrantly from a
+        ``link.teardown()`` invoked while a ``_buf_lock`` is held, and
+        the clamped release is safe against a concurrent ``recv()``.
+        """
         self._closed = True
+        self._release_identity_budget_all()
         self._loop.call_soon_threadsafe(self._queue.put_nowait, None)
 
     def _on_resource_concluded(self, resource) -> None:
@@ -476,10 +670,17 @@ class RNSLinkAdapter:
             # queue as deframed stream messages, so it counts against
             # the same cumulative per-peer cap.
             with self._buf_lock:
+                # Same closed-adapter guard as the stream path: never
+                # charge budget for data that has nowhere to go.
+                if self._closed:
+                    return
                 projected = (len(self._recv_buf) + self._pending_bytes
                              + len(payload))
                 if projected > MAX_PEER_BUFFERED_BYTES:
                     self._trip_buffered_cap(projected)
+                    return
+                if not self._charge_identity_budget(len(payload)):
+                    self._trip_identity_cap(len(payload))
                     return
                 self._pending_bytes += len(payload)
             self._loop.call_soon_threadsafe(self._queue.put_nowait, payload)
@@ -591,14 +792,20 @@ class RNSLinkAdapter:
         if msg is None:
             raise websockets.ConnectionClosed(None, None)
         # Consuming a message releases its share of the cumulative
-        # per-peer buffering budget (MAX_PEER_BUFFERED_BYTES).
+        # per-peer buffering budget (MAX_PEER_BUFFERED_BYTES) and of the
+        # aggregate per-identity budget (MAX_IDENTITY_BUFFERED_BYTES).
         with self._buf_lock:
             self._pending_bytes = max(0, self._pending_bytes - len(msg))
+            self._release_identity_budget(len(msg))
         return msg
 
     async def close(self) -> None:
         """Tear down the RNS link."""
         self._closed = True
+        # Free this link's share of the aggregate per-identity budget;
+        # anything still sitting in the receive queue is on its way to
+        # the garbage collector once the consumer stops.
+        self._release_identity_budget_all()
         try:
             self._buffer.close()
         except Exception:

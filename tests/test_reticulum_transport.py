@@ -1378,3 +1378,216 @@ class TestPeerBufferedCap:
         assert msg == b"r" * 1000
         assert adapter._pending_bytes == 0
         assert adapter.reassembly_cap_trips == 0
+
+
+# ---------------------------------------------------------------------------
+# Aggregate per-identity buffering cap (MAX_IDENTITY_BUFFERED_BYTES)
+# ---------------------------------------------------------------------------
+
+class TestIdentityBufferedCap:
+    """MAX_PEER_BUFFERED_BYTES bounds each link independently, so one
+    RNS identity opening N links could hold N times the per-link cap.
+    The aggregate per-identity cap closes that bypass: all live links
+    keyed to the same remote identity share one budget, checked before
+    any buffer growth. Links whose remote never identified are grouped
+    by destination-hash string instead (a single shared bucket for
+    unidentified inbound peers).
+    """
+
+    IDENTITY_A = "aa" * 16
+    IDENTITY_B = "bb" * 16
+
+    @pytest.fixture(autouse=True)
+    def _clean_registry(self):
+        rt_mod._identity_buffered.clear()
+        yield
+        rt_mod._identity_buffered.clear()
+
+    def _make_adapter(self, loop, identity_hex=None, dest="dest-x"):
+        link = MagicMock()
+        link.status = _mock_rns.Link.ACTIVE
+        link.get_channel = MagicMock(return_value=MagicMock())
+        link.link_id = b"\x02" * 16
+        if identity_hex is None:
+            link.get_remote_identity = MagicMock(return_value=None)
+        else:
+            ri = MagicMock()
+            ri.hash = bytes.fromhex(identity_hex)
+            link.get_remote_identity = MagicMock(return_value=ri)
+        adapter = RNSLinkAdapter(link, loop, dest_hash_hex=dest)
+        return adapter, link
+
+    @staticmethod
+    def _frame(payload: bytes) -> bytes:
+        import struct
+        return struct.pack(">I", len(payload)) + payload
+
+    def _feed(self, adapter, chunk: bytes) -> None:
+        adapter._buffer.read = MagicMock(return_value=chunk)
+        adapter._on_data_ready(len(chunk))
+
+    @pytest.mark.asyncio
+    async def test_multi_link_aggregate_trip(self, monkeypatch):
+        """Two links of one identity, each under the per-link cap,
+        jointly cross the aggregate cap — the crossing link trips."""
+        monkeypatch.setattr(rt_mod, "MAX_PEER_BUFFERED_BYTES", 4096)
+        monkeypatch.setattr(rt_mod, "MAX_IDENTITY_BUFFERED_BYTES", 6000)
+        loop = asyncio.get_running_loop()
+        a1, l1 = self._make_adapter(loop, self.IDENTITY_A, dest="d1")
+        a2, l2 = self._make_adapter(loop, self.IDENTITY_A, dest="d2")
+        self._feed(a1, self._frame(b"x" * 3000))  # 3000 < 4096 per-link
+        assert a1.identity_cap_trips == 0
+        assert a1._pending_bytes == 3000
+        # Second link alone is also under the per-link cap, but the
+        # identity's aggregate (3000 + 3004) crosses 6000.
+        self._feed(a2, self._frame(b"x" * 3000))
+        assert a2.identity_cap_trips == 1
+        assert a2.reassembly_cap_trips == 0  # per-link cap did NOT trip
+        assert a2._closed is True
+        assert a2._pending_bytes == 0
+        l2.teardown.assert_called_once()
+        # Only the crossing link is closed; its sibling keeps its data
+        # and its budget charge.
+        assert a1._closed is False
+        assert a1._pending_bytes == 3000
+        l1.teardown.assert_not_called()
+        assert rt_mod._identity_buffered == {
+            ("identity", self.IDENTITY_A): 3000,
+        }
+
+    @pytest.mark.asyncio
+    async def test_different_identities_are_independent(self, monkeypatch):
+        monkeypatch.setattr(rt_mod, "MAX_IDENTITY_BUFFERED_BYTES", 6000)
+        loop = asyncio.get_running_loop()
+        a1, _ = self._make_adapter(loop, self.IDENTITY_A, dest="d1")
+        a2, _ = self._make_adapter(loop, self.IDENTITY_B, dest="d2")
+        self._feed(a1, self._frame(b"x" * 3000))
+        self._feed(a2, self._frame(b"x" * 3000))
+        assert a1.identity_cap_trips == 0
+        assert a2.identity_cap_trips == 0
+        assert rt_mod._identity_buffered == {
+            ("identity", self.IDENTITY_A): 3000,
+            ("identity", self.IDENTITY_B): 3000,
+        }
+
+    @pytest.mark.asyncio
+    async def test_budget_released_on_recv(self, monkeypatch):
+        """Consumption frees aggregate headroom — no leak: the frame
+        headers dropped during deframing are released too, so a fully
+        drained identity leaves an empty registry."""
+        monkeypatch.setattr(rt_mod, "MAX_IDENTITY_BUFFERED_BYTES", 6000)
+        loop = asyncio.get_running_loop()
+        a1, _ = self._make_adapter(loop, self.IDENTITY_A, dest="d1")
+        for _ in range(2):
+            self._feed(a1, self._frame(b"y" * 1500))
+        assert rt_mod._identity_buffered[("identity", self.IDENTITY_A)] == 3000
+        for _ in range(2):
+            msg = await asyncio.wait_for(a1.recv(), timeout=1.0)
+            assert msg == b"y" * 1500
+        assert a1._agg_charged == 0
+        assert rt_mod._identity_buffered == {}
+        # The freed headroom is usable by another link of the identity.
+        a2, _ = self._make_adapter(loop, self.IDENTITY_A, dest="d2")
+        self._feed(a2, self._frame(b"y" * 3000))
+        assert a2.identity_cap_trips == 0
+
+    @pytest.mark.asyncio
+    async def test_budget_released_on_close(self, monkeypatch):
+        monkeypatch.setattr(rt_mod, "MAX_IDENTITY_BUFFERED_BYTES", 6000)
+        loop = asyncio.get_running_loop()
+        a1, _ = self._make_adapter(loop, self.IDENTITY_A, dest="d1")
+        self._feed(a1, self._frame(b"z" * 3000))
+        assert rt_mod._identity_buffered[("identity", self.IDENTITY_A)] == 3000
+        await a1.close()
+        assert a1._agg_charged == 0
+        assert rt_mod._identity_buffered == {}
+        # A fresh link of the same identity gets the full budget back.
+        a2, _ = self._make_adapter(loop, self.IDENTITY_A, dest="d2")
+        self._feed(a2, self._frame(b"z" * 3000))
+        assert a2.identity_cap_trips == 0
+
+    @pytest.mark.asyncio
+    async def test_budget_released_on_link_closed_callback(self, monkeypatch):
+        """The RNS link-closed callback path also frees the budget."""
+        monkeypatch.setattr(rt_mod, "MAX_IDENTITY_BUFFERED_BYTES", 6000)
+        loop = asyncio.get_running_loop()
+        a1, l1 = self._make_adapter(loop, self.IDENTITY_A, dest="d1")
+        self._feed(a1, self._frame(b"z" * 3000))
+        a1._on_link_closed(l1)
+        assert a1._agg_charged == 0
+        assert rt_mod._identity_buffered == {}
+        # Data arriving after close must not re-charge the budget.
+        self._feed(a1, self._frame(b"z" * 1000))
+        assert a1._agg_charged == 0
+        assert rt_mod._identity_buffered == {}
+
+    @pytest.mark.asyncio
+    async def test_per_link_cap_still_trips_independently(self, monkeypatch):
+        """The existing per-link cap is unchanged and its trip releases
+        the identity budget."""
+        monkeypatch.setattr(rt_mod, "MAX_PEER_BUFFERED_BYTES", 4096)
+        loop = asyncio.get_running_loop()
+        a1, l1 = self._make_adapter(loop, self.IDENTITY_A, dest="d1")
+        self._feed(a1, self._frame(b"w" * 3000))
+        assert rt_mod._identity_buffered[("identity", self.IDENTITY_A)] == 3000
+        self._feed(a1, self._frame(b"w" * 2000))  # 3000 + 2004 > 4096
+        assert a1.reassembly_cap_trips == 1
+        assert a1.identity_cap_trips == 0
+        assert a1._closed is True
+        l1.teardown.assert_called_once()
+        assert rt_mod._identity_buffered == {}
+
+    @pytest.mark.asyncio
+    async def test_unidentified_links_share_one_bucket(self, monkeypatch):
+        """Links whose remote never identified are grouped per
+        destination-hash string — for inbound links that means every
+        unidentified peer shares a single aggregate budget."""
+        monkeypatch.setattr(rt_mod, "MAX_IDENTITY_BUFFERED_BYTES", 6000)
+        loop = asyncio.get_running_loop()
+        a1, _ = self._make_adapter(loop, None, dest="unknown")
+        a2, l2 = self._make_adapter(loop, None, dest="unknown")
+        self._feed(a1, self._frame(b"u" * 3000))
+        assert rt_mod._identity_buffered[("dest", "unknown")] == 3000
+        self._feed(a2, self._frame(b"u" * 3000))
+        assert a2.identity_cap_trips == 1
+        l2.teardown.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_charge_migrates_when_identity_learned_mid_stream(
+            self, monkeypatch):
+        """A link that identifies after its first bytes moves its
+        existing charge from the fallback bucket to the identity
+        bucket, so accounting follows the link across the transition."""
+        monkeypatch.setattr(rt_mod, "MAX_IDENTITY_BUFFERED_BYTES", 6000)
+        loop = asyncio.get_running_loop()
+        a1, _ = self._make_adapter(loop, None, dest="migrating")
+        self._feed(a1, self._frame(b"m" * 1000))
+        assert rt_mod._identity_buffered == {("dest", "migrating"): 1000}
+        # Remote identifies (what _on_remote_identified stashes).
+        a1.remote_identity_hash = self.IDENTITY_B
+        self._feed(a1, self._frame(b"m" * 1000))
+        assert rt_mod._identity_buffered == {
+            ("identity", self.IDENTITY_B): 2000,
+        }
+
+    @pytest.mark.asyncio
+    async def test_resource_payload_counts_against_identity_cap(
+            self, monkeypatch):
+        """Concluded Resource payloads share the identity budget with
+        the stream path."""
+        from io import BytesIO
+        monkeypatch.setattr(rt_mod, "MAX_IDENTITY_BUFFERED_BYTES", 6000)
+        loop = asyncio.get_running_loop()
+        a1, _ = self._make_adapter(loop, self.IDENTITY_A, dest="d1")
+        a2, l2 = self._make_adapter(loop, self.IDENTITY_A, dest="d2")
+        self._feed(a1, self._frame(b"r" * 3000))
+        resource = MagicMock()
+        resource.status = _mock_rns.Resource.COMPLETE
+        resource.data = BytesIO(b"r" * 4000)  # 3000 + 4000 > 6000
+        a2._on_resource_concluded(resource)
+        assert a2.identity_cap_trips == 1
+        assert a2.reassembly_cap_trips == 0
+        l2.teardown.assert_called_once()
+        assert rt_mod._identity_buffered == {
+            ("identity", self.IDENTITY_A): 3000,
+        }

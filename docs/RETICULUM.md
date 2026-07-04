@@ -511,14 +511,16 @@ is in that single dict.
   residual). The `--rns-skip-handshake` fast path refuses to run
   without a verified binding, so both ends of an `hskip` pair must
   speak `ironmesh/0.9+`.
-- **Per-peer buffering cap.** Each RNS link bounds the total memory
-  it will buffer (reassembly + unconsumed receive queue) at 64 MB;
-  overrunning it closes the link, frees the buffers, and logs
-  `RNS: per-peer buffered-bytes cap exceeded`. Note the cap is scoped
-  to a single link, not to the remote identity: an identity that opens
-  several links gets the 64 MB bound on each one, so its aggregate
-  buffering is that bound times the number of links. An aggregate
-  per-identity cap is planned follow-up work.
+- **Two-tier buffering cap.** Each RNS link bounds the total memory
+  it will buffer (reassembly + unconsumed receive queue) at 64 MB,
+  and all live links belonging to the same remote RNS identity share
+  an aggregate 128 MB bound on top of that — an identity that opens
+  several links no longer multiplies its buffering by the link count.
+  Links whose remote never identified share a single anonymous
+  bucket. Overrunning either cap closes the link whose growth crossed
+  the line, frees its buffers back to the budget, and logs
+  `RNS: per-peer buffered-bytes cap exceeded` or
+  `RNS: per-identity aggregate buffered-bytes cap exceeded`.
 
 ## Tuning
 

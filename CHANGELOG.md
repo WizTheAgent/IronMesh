@@ -58,6 +58,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enforces a 64 MB cumulative buffering cap that closes the link and
   frees memory when overrun. See SECURITY.md ("Reticulum transport
   caveats") and docs/PROTOCOL_SPEC.md ("RNS link binding").
+- **Aggregate per-identity buffering cap on the Reticulum transport.**
+  All live RNS links keyed to the same remote identity now share a
+  128 MB aggregate buffering bound on top of the 64 MB per-link cap,
+  closing the multi-link bypass where one identity could hold the
+  per-link cap times its open link count; unidentified links share a
+  single anonymous bucket.
 
 - **HELLO signature is now domain-separated (protocol `ironmesh/0.9`).**
   When both peers advertise `ironmesh/0.9+`, the HELLO is signed with a
