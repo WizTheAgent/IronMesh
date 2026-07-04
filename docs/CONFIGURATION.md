@@ -44,7 +44,8 @@ secrets like the passphrase in JSON config.
 | `--bind` | str | `0.0.0.0` | Mesh WebSocket bind address. |
 | `--profile` | `secure\|dev\|offline` | none | Bundled flag preset. See [Profiles](#profiles). |
 | `--keys-path` | path | `~/.ironmesh/keys.json` | Encrypted identity keypair. |
-| `--keys-passphrase` | str | — | Passphrase to decrypt the key file. Required when the key file is encrypted (e.g. created by `ironmesh setup` / `keys generate`) — the daemon does not reuse the mesh passphrase. Visible in the process list; prefer starting interactively where possible. |
+| `--keys-passphrase` | str | — | Passphrase to decrypt the key file. **Discouraged** — argv is visible in the process list; prefer `--keys-passphrase-file` or `IRONMESH_KEYS_PASSPHRASE`. Usually unnecessary: when the key file was created by `ironmesh setup`, the daemon decrypts it with the mesh passphrase automatically, and otherwise prompts on a terminal. |
+| `--keys-passphrase-file` | path | — | Read the key-file passphrase from a file (trailing newline stripped). `chmod 600`. Preferred headless source when the key passphrase differs from the mesh passphrase. |
 | `--db-path` | path | `~/.ironmesh/data.db` | Offline message queue. |
 | `--passphrase-file` | path | — | Highest-priority passphrase source. `chmod 600`. |
 | `--tls-cert` / `--tls-key` | path | — | Enable WSS on the mesh port. Otherwise plaintext WS. |
@@ -130,6 +131,23 @@ accepted on the command line (would leak in `ps aux`). Priority:
 If none of the above yields a passphrase, `ironmesh run` exits with
 a clear error.
 
+### Key-file passphrase sources
+
+The identity key file (`keys.json`) has its own passphrase chain,
+resolved independently of the mesh passphrase. Priority:
+
+| # | Source | Notes |
+|---|---|---|
+| 1 | `--keys-passphrase <pass>` | Kept for compatibility. **Discouraged** — argv is visible in the process list. |
+| 2 | `--keys-passphrase-file <path>` | Trailing newline stripped. `chmod 600`. |
+| 3 | `IRONMESH_KEYS_PASSPHRASE` | Environment variable. |
+| 4 | Mesh passphrase, tried silently | `ironmesh setup` encrypts the key file with the mesh passphrase, so the command it prints works with no extra flags. |
+| 5 | Interactive `getpass` prompt | Used only when stdin is a TTY; names the key file. |
+
+If the key file is encrypted and none of the above decrypts it, the
+command exits with an error listing these options. Plaintext key
+files need no passphrase.
+
 ### Other env vars
 
 These are read by the CLI / daemon / gateways:
@@ -145,6 +163,7 @@ These are read by the CLI / daemon / gateways:
 | `IRONMESH_RNS_ADMIN_IDENTITIES` | Comma-separated allow-list of RNS Identity hashes for admin RPC paths. |
 | `IRONMESH_SEED_RNS_CONFIG` | `1` enables the per-daemon RNS config seeder (multi-daemon-per-host without rnsd). Off by default. |
 | `IRONMESH_PASSPHRASE_KEYCHAIN` | OS-keychain passphrase backend (see [Passphrase sources](#passphrase-sources)). |
+| `IRONMESH_KEYS_PASSPHRASE` | Passphrase used to decrypt the identity key file when it differs from the mesh passphrase. Precedence: `--keys-passphrase` > `--keys-passphrase-file` > this variable > mesh passphrase (tried automatically) > interactive prompt. |
 | `IRONMESH_A2A_TOKEN` | Bearer token enforced by the `ironmesh-a2a` HTTP gateway. |
 | `IRONMESH_ACP_TIMEOUT` | Per-call timeout (seconds) for the `ironmesh-acp` server. |
 

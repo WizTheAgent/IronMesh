@@ -51,12 +51,16 @@ chmod 600 ~/.ironmesh/passphrase
 ironmesh keys generate --path ~/.ironmesh/keys.json
 ```
 
-> **Encrypted key file note:** if you encrypted the keypair above,
-> add `--keys-passphrase <that passphrase>` to every `ironmesh run`
-> command below — the daemon does not reuse the mesh passphrase to
-> decrypt the key file. Alternatively, skip this step: the daemon
-> auto-generates a keypair on first run (stored unencrypted, with an
-> `INSECURE` warning in the log).
+> **Encrypted key file note:** if you encrypted the keypair with the
+> same passphrase as the mesh (what `ironmesh setup` does), `ironmesh
+> run` decrypts it automatically — no extra flag needed. If you chose
+> a different key passphrase, the daemon prompts for it on a terminal;
+> headlessly, supply it with `--keys-passphrase-file <path>` or the
+> `IRONMESH_KEYS_PASSPHRASE` env var (`--keys-passphrase <pass>` also
+> works but is discouraged — argv is visible in the process list).
+> Alternatively, skip this step: the daemon auto-generates a keypair
+> on first run (stored unencrypted, with an `INSECURE` warning in the
+> log).
 
 ## 3. Start the bridge
 

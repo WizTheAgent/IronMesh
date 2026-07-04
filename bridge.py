@@ -242,8 +242,26 @@ class _DaemonConfig:
 # Key management helpers
 # ---------------------------------------------------------------------------
 
-async def ensure_agent_keys(keys_path: str, passphrase: Optional[str] = None) -> ew_keys.AgentKeys:
+def _keys_decrypt_error(path, cause: str) -> ValueError:
+    """Build an actionable error for a key file that could not be
+    decrypted, listing every supported passphrase source."""
+    return ValueError(
+        f"Could not decrypt key file {path}: {cause}.\n"
+        + ew_keys.KEYS_PASSPHRASE_SOURCES_HELP
+    )
+
+
+async def ensure_agent_keys(keys_path: str, passphrase: Optional[str] = None,
+                            fallback_passphrase: Optional[str] = None,
+                            allow_plaintext: bool = False) -> ew_keys.AgentKeys:
     """Load or generate Ed25519 identity keypair.
+
+    ``passphrase`` is the explicit key-file passphrase. When it is not
+    supplied and the on-disk key file is encrypted, ``fallback_passphrase``
+    (the mesh passphrase — ``ironmesh setup`` encrypts the key file with
+    the same passphrase it writes to the passphrase file) is tried
+    before failing, so the wizard's printed ``ironmesh run`` command
+    works with no extra flags.
 
     If a plaintext key file is found and a passphrase is available,
     automatically re-encrypts the key file (migration).
@@ -253,17 +271,43 @@ async def ensure_agent_keys(keys_path: str, passphrase: Optional[str] = None) ->
 
     if path.exists():
         try:
-            keys = ew_keys.load_keys(str(path), passphrase=passphrase)
+            effective = passphrase
+            try:
+                keys = ew_keys.load_keys(str(path), passphrase=effective)
+            except ValueError as e:
+                if effective is None and "no passphrase provided" in str(e):
+                    if not fallback_passphrase:
+                        raise _keys_decrypt_error(
+                            path, "the file is encrypted but no passphrase "
+                                  "was provided") from None
+                    try:
+                        keys = ew_keys.load_keys(
+                            str(path), passphrase=fallback_passphrase)
+                    except ValueError:
+                        raise _keys_decrypt_error(
+                            path, "the file is encrypted with a passphrase "
+                                  "different from the mesh passphrase") from None
+                    effective = fallback_passphrase
+                    logger.info(
+                        "Key file %s decrypted with the mesh passphrase "
+                        "(no separate key-file passphrase was supplied)",
+                        path,
+                    )
+                elif "Wrong passphrase" in str(e):
+                    raise _keys_decrypt_error(
+                        path, "wrong passphrase or corrupted key file") from None
+                else:
+                    raise
             logger.info("Keys loaded from %s (fingerprint: %s)", path, keys.get_fingerprint())
 
             # Auto-migrate: if key file is plaintext and the code have a passphrase, re-encrypt
-            if passphrase:
+            if effective:
                 import json as _json
                 with open(str(path)) as _f:
                     _data = _json.load(_f)
                 if not _data.get("encrypted", False):
                     logger.warning("Migrating plaintext key file to encrypted: %s", path)
-                    ew_keys.save_keys(keys, str(path), passphrase=passphrase)
+                    ew_keys.save_keys(keys, str(path), passphrase=effective)
                     logger.info("Key file migration complete — now encrypted with Argon2id")
 
             # v0.9.4 Phase 2 auto-migration: a daemon running v0.9.4 that
@@ -281,8 +325,8 @@ async def ensure_agent_keys(keys_path: str, passphrase: Optional[str] = None) ->
                 try:
                     keys = ew_keys.migrate_keys_to_master_seed(
                         str(path),
-                        passphrase=passphrase,
-                        allow_plaintext=not passphrase,
+                        passphrase=effective,
+                        allow_plaintext=not effective,
                     )
                     logger.warning(
                         "v0.9.4 Phase 2 auto-migration: legacy keys "
@@ -736,7 +780,14 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
         """Launch the bridge and all background tasks."""
         self._loop = asyncio.get_event_loop()
         # Load or generate identity keys
-        self._keypair = await ensure_agent_keys(self.keys_path, self.keys_passphrase)
+        # The mesh passphrase doubles as the key-file fallback: `ironmesh
+        # setup` encrypts the key file with the same passphrase it writes
+        # to the passphrase file, so the wizard's printed run command
+        # works without a separate --keys-passphrase.
+        self._keypair = await ensure_agent_keys(
+            self.keys_path, self.keys_passphrase,
+            fallback_passphrase=self.passphrase,
+        )
 
         # Key rotation via env var
         if os.environ.get("IRONMESH_ROTATE_KEYS") == "1":

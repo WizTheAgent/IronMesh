@@ -101,6 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bound noted as planned follow-up work.
 
 ### Fixed
+- **First-run golden path: the `ironmesh run` command printed by `ironmesh setup` now works as-is.** Commands that load an encrypted identity key file (`run`, `trust`, `doctor`, `audit export`, `keys info/fingerprint/migrate`) no longer fail with "Key file is encrypted but no passphrase provided": the key-file passphrase resolves through a full precedence chain — `--keys-passphrase` (kept for compatibility, now documented as discouraged because argv is visible in the process list) > new `--keys-passphrase-file <path>` > new `IRONMESH_KEYS_PASSPHRASE` env var > the mesh passphrase tried silently (`ironmesh setup` encrypts the key file with the mesh passphrase) > an interactive `getpass` prompt naming the key file > a hard error listing every option. `run --rotate-keys` also no longer drops the key-file passphrase (previously it rewrote an encrypted key file in plaintext), and headless invocations error out actionably instead of hanging on a hidden prompt.
 - Docs-site links that pointed at repository files outside `docs/` now use absolute GitHub URLs, so `mkdocs build --strict` passes with zero broken-link warnings.
 
 ## [0.9.4.2] — 2026-05-23 — Operator-polish sweep

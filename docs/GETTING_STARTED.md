@@ -69,14 +69,14 @@ ironmesh run \
 ```
 
 > **Note — encrypted key file.** The wizard encrypts `keys.json` with
-> the mesh passphrase, but `ironmesh run` does not automatically reuse
-> the mesh passphrase to decrypt it: without `--keys-passphrase` the
-> daemon exits with `Key file is encrypted but no passphrase
-> provided`. Until the daemon learns to fall back to the mesh
-> passphrase, pass `--keys-passphrase <your mesh passphrase>` on the
-> run command (be aware this is visible in the process list) or start
-> the daemon interactively. `--name` is always required — a bare
-> `ironmesh run` exits with an argument error.
+> the mesh passphrase, and `ironmesh run` tries the mesh passphrase
+> automatically — the printed command works as-is, no extra flag. If
+> your key file uses a *different* passphrase, the daemon prompts for
+> it on a terminal, or supply it headlessly with
+> `--keys-passphrase-file <path>` or the `IRONMESH_KEYS_PASSPHRASE`
+> env var (`--keys-passphrase <pass>` also works but is discouraged —
+> argv is visible in the process list). `--name` is always required —
+> a bare `ironmesh run` exits with an argument error.
 
 Within 5–10 seconds the two should find each other via mDNS and complete the handshake. Each side prints something like:
 
