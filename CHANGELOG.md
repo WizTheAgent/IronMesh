@@ -102,6 +102,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Docs-site links that pointed at repository files outside `docs/` now use absolute GitHub URLs, so `mkdocs build --strict` passes with zero broken-link warnings.
+- `ironmesh demo` now tears down cleanly and prints an unmistakable final `[ok]   Demo complete -- mesh handshake + encrypted ping verified.` line. Previously the mDNS close could deadlock the daemon's event loop during shutdown (hanging the process), and pending background tasks were destroyed noisily at interpreter exit; `Agent.stop()` now cancels remaining tasks and closes its event loop, and daemon shutdown bounds its server/mDNS close waits and always releases the message store.
+- Client-side handshake auth rejection now logs an actionable message (likely mesh passphrase mismatch with that peer, which sources to check, and the `ironmesh doctor --peer` dry-run) instead of a bare `Auth rejected by <addr>`.
+- `ironmesh doctor` check 8 pointed operators at a nonexistent `ironmesh status` command for strict-TLS / global-rate-cap runtime state; it now points at the running daemon's `/metrics` endpoint.
+- Missing-Reticulum hints now recommend the project-standard `pip install ironmesh[rns]` instead of the bare `pip install rns`.
+- The `nat_relay` module docstring no longer implies a daemon-side `--nat-relay` attach flag exists; it is documented as a possible future feature, matching `docs/NAT_TRAVERSAL.md`.
 
 ## [0.9.4.2] — 2026-05-23 — Operator-polish sweep
 
