@@ -6,7 +6,7 @@ Goals from `docs/ROADMAP.md` v0.9.4 CLI ergonomics bundle:
 - Icon-prefixed lines (✓ ⚠ ✗).
 - Section headers and key/value rows that read cleanly at a glance.
 - Auto-disable color + icons on non-TTY output (pipes, CI logs) so
-  `ironmesh status | grep ...` and CI captures stay clean.
+  `ironmesh doctor | grep ...` and CI captures stay clean.
 
 Design notes:
 
