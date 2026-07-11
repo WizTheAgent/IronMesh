@@ -1138,7 +1138,7 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
                 self._reticulum = None
         elif self._rns_enabled and not _HAS_RNS:
             logger.warning("--reticulum flag set but rns package not installed. "
-                           "Install with: pip install rns")
+                           "Install with: pip install ironmesh[rns]")
 
         # v0.9.1: optional LXMF listener for Sideband / Nomadnet interop.
         # Requires the `lxmf` extra. Reuses the Reticulum singleton the
@@ -1792,7 +1792,12 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
                                 "on_peer_disconnect hook raised: %s: %s",
                                 type(e).__name__, e,
                             )
-                    asyncio.ensure_future(self._try_transport_failover(peer_id))
+                    # No failover attempts for connections that drop
+                    # because this daemon is the one shutting down.
+                    if self._running:
+                        asyncio.ensure_future(
+                            self._try_transport_failover(peer_id)
+                        )
 
     async def _try_transport_failover(self, peer_id: str):
         """Attempt immediate reconnection on an alternative transport after disconnect."""
@@ -2638,7 +2643,10 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
         self._gui_clients.clear()
         if self._gui_server:
             self._gui_server.close()
-            await self._gui_server.wait_closed()
+            try:
+                await asyncio.wait_for(self._gui_server.wait_closed(), timeout=3.0)
+            except (asyncio.TimeoutError, TimeoutError):
+                logger.debug("GUI server close wait timed out; continuing shutdown")
 
         # Send encrypted GOODBYE to all peers
         for peer_id in list(self.ws_clients.keys()):
@@ -2674,20 +2682,58 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
             except Exception:
                 pass
 
-        if self._mdns_listener:
-            try:
-                self._mdns_listener.stop()
-            except Exception:
-                pass
-        if self._mdns_service:
-            try:
-                self._mdns_service.close()
-            except Exception:
-                pass
+        # Close mDNS off-loop. The zeroconf instance was created while
+        # this event loop was running, so zeroconf schedules its own
+        # coroutines here — its *blocking* close()/unregister calls,
+        # made from this loop's thread, would wait on work that can
+        # only run once this coroutine yields: a permanent
+        # self-deadlock that parked shutdown forever (and with it the
+        # store close below). A helper thread lets those coroutines
+        # run during the bounded wait; the thread is a daemon so a
+        # truly stuck close can never pin the interpreter open.
+        if self._mdns_listener or self._mdns_service:
+            mdns_listener, mdns_service = self._mdns_listener, self._mdns_service
+            self._mdns_listener = None
+            self._mdns_service = None
+
+            def _close_mdns_blocking():
+                if mdns_listener:
+                    try:
+                        mdns_listener.stop()
+                    except Exception:
+                        pass
+                if mdns_service:
+                    try:
+                        mdns_service.close()
+                    except Exception:
+                        pass
+
+            import threading
+            closer = threading.Thread(
+                target=_close_mdns_blocking,
+                name="ironmesh-mdns-close",
+                daemon=True,
+            )
+            closer.start()
+            deadline = time.monotonic() + 3.0
+            while closer.is_alive() and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            if closer.is_alive():
+                logger.debug("mDNS close still running after 3s; continuing shutdown")
 
         if self._server:
             self._server.close()
-            await self._server.wait_closed()
+            # wait_closed() waits for every connection handler to finish.
+            # A handler stuck mid close-handshake (e.g. the peer at the
+            # other end is itself shutting down) can park this await for
+            # tens of seconds — or indefinitely — and everything below,
+            # including the store close that releases the non-daemon
+            # sqlite worker threads, never runs. Bound the wait: the
+            # daemon is exiting either way at this point.
+            try:
+                await asyncio.wait_for(self._server.wait_closed(), timeout=3.0)
+            except (asyncio.TimeoutError, TimeoutError):
+                logger.debug("WebSocket server close wait timed out; continuing shutdown")
 
         await self._db.close()
         logger.info("Bridge daemon shut down")

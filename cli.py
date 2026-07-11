@@ -2478,10 +2478,13 @@ def cmd_doctor(args):
         print("      Trust-store envelope: file not present yet "
               "(will be v2 on first save)")
     # Strict TLS + global rate cap can only be confirmed against a running
-    # daemon's runtime state. Doctor inspects on-disk state, so report
-    # this caveat instead of guessing.
-    print("      Strict TLS / global rate cap: report runtime state "
-          "from `ironmesh status` (added per running daemon).")
+    # daemon's runtime state. Doctor inspects on-disk state, so point at
+    # the daemon's live metrics surface instead of guessing.
+    print("      Strict TLS / global rate cap: runtime state is exported "
+          "by a running daemon started with --gui. Fetch "
+          "http://127.0.0.1:<port+1>/metrics?token=... (token is printed "
+          "in the daemon's startup log) and check the "
+          "`strict_tls_enabled` and `global_msg_rate_limit_total` fields.")
 
     # Optional: dry-run a WebSocket handshake against a peer.
     if args.peer:
@@ -2713,6 +2716,9 @@ def cmd_demo(args):
             print(flush=True)
 
             if args.gui:
+                print("[ok]   Demo complete -- mesh handshake + encrypted "
+                      "ping verified.", flush=True)
+                print(flush=True)
                 gui_port = port_a + 1
                 token = alice.daemon._gui_token
                 print("Dashboard URL (token on its own line so terminals can't crop it):",
@@ -2738,6 +2744,9 @@ def cmd_demo(args):
                   flush=True)
             print("agents. Next: examples/ollama_swarm.py for a real demo.",
                   flush=True)
+            print(flush=True)
+            print("[ok]   Demo complete -- mesh handshake + encrypted "
+                  "ping verified.", flush=True)
             return 0
         finally:
             # KeyboardInterrupt during the 5s stop-timeout is fine to

@@ -420,7 +420,59 @@ class Agent:
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._loop_thread is not None:
             self._loop_thread.join(timeout=3)
+        # Finish the loop lifecycle. Without this, every periodic task
+        # still pending on the stopped-but-never-closed loop is destroyed
+        # at garbage collection with an "asyncio ERROR: Task was destroyed
+        # but it is pending!" line each, and — if the daemon shutdown
+        # timed out before closing the message store — the store's
+        # non-daemon sqlite worker threads keep the interpreter alive
+        # after main() returns.
+        if (
+            self._loop is not None
+            and not self._loop.is_closed()
+            and not self._loop.is_running()
+            and (self._loop_thread is None or not self._loop_thread.is_alive())
+        ):
+            try:
+                self._drain_and_close_loop(self._loop)
+            except Exception as e:  # never let cleanup mask a clean stop
+                logger.debug("Loop close after stop: %s", e)
         logger.info("Agent '%s' stopped", self.name)
+
+    def _drain_and_close_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Cancel tasks still pending on a stopped loop, give them a
+        bounded window to unwind, run the loop's shutdown hooks, and
+        close it. Must only be called once the loop is no longer
+        running (the loop thread has exited).
+        """
+        # Cancel in rounds: unwinding one task (e.g. a connection
+        # handler observing its disconnect) can spawn another, and a
+        # task created after a single snapshot would dodge the cancel.
+        for _ in range(3):
+            pending = asyncio.all_tasks(loop)
+            if not pending:
+                break
+            for task in pending:
+                task.cancel()
+            # asyncio.wait never raises on timeout or task failure —
+            # stragglers that ignore cancellation are simply left for
+            # the close below, which is still bounded.
+            loop.run_until_complete(asyncio.wait(pending, timeout=3))
+        # If the daemon's shutdown never reached its store close (it
+        # timed out and was cancelled above), close the store now so
+        # its non-daemon sqlite worker threads exit. Idempotent when
+        # shutdown already closed it.
+        db = getattr(self.daemon, "_db", None)
+        if db is not None:
+            try:
+                loop.run_until_complete(
+                    asyncio.wait_for(db.close(), timeout=3),
+                )
+            except Exception as e:
+                logger.debug("Store close after stop: %s", e)
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.run_until_complete(loop.shutdown_default_executor())
+        loop.close()
 
     # ------------------------------------------------------------------
     # Internal

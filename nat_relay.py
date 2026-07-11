@@ -25,8 +25,11 @@ Operators run it via::
 
     python -m ironmesh.nat_relay --port 18787 --bind 0.0.0.0
 
-Clients opt in by passing ``--nat-relay wss://relay.example.com:18787``
-to ``ironmesh`` (see ``docs/NAT_TRAVERSAL.md``).
+A daemon-side attach flag (``--nat-relay`` on ``ironmesh run``) is a
+possible future feature and is **not implemented yet** — today the
+relay's ``REGISTER`` / ``FORWARD`` protocol is exercised by the test
+suite and available to custom clients (see ``docs/NAT_TRAVERSAL.md``
+Option 4 for the current status and recommended alternatives).
 """
 from __future__ import annotations
 

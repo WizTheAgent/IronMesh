@@ -510,7 +510,15 @@ class HandshakeMixin:
             raw = await asyncio.wait_for(ws.recv(), timeout=30)
             msg = json.loads(raw)
             if msg.get("type") != ew_protocol.MessageType.PASSPHRASE_VERIFIED:
-                logger.warning("Auth rejected by %s", label)
+                logger.warning(
+                    "Auth rejected by %s — the most likely cause is a mesh "
+                    "passphrase mismatch: this node's passphrase does not "
+                    "match that peer's. Check both daemons read the same "
+                    "value (--passphrase-file / IRONMESH_PASSPHRASE_FILE / "
+                    "IRONMESH_PASSPHRASE); `ironmesh doctor --peer "
+                    "HOST:PORT` dry-runs this handshake.",
+                    label,
+                )
                 return None
 
             # Verify server also knows the passphrase (mutual auth)
@@ -520,7 +528,15 @@ class HandshakeMixin:
                     self.passphrase, server_nonce[::-1]
                 )
                 if not hmac.compare_digest(server_proof, expected_server_proof):
-                    logger.warning("Mutual auth failed — server proof invalid at %s", label)
+                    logger.warning(
+                        "Mutual auth failed — server proof invalid at %s. "
+                        "The most likely cause is a mesh passphrase "
+                        "mismatch (that peer accepted us but proved a "
+                        "different passphrase). Check both daemons read "
+                        "the same value (--passphrase-file / "
+                        "IRONMESH_PASSPHRASE_FILE / IRONMESH_PASSPHRASE).",
+                        label,
+                    )
                     return None
                 logger.debug("Mutual auth verified with %s", label)
         else:

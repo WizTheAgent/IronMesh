@@ -165,7 +165,7 @@ def test_write_summary_only(monkeypatch):
 # ---- non-TTY pipe simulation --------------------------------------
 
 def test_pipe_target_disables_decoration(monkeypatch):
-    """Simulates `ironmesh status | grep peers` — stdout is not a
+    """Simulates `ironmesh doctor | grep peers` — stdout is not a
     TTY, output should be plain text."""
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("IRONMESH_COLOR", "auto")
