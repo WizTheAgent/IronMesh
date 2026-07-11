@@ -34,6 +34,22 @@ from nacl.signing import SigningKey, VerifyKey
 # chars of SHA-256). Use this everywhere a fingerprint is computed.
 FINGERPRINT_HEX_CHARS = 32
 
+# Shared remediation text appended to every "encrypted key file could
+# not be decrypted" error so operators always see the full menu of
+# passphrase sources, in precedence order.
+KEYS_PASSPHRASE_SOURCES_HELP = (
+    "Supply the key-file passphrase via one of:\n"
+    "  --keys-passphrase-file <path>   (file containing the passphrase; "
+    "chmod 600 recommended)\n"
+    "  IRONMESH_KEYS_PASSPHRASE        (environment variable)\n"
+    "  an interactive terminal         (you will be prompted)\n"
+    "  --keys-passphrase <pass>        (DISCOURAGED: argv is visible in "
+    "the process list)\n"
+    "Note: `ironmesh setup` encrypts the key file with the mesh "
+    "passphrase, so the daemon tries the mesh passphrase automatically "
+    "before prompting."
+)
+
 # v0.9.4 master-seed envelope (Phase 1).
 KEYS_FORMAT_MASTER_SEED_V1 = "master-seed-v1"
 

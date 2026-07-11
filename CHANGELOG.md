@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Identity key files are now encrypted at rest by default, matching the documented claim.** A bare `ironmesh run --name X` previously auto-generated a PLAINTEXT `keys.json` with only a log warning; auto-generated (and `--rotate-keys`-rotated) key files are now encrypted with the mesh passphrase — always present by the time keys are generated — exactly as `ironmesh setup` produces, and a plaintext key file found on disk is re-encrypted forward on the next start. Writing an unencrypted key file now requires the explicit `--plaintext-keys` opt-in (`allow_plaintext=True` from the library); with no passphrase and no opt-in, key generation fails with an actionable error. README / GETTING_STARTED / QUICKSTART / CONFIGURATION updated so claim == behavior.
 - **RNS link binding + per-peer buffering cap on the Reticulum
   transport (protocol `ironmesh/0.9`).** On RNS Links, 0.9+ peers bind
   their HELLO to the id of the link it travels on (`rns_link_id`
@@ -101,6 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bound noted as planned follow-up work.
 
 ### Fixed
+- **First-run golden path: the `ironmesh run` command printed by `ironmesh setup` now works as-is.** Commands that load an encrypted identity key file (`run`, `trust`, `doctor`, `audit export`, `keys info/fingerprint/migrate`) no longer fail with "Key file is encrypted but no passphrase provided": the key-file passphrase resolves through a full precedence chain — `--keys-passphrase` (kept for compatibility, now documented as discouraged because argv is visible in the process list) > new `--keys-passphrase-file <path>` > new `IRONMESH_KEYS_PASSPHRASE` env var > the mesh passphrase tried silently (`ironmesh setup` encrypts the key file with the mesh passphrase) > an interactive `getpass` prompt naming the key file > a hard error listing every option. `run --rotate-keys` also no longer drops the key-file passphrase (previously it rewrote an encrypted key file in plaintext), and headless invocations error out actionably instead of hanging on a hidden prompt.
 - Docs-site links that pointed at repository files outside `docs/` now use absolute GitHub URLs, so `mkdocs build --strict` passes with zero broken-link warnings.
 
 ## [0.9.4.2] — 2026-05-23 — Operator-polish sweep

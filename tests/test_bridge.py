@@ -14,23 +14,86 @@ from ironmesh.crypto import ecdh_exchange, encrypt_message
 from ironmesh.protocol import MessageType, PeerState
 
 
+MESH_PASSPHRASE = "bridge-test-mesh-passphrase-12"
+
+
+def _keys_envelope(keys_path):
+    with open(keys_path) as f:
+        return json.load(f)
+
+
 @pytest.mark.asyncio
 class TestEnsureAgentKeys:
     async def test_generates_new_keys(self, keys_path):
-        keys = await ensure_agent_keys(keys_path)
+        keys = await ensure_agent_keys(keys_path, allow_plaintext=True)
         assert len(keys.ed25519_secret) == 32
         assert len(keys.ed25519_public) == 32
         assert os.path.exists(keys_path)
 
     async def test_loads_existing_keys(self, keys_path):
-        keys1 = await ensure_agent_keys(keys_path)
-        keys2 = await ensure_agent_keys(keys_path)
+        keys1 = await ensure_agent_keys(keys_path, allow_plaintext=True)
+        keys2 = await ensure_agent_keys(keys_path, allow_plaintext=True)
         assert keys1.ed25519_public == keys2.ed25519_public
 
     async def test_rotate_keys(self, keys_path):
-        keys1 = await ensure_agent_keys(keys_path)
-        keys2 = await rotate_keys(keys_path)
+        keys1 = await ensure_agent_keys(keys_path, allow_plaintext=True)
+        keys2 = await rotate_keys(keys_path, allow_plaintext=True)
         assert keys1.ed25519_public != keys2.ed25519_public
+
+    # Encrypted-by-default: auto-generated key files are encrypted with
+    # whatever passphrase is available; plaintext requires the explicit
+    # allow_plaintext (--plaintext-keys) opt-in.
+
+    async def test_autogen_encrypts_with_mesh_passphrase_fallback(self, keys_path):
+        keys = await ensure_agent_keys(
+            keys_path, None, fallback_passphrase=MESH_PASSPHRASE)
+        assert _keys_envelope(keys_path)["encrypted"] is True
+        # Round-trips with the mesh passphrase (what a daemon restart does).
+        again = await ensure_agent_keys(
+            keys_path, None, fallback_passphrase=MESH_PASSPHRASE)
+        assert again.ed25519_public == keys.ed25519_public
+
+    async def test_autogen_without_any_passphrase_refuses_plaintext(self, keys_path):
+        with pytest.raises(ValueError, match="plaintext-keys"):
+            await ensure_agent_keys(keys_path)
+        assert not os.path.exists(keys_path)
+
+    async def test_plaintext_opt_in_writes_unencrypted(self, keys_path):
+        await ensure_agent_keys(keys_path, allow_plaintext=True)
+        assert _keys_envelope(keys_path)["encrypted"] is False
+
+    async def test_plaintext_opt_in_skips_reencrypt_migration(self, keys_path):
+        """A plaintext key file stays plaintext across restarts when the
+        operator explicitly opted in, even with a mesh passphrase."""
+        await ensure_agent_keys(keys_path, allow_plaintext=True)
+        await ensure_agent_keys(keys_path,
+                                fallback_passphrase=MESH_PASSPHRASE,
+                                allow_plaintext=True)
+        assert _keys_envelope(keys_path)["encrypted"] is False
+
+    async def test_plaintext_file_reencrypted_forward_with_mesh(self, keys_path):
+        """Without the opt-in, a plaintext key file is migrated to
+        encrypted using the mesh passphrase on next load."""
+        keys1 = await ensure_agent_keys(keys_path, allow_plaintext=True)
+        keys2 = await ensure_agent_keys(
+            keys_path, None, fallback_passphrase=MESH_PASSPHRASE)
+        assert keys1.ed25519_public == keys2.ed25519_public
+        assert _keys_envelope(keys_path)["encrypted"] is True
+
+    async def test_rotate_without_any_passphrase_refuses_plaintext(self, keys_path):
+        await ensure_agent_keys(keys_path, "rotate-test-passphrase-12")
+        with pytest.raises(ValueError, match="plaintext-keys"):
+            await rotate_keys(keys_path)
+        # Original encrypted file untouched.
+        assert _keys_envelope(keys_path)["encrypted"] is True
+
+    async def test_rotate_encrypts_with_fallback(self, keys_path):
+        keys1 = await ensure_agent_keys(
+            keys_path, None, fallback_passphrase=MESH_PASSPHRASE)
+        keys2 = await rotate_keys(
+            keys_path, None, fallback_passphrase=MESH_PASSPHRASE)
+        assert keys1.ed25519_public != keys2.ed25519_public
+        assert _keys_envelope(keys_path)["encrypted"] is True
 
 
 class TestMetrics:

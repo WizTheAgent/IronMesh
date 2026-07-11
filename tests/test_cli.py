@@ -237,6 +237,25 @@ class TestSetupWizard:
             rc = self._run_setup(tmp_path, name="testnode", port=18999)
         assert rc == 1
 
+    def _read_keys_envelope(self, keys_path):
+        import json
+        with open(keys_path) as f:
+            return json.load(f)
+
+    def test_wizard_keys_are_encrypted_with_mesh_passphrase(self, tmp_path):
+        """The wizard encrypts the key file with the mesh passphrase —
+        the invariant the run-time mesh-passphrase fallback relies on."""
+        from ironmesh.keys import load_keys
+        env = {"IRONMESH_SETUP_PASSPHRASE": "wizard-test-passphrase-12-plus"}
+        with patch.dict(os.environ, env, clear=False):
+            rc = self._run_setup(tmp_path, name="testnode", port=18999)
+        assert rc == 0
+        envelope = self._read_keys_envelope(tmp_path / "keys.json")
+        assert envelope["encrypted"] is True
+        keys = load_keys(str(tmp_path / "keys.json"),
+                         passphrase="wizard-test-passphrase-12-plus")
+        assert len(keys.ed25519_secret) == 32
+
     def test_non_interactive_keeps_existing_passphrase_file(self, tmp_path):
         # Pre-create a passphrase file; wizard should reuse it without
         # needing the env var
@@ -256,3 +275,339 @@ class TestSetupWizard:
         assert rc == 0
         # Existing passphrase preserved
         assert pass_path.read_text(encoding="utf-8") == existing
+
+
+# ---------------------------------------------------------------------------
+# Identity key-file passphrase resolution (golden-path fix).
+#
+# `ironmesh setup` encrypts keys.json with the mesh passphrase, then
+# prints an `ironmesh run` command that previously failed with
+# "Key file is encrypted but no passphrase provided". These tests pin
+# the full precedence chain that makes the printed command work:
+#   --keys-passphrase > --keys-passphrase-file > IRONMESH_KEYS_PASSPHRASE
+#   > mesh passphrase (tried silently) > interactive prompt > hard error.
+# ---------------------------------------------------------------------------
+
+MESH_PASSPHRASE = "golden-mesh-passphrase-12plus"
+OTHER_KEYS_PASSPHRASE = "different-keys-passphrase-12plus"
+
+
+@pytest.fixture(scope="module")
+def encrypted_keys_file(tmp_path_factory):
+    """A keys.json encrypted with the mesh passphrase (what setup writes)."""
+    from ironmesh.keys import generate_keypair, save_keys
+    path = tmp_path_factory.mktemp("keys-mesh") / "keys.json"
+    save_keys(generate_keypair("golden"), str(path),
+              passphrase=MESH_PASSPHRASE)
+    return str(path)
+
+
+@pytest.fixture(scope="module")
+def separately_encrypted_keys_file(tmp_path_factory):
+    """A keys.json encrypted with a passphrase != mesh passphrase."""
+    from ironmesh.keys import generate_keypair, save_keys
+    path = tmp_path_factory.mktemp("keys-sep") / "keys.json"
+    save_keys(generate_keypair("golden-sep"), str(path),
+              passphrase=OTHER_KEYS_PASSPHRASE)
+    return str(path)
+
+
+@pytest.fixture(autouse=True)
+def _clear_keys_passphrase_env(monkeypatch):
+    monkeypatch.delenv("IRONMESH_KEYS_PASSPHRASE", raising=False)
+
+
+class TestResolveKeysPassphrase:
+
+    def test_explicit_flag_wins_and_warns(self, encrypted_keys_file,
+                                          capsys, monkeypatch):
+        monkeypatch.setenv("IRONMESH_KEYS_PASSPHRASE", "env-should-lose")
+        pp = cli._resolve_keys_passphrase(
+            encrypted_keys_file,
+            explicit="explicit-wins",
+            passphrase_file=None,
+            mesh_passphrase=MESH_PASSPHRASE,
+        )
+        assert pp == "explicit-wins"
+        out = capsys.readouterr().out
+        assert "process list" in out  # discouraged-flag warning
+
+    def test_passphrase_file_beats_env_and_strips_newline(
+            self, encrypted_keys_file, tmp_path, monkeypatch):
+        monkeypatch.setenv("IRONMESH_KEYS_PASSPHRASE", "env-should-lose")
+        pp_file = tmp_path / "kp"
+        pp_file.write_text(OTHER_KEYS_PASSPHRASE + "\n", encoding="utf-8")
+        pp = cli._resolve_keys_passphrase(
+            encrypted_keys_file,
+            passphrase_file=str(pp_file),
+            mesh_passphrase=MESH_PASSPHRASE,
+        )
+        assert pp == OTHER_KEYS_PASSPHRASE
+
+    def test_env_var_beats_mesh_fallback(self, encrypted_keys_file,
+                                         monkeypatch):
+        monkeypatch.setenv("IRONMESH_KEYS_PASSPHRASE", "from-the-env")
+        pp = cli._resolve_keys_passphrase(
+            encrypted_keys_file, mesh_passphrase=MESH_PASSPHRASE)
+        assert pp == "from-the-env"
+
+    def test_mesh_passphrase_fallback_golden_path(self, encrypted_keys_file):
+        """Setup-produced state: nothing supplied, mesh passphrase
+        decrypts the key file silently — no prompt, no flags."""
+        pp = cli._resolve_keys_passphrase(
+            encrypted_keys_file, mesh_passphrase=MESH_PASSPHRASE)
+        assert pp == MESH_PASSPHRASE
+
+    def test_mesh_mismatch_falls_through_to_prompt(
+            self, separately_encrypted_keys_file, monkeypatch):
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        with patch.object(cli.getpass, "getpass",
+                          return_value=OTHER_KEYS_PASSPHRASE) as gp:
+            pp = cli._resolve_keys_passphrase(
+                separately_encrypted_keys_file,
+                mesh_passphrase=MESH_PASSPHRASE,
+            )
+        assert pp == OTHER_KEYS_PASSPHRASE
+        prompt = gp.call_args[0][0]
+        assert separately_encrypted_keys_file in prompt  # names the file
+
+    def test_interactive_prompt_wrong_passphrase_is_actionable(
+            self, separately_encrypted_keys_file, monkeypatch):
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        with patch.object(cli.getpass, "getpass",
+                          return_value="not-the-passphrase"):
+            with pytest.raises(ValueError) as exc:
+                cli._resolve_keys_passphrase(separately_encrypted_keys_file)
+        msg = str(exc.value)
+        assert "wrong passphrase" in msg
+        assert "--keys-passphrase-file" in msg
+        assert "IRONMESH_KEYS_PASSPHRASE" in msg
+
+    def test_non_tty_nothing_supplied_hard_error_lists_options(
+            self, encrypted_keys_file, monkeypatch):
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        with pytest.raises(ValueError) as exc:
+            cli._resolve_keys_passphrase(encrypted_keys_file)
+        msg = str(exc.value)
+        assert "--keys-passphrase-file" in msg
+        assert "IRONMESH_KEYS_PASSPHRASE" in msg
+        assert "process list" in msg  # argv flag documented as discouraged
+
+    def test_non_tty_mesh_mismatch_error_mentions_mesh_try(
+            self, separately_encrypted_keys_file, monkeypatch):
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        with pytest.raises(ValueError) as exc:
+            cli._resolve_keys_passphrase(
+                separately_encrypted_keys_file,
+                mesh_passphrase=MESH_PASSPHRASE,
+            )
+        assert "mesh passphrase was tried" in str(exc.value)
+
+    def test_plaintext_key_file_no_prompt_but_migration_passphrase(
+            self, tmp_path, monkeypatch):
+        """A plaintext key file never prompts; the mesh passphrase is
+        handed back so the daemon can re-encrypt the file forward —
+        unless plaintext keys were explicitly opted into."""
+        from ironmesh.keys import generate_keypair, save_keys
+        path = tmp_path / "plain.json"
+        save_keys(generate_keypair("p"), str(path), allow_plaintext=True)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        with patch.object(cli.getpass, "getpass") as gp:
+            assert cli._resolve_keys_passphrase(
+                str(path), mesh_passphrase=MESH_PASSPHRASE) == MESH_PASSPHRASE
+            assert cli._resolve_keys_passphrase(
+                str(path), mesh_passphrase=MESH_PASSPHRASE,
+                plaintext_opt_in=True) is None
+        gp.assert_not_called()
+
+    def test_missing_key_file_resolves_without_prompt(self, tmp_path,
+                                                      monkeypatch):
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        with patch.object(cli.getpass, "getpass") as gp:
+            cli._resolve_keys_passphrase(str(tmp_path / "nope.json"),
+                                         mesh_passphrase=MESH_PASSPHRASE)
+        gp.assert_not_called()
+
+    def test_unreadable_passphrase_file_is_actionable(self, tmp_path,
+                                                      encrypted_keys_file):
+        with pytest.raises(ValueError, match="keys passphrase file"):
+            cli._resolve_keys_passphrase(
+                encrypted_keys_file,
+                passphrase_file=str(tmp_path / "does-not-exist"),
+            )
+
+
+class TestGoldenPathRunWiring:
+    """setup-produced state → `ironmesh run` (as printed by the wizard)
+    resolves the key-file passphrase via the mesh-passphrase fallback.
+    BridgeDaemon is stubbed so no network/daemon starts; the hands-on
+    daemon start is covered by the release smoke run."""
+
+    def _setup_node(self, tmp_path):
+        env = {"IRONMESH_SETUP_PASSPHRASE": MESH_PASSPHRASE}
+        argv = [
+            "ironmesh", "setup", "--non-interactive", "--passphrase-from-env",
+            "--name", "goldennode", "--port", "18998",
+            "--keys-path", str(tmp_path / "keys.json"),
+            "--passphrase-file", str(tmp_path / "passphrase"),
+        ]
+        with patch.dict(os.environ, env, clear=False):
+            with patch.object(sys, "argv", argv):
+                assert cli.main() == 0
+
+    def _run_daemon_argv(self, tmp_path, extra=()):
+        return [
+            "ironmesh", "run", "--name", "goldennode", "--port", "18998",
+            "--passphrase-file", str(tmp_path / "passphrase"),
+            "--keys-path", str(tmp_path / "keys.json"),
+            *extra,
+        ]
+
+    def _invoke_run(self, argv):
+        """Run cli.main() with BridgeDaemon stubbed; return captured kwargs."""
+        captured = {}
+
+        class _StubDaemon:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def run(self):
+                pass
+
+        with patch("ironmesh.bridge.BridgeDaemon", _StubDaemon):
+            with patch.object(sys, "argv", argv):
+                rc = cli.main()
+        return rc, captured
+
+    def test_wizard_printed_command_resolves_keys_passphrase(self, tmp_path):
+        self._setup_node(tmp_path)
+        rc, captured = self._invoke_run(self._run_daemon_argv(tmp_path))
+        assert rc == 0
+        # The mesh passphrase was adopted as the key-file passphrase.
+        assert captured["keys_passphrase"] == MESH_PASSPHRASE
+        assert captured["passphrase"] == MESH_PASSPHRASE
+
+    def test_explicit_keys_passphrase_still_wins(self, tmp_path, capsys):
+        self._setup_node(tmp_path)
+        rc, captured = self._invoke_run(self._run_daemon_argv(
+            tmp_path, extra=("--keys-passphrase", MESH_PASSPHRASE)))
+        assert rc == 0
+        assert captured["keys_passphrase"] == MESH_PASSPHRASE
+        assert "process list" in capsys.readouterr().out
+
+    def test_keys_passphrase_file_flag(self, tmp_path):
+        self._setup_node(tmp_path)
+        kp_file = tmp_path / "keys-pass"
+        kp_file.write_text(MESH_PASSPHRASE + "\n", encoding="utf-8")
+        rc, captured = self._invoke_run(self._run_daemon_argv(
+            tmp_path, extra=("--keys-passphrase-file", str(kp_file))))
+        assert rc == 0
+        assert captured["keys_passphrase"] == MESH_PASSPHRASE
+
+    def test_headless_wrong_mesh_passphrase_fails_actionably(
+            self, tmp_path, capsys, monkeypatch):
+        """Key file encrypted with a different passphrase + headless run
+        with nothing supplied -> clean exit 1 with the options listed."""
+        from ironmesh.keys import generate_keypair, save_keys
+        self._setup_node(tmp_path)
+        save_keys(generate_keypair("other"), str(tmp_path / "keys.json"),
+                  passphrase=OTHER_KEYS_PASSPHRASE)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        rc, captured = self._invoke_run(self._run_daemon_argv(tmp_path))
+        assert rc == 1
+        assert not captured  # daemon never constructed
+        out = capsys.readouterr().out
+        assert "IRONMESH_KEYS_PASSPHRASE" in out
+        assert "--keys-passphrase-file" in out
+
+
+class TestAutogenKeysEncryptedByDefault:
+    """Bare `ironmesh run --name X` (no setup, no key file yet) must not
+    silently write a plaintext keys.json: the mesh passphrase — always
+    present by the time keys are generated — encrypts the new key file.
+    Plaintext requires the explicit --plaintext-keys opt-in."""
+
+    def _invoke_run(self, tmp_path, extra=()):
+        captured = {}
+
+        class _StubDaemon:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def run(self):
+                pass
+
+        pass_file = tmp_path / "passphrase"
+        pass_file.write_text(MESH_PASSPHRASE, encoding="utf-8")
+        argv = [
+            "ironmesh", "run", "--name", "barenode", "--port", "18997",
+            "--passphrase-file", str(pass_file),
+            "--keys-path", str(tmp_path / "keys.json"),
+            *extra,
+        ]
+        with patch("ironmesh.bridge.BridgeDaemon", _StubDaemon):
+            with patch.object(sys, "argv", argv):
+                rc = cli.main()
+        return rc, captured
+
+    def test_bare_run_encrypts_autogen_keys_with_mesh_passphrase(self, tmp_path):
+        rc, captured = self._invoke_run(tmp_path)
+        assert rc == 0
+        assert captured["keys_passphrase"] == MESH_PASSPHRASE
+        assert captured["plaintext_keys"] is False
+
+    def test_plaintext_keys_flag_is_the_only_plaintext_path(self, tmp_path):
+        rc, captured = self._invoke_run(tmp_path, extra=("--plaintext-keys",))
+        assert rc == 0
+        assert captured["keys_passphrase"] is None
+        assert captured["plaintext_keys"] is True
+
+    def test_existing_plaintext_file_gets_mesh_passphrase_for_migration(
+            self, tmp_path):
+        from ironmesh.keys import generate_keypair, save_keys
+        save_keys(generate_keypair("plain"), str(tmp_path / "keys.json"),
+                  allow_plaintext=True)
+        rc, captured = self._invoke_run(tmp_path)
+        assert rc == 0
+        # The daemon re-encrypts the plaintext file forward with this.
+        assert captured["keys_passphrase"] == MESH_PASSPHRASE
+
+
+class TestEnsureAgentKeysMeshFallback:
+    """Daemon-side fallback: BridgeDaemon passes the mesh passphrase to
+    ensure_agent_keys so library callers get the golden path too."""
+
+    @pytest.mark.asyncio
+    async def test_encrypted_file_loads_via_fallback(self, encrypted_keys_file):
+        from ironmesh.bridge import ensure_agent_keys
+        keys = await ensure_agent_keys(
+            encrypted_keys_file, None, fallback_passphrase=MESH_PASSPHRASE)
+        assert len(keys.ed25519_secret) == 32
+
+    @pytest.mark.asyncio
+    async def test_fallback_mismatch_is_actionable(
+            self, separately_encrypted_keys_file):
+        from ironmesh.bridge import ensure_agent_keys
+        with pytest.raises(ValueError) as exc:
+            await ensure_agent_keys(separately_encrypted_keys_file, None,
+                                    fallback_passphrase=MESH_PASSPHRASE)
+        msg = str(exc.value)
+        assert "different from the mesh passphrase" in msg
+        assert "--keys-passphrase-file" in msg
+
+    @pytest.mark.asyncio
+    async def test_no_passphrase_no_fallback_is_actionable(
+            self, encrypted_keys_file):
+        from ironmesh.bridge import ensure_agent_keys
+        with pytest.raises(ValueError) as exc:
+            await ensure_agent_keys(encrypted_keys_file, None)
+        assert "IRONMESH_KEYS_PASSPHRASE" in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_wrong_explicit_passphrase_is_actionable(
+            self, encrypted_keys_file):
+        from ironmesh.bridge import ensure_agent_keys
+        with pytest.raises(ValueError) as exc:
+            await ensure_agent_keys(encrypted_keys_file, "wrong-passphrase-x")
+        assert "wrong passphrase" in str(exc.value)
+        assert "--keys-passphrase-file" in str(exc.value)

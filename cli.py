@@ -83,7 +83,22 @@ def parse_args():
     # Use --passphrase-file, IRONMESH_PASSPHRASE_FILE, or interactive getpass.
     run_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json",
                            help="Identity key file path (default: ~/.ironmesh/keys.json)")
-    run_parser.add_argument("--keys-passphrase", default=None, help="Passphrase to decrypt key file")
+    run_parser.add_argument("--keys-passphrase", default=None,
+                           help="Passphrase to decrypt the identity key file. "
+                                "DISCOURAGED: argv is visible in the process "
+                                "list — prefer --keys-passphrase-file or the "
+                                "IRONMESH_KEYS_PASSPHRASE env var. When omitted, "
+                                "the daemon tries the mesh passphrase, then "
+                                "prompts on a terminal.")
+    run_parser.add_argument("--keys-passphrase-file", default=None,
+                           help="Read the identity key-file passphrase from a "
+                                "file (trailing newline stripped; chmod 600 "
+                                "recommended).")
+    run_parser.add_argument("--plaintext-keys", action="store_true",
+                           help="INSECURE: store an auto-generated identity "
+                                "key file UNENCRYPTED. Without this flag, "
+                                "auto-generated keys are encrypted with the "
+                                "mesh passphrase (matching `ironmesh setup`).")
     run_parser.add_argument("--db-path", default="~/.ironmesh/data.db",
                            help="SQLite store for messages, peers, audit metadata (default: ~/.ironmesh/data.db)")
     run_parser.add_argument("--tls-cert", default=None, help="TLS certificate file for WSS")
@@ -248,7 +263,13 @@ def parse_args():
     trust_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json",
                               help="Identity keys file (needed for trust store MAC)")
     trust_parser.add_argument("--keys-passphrase", default=None,
-                              help="Passphrase to decrypt identity keys")
+                              help="Passphrase to decrypt identity keys "
+                                   "(DISCOURAGED: visible in the process list — "
+                                   "prefer --keys-passphrase-file or "
+                                   "IRONMESH_KEYS_PASSPHRASE)")
+    trust_parser.add_argument("--keys-passphrase-file", default=None,
+                              help="Read the identity key-file passphrase from "
+                                   "a file (trailing newline stripped)")
     trust_parser.add_argument("--trust-path", default=None,
                               help="Override trust store path (default ~/.ironmesh/known_peers.json). "
                                    "Use when targeting a non-default daemon's trust file.")
@@ -510,7 +531,13 @@ def parse_args():
     ae.add_argument("--path", default="~/.ironmesh/audit.log")
     ae.add_argument("--out", required=True, help="Output JSON file")
     ae.add_argument("--keys-path", default="~/.ironmesh/keys.json")
-    ae.add_argument("--keys-passphrase", default=None)
+    ae.add_argument("--keys-passphrase", default=None,
+                    help="Passphrase to decrypt identity keys (DISCOURAGED: "
+                         "visible in the process list — prefer "
+                         "--keys-passphrase-file or IRONMESH_KEYS_PASSPHRASE)")
+    ae.add_argument("--keys-passphrase-file", default=None,
+                    help="Read the identity key-file passphrase from a file "
+                         "(trailing newline stripped)")
     avx = audit_sub.add_parser("verify-export", help="Verify a signed audit export")
     avx.add_argument("file", help="Signed export JSON file")
 
@@ -561,7 +588,14 @@ def parse_args():
     doctor_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json",
                                 help="Identity key file to check (default: ~/.ironmesh/keys.json)")
     doctor_parser.add_argument("--keys-passphrase", default=None,
-                                help="Passphrase to decrypt the key file (if encrypted)")
+                                help="Passphrase to decrypt the key file (if "
+                                     "encrypted). DISCOURAGED: visible in the "
+                                     "process list — prefer "
+                                     "--keys-passphrase-file or "
+                                     "IRONMESH_KEYS_PASSPHRASE.")
+    doctor_parser.add_argument("--keys-passphrase-file", default=None,
+                                help="Read the key-file passphrase from a file "
+                                     "(trailing newline stripped)")
     doctor_parser.add_argument("--db-path", default="~/.ironmesh/data.db",
                                 help="SQLite store to check (default: ~/.ironmesh/data.db)")
     doctor_parser.add_argument("--trust-path", default=None,
@@ -774,6 +808,117 @@ def get_passphrase(node_name: Optional[str] = None):
     sys.exit(1)
 
 
+def _keys_file_state(keys_path: str) -> str:
+    """Classify the on-disk identity key file.
+
+    Returns one of ``"missing"``, ``"encrypted"``, ``"plaintext"``, or
+    ``"unreadable"`` (present but not parseable as a key envelope — the
+    loader will surface the real error).
+    """
+    resolved = os.path.expanduser(keys_path)
+    if not os.path.exists(resolved):
+        return "missing"
+    try:
+        with open(resolved) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return "unreadable"
+    if not isinstance(data, dict):
+        return "unreadable"
+    return "encrypted" if data.get("encrypted", False) else "plaintext"
+
+
+def _resolve_keys_passphrase(keys_path: str,
+                             explicit: Optional[str] = None,
+                             passphrase_file: Optional[str] = None,
+                             mesh_passphrase: Optional[str] = None,
+                             allow_prompt: bool = True,
+                             warn_on_explicit: bool = True,
+                             plaintext_opt_in: bool = False) -> Optional[str]:
+    """Resolve the passphrase for the identity key file.
+
+    Precedence:
+        1. ``--keys-passphrase`` (explicit argv — kept for compat, but
+           discouraged: visible in the process list)
+        2. ``--keys-passphrase-file`` (read file, strip trailing newline)
+        3. ``IRONMESH_KEYS_PASSPHRASE`` environment variable
+        4. The mesh passphrase, tried silently against the encrypted
+           file — ``ironmesh setup`` encrypts the key file with the
+           mesh passphrase, so the wizard's printed run command works
+           with zero extra flags.
+        5. Interactive getpass prompt (TTY only), verified before use.
+        6. Hard error with an actionable message listing the options.
+
+    Returns the passphrase to use (``None`` when the key file is
+    plaintext or does not exist yet). Raises ValueError when the key
+    file is encrypted and no supplied source decrypts it.
+    """
+    from ironmesh.keys import KEYS_PASSPHRASE_SOURCES_HELP, load_keys
+
+    if explicit:
+        if warn_on_explicit:
+            print("WARNING: --keys-passphrase on the command line is visible "
+                  "in the process list. Prefer --keys-passphrase-file or the "
+                  "IRONMESH_KEYS_PASSPHRASE environment variable.")
+        return explicit
+    if passphrase_file:
+        try:
+            return _read_passphrase_file_safe(passphrase_file)
+        except (IOError, OSError, ValueError) as e:
+            raise ValueError(
+                f"Cannot read keys passphrase file {passphrase_file}: {e}"
+            ) from None
+    env = os.environ.get("IRONMESH_KEYS_PASSPHRASE")
+    if env:
+        return env
+
+    state = _keys_file_state(keys_path)
+    if state != "encrypted":
+        if state == "unreadable":
+            # Not a key envelope — let the loader surface the real error.
+            return None
+        # Missing (generated at startup) or plaintext: keys are
+        # encrypted by default, so hand back the mesh passphrase for
+        # the generation / re-encryption path — unless the operator
+        # explicitly opted into plaintext keys (--plaintext-keys).
+        return None if plaintext_opt_in else mesh_passphrase
+
+    resolved = os.path.expanduser(keys_path)
+    mesh_tried = False
+    if mesh_passphrase:
+        mesh_tried = True
+        try:
+            load_keys(resolved, passphrase=mesh_passphrase)
+            return mesh_passphrase
+        except ValueError:
+            pass  # key file uses a different passphrase — fall through
+
+    if allow_prompt and sys.stdin.isatty():
+        try:
+            prompted = getpass.getpass(
+                f"Passphrase for encrypted key file {keys_path}: ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            prompted = ""
+        if prompted:
+            try:
+                load_keys(resolved, passphrase=prompted)
+                return prompted
+            except ValueError:
+                raise ValueError(
+                    f"Could not decrypt key file {keys_path}: wrong "
+                    f"passphrase or corrupted key file.\n"
+                    + KEYS_PASSPHRASE_SOURCES_HELP
+                ) from None
+
+    mesh_note = (" The mesh passphrase was tried and did not match."
+                 if mesh_tried else "")
+    raise ValueError(
+        f"Key file {keys_path} is encrypted but no passphrase was "
+        f"provided.{mesh_note}\n" + KEYS_PASSPHRASE_SOURCES_HELP
+    )
+
+
 def setup_logging(level: str = "INFO", log_file: str = None,
                   log_format: str = "text"):
     """Configure root logger.
@@ -898,6 +1043,23 @@ def cmd_run(args):
     else:
         passphrase = get_passphrase(node_name=name)
 
+    # Resolve the identity key-file passphrase up front so the golden
+    # path (`ironmesh setup` → the exact run command it prints) works
+    # without a separate --keys-passphrase: setup encrypts the key file
+    # with the mesh passphrase, which is tried automatically. See
+    # _resolve_keys_passphrase for the full precedence chain.
+    try:
+        keys_passphrase = _resolve_keys_passphrase(
+            getattr(args, "keys_path", "~/.ironmesh/keys.json"),
+            explicit=getattr(args, "keys_passphrase", None),
+            passphrase_file=getattr(args, "keys_passphrase_file", None),
+            mesh_passphrase=passphrase,
+            plaintext_opt_in=getattr(args, "plaintext_keys", False),
+        )
+    except ValueError as e:
+        print(f"ERROR: {e}")
+        return 1
+
     from ironmesh import __version__
     banner = f"""
 +---------------------------------------------------+
@@ -919,7 +1081,13 @@ def cmd_run(args):
 
         from ironmesh.bridge import rotate_keys
         log.info("Key rotation requested...")
-        asyncio.run(rotate_keys(args.keys_path))
+        # Pass the resolved key-file passphrase so rotation never
+        # silently downgrades an encrypted key file to plaintext
+        # (previously the passphrase was dropped here entirely).
+        asyncio.run(rotate_keys(
+            args.keys_path, keys_passphrase,
+            allow_plaintext=getattr(args, "plaintext_keys", False),
+        ))
         log.info("Key rotation complete. Starting with new keys.")
 
     from ironmesh.bridge import BridgeDaemon
@@ -952,6 +1120,13 @@ def cmd_run(args):
             "may fall back to plaintext ws:// instead of requiring wss://. "
             "This flag is for localhost testing only. Generate a TLS cert "
             "and pass --tls-cert/--tls-key in any real deployment."
+        )
+
+    if getattr(args, "plaintext_keys", False):
+        log.warning(
+            "INSECURE: --plaintext-keys is set. Auto-generated identity "
+            "keys will be stored UNENCRYPTED on disk. Remove the flag to "
+            "get keys encrypted with the mesh passphrase."
         )
 
     strict_tls = getattr(args, "strict_tls", False)
@@ -991,7 +1166,8 @@ def cmd_run(args):
         passphrase=passphrase,
         keys_path=args.keys_path,
         db_path=getattr(args, "db_path", "~/.ironmesh/data.db"),
-        keys_passphrase=getattr(args, "keys_passphrase", None),
+        keys_passphrase=keys_passphrase,
+        plaintext_keys=getattr(args, "plaintext_keys", False),
         tls_cert=getattr(args, "tls_cert", None),
         tls_key=getattr(args, "tls_key", None),
         bind_address=getattr(args, "bind", "0.0.0.0"),
@@ -1071,10 +1247,13 @@ def cmd_trust(args):
     # TrustStore is bound to the agent identity. Load keys to derive
     # the MAC key. Require a passphrase to decrypt them.
     keys_path = getattr(args, "keys_path", "~/.ironmesh/keys.json")
-    pp = getattr(args, "keys_passphrase", None) or os.environ.get("IRONMESH_PASSPHRASE")
-    if not pp:
-        pp = getpass.getpass("Identity key passphrase (for trust store MAC): ")
     try:
+        pp = _resolve_keys_passphrase(
+            keys_path,
+            explicit=getattr(args, "keys_passphrase", None),
+            passphrase_file=getattr(args, "keys_passphrase_file", None),
+            mesh_passphrase=os.environ.get("IRONMESH_PASSPHRASE"),
+        )
         keypair = ew_keys.load_keys(keys_path, passphrase=pp)
     except Exception as e:
         print(f"Error: failed to load identity keys: {e}")
@@ -1672,12 +1851,16 @@ def cmd_keys(args):
     elif keys_cmd == "info":
         from ironmesh.keys import load_keys
         try:
-            keys = load_keys(args.path, passphrase=args.passphrase)
+            pp = _resolve_keys_passphrase(args.path,
+                                          explicit=args.passphrase,
+                                          warn_on_explicit=False)
+            keys = load_keys(args.path, passphrase=pp)
             print(f"Key file:    {args.path}")
             print(f"Agent name:  {keys.agent_name or '(not set)'}")
             print(f"Fingerprint: {keys.get_fingerprint()}")
             print(f"Public key:  {keys.get_public_key_base64()}")
-            print(f"Encrypted:   {'yes' if args.passphrase else 'no'}")
+            print(f"Encrypted:   "
+                  f"{'yes' if _keys_file_state(args.path) == 'encrypted' else 'no'}")
         except FileNotFoundError:
             print(f"Key file not found: {args.path}")
             return 1
@@ -1755,7 +1938,10 @@ def cmd_keys(args):
     elif keys_cmd == "fingerprint":
         from ironmesh.keys import load_keys
         try:
-            keys = load_keys(args.path, passphrase=args.passphrase)
+            pp = _resolve_keys_passphrase(args.path,
+                                          explicit=args.passphrase,
+                                          warn_on_explicit=False)
+            keys = load_keys(args.path, passphrase=pp)
         except FileNotFoundError:
             print(f"Key file not found: {args.path}")
             return 1
@@ -1781,8 +1967,11 @@ def cmd_keys(args):
     elif keys_cmd == "migrate":
         from ironmesh.keys import migrate_keys_to_master_seed
         try:
+            pp = _resolve_keys_passphrase(args.path,
+                                          explicit=args.passphrase,
+                                          warn_on_explicit=False)
             migrated = migrate_keys_to_master_seed(
-                args.path, passphrase=args.passphrase,
+                args.path, passphrase=pp,
             )
         except FileNotFoundError:
             print(f"Key file not found: {args.path}")
@@ -1892,10 +2081,13 @@ def cmd_audit(args):
 
     if sub == "export":
         from ironmesh import keys as ew_keys
-        kp_pass = args.keys_passphrase or os.environ.get("IRONMESH_PASSPHRASE")
-        if not kp_pass:
-            kp_pass = getpass.getpass("Identity key passphrase: ")
         try:
+            kp_pass = _resolve_keys_passphrase(
+                args.keys_path,
+                explicit=args.keys_passphrase,
+                passphrase_file=getattr(args, "keys_passphrase_file", None),
+                mesh_passphrase=os.environ.get("IRONMESH_PASSPHRASE"),
+            )
             keypair = ew_keys.load_keys(args.keys_path, passphrase=kp_pass)
         except Exception as e:
             print(f"Failed to load keys: {e}")
@@ -2074,12 +2266,36 @@ def cmd_doctor(args):
         keypair = None
         try:
             from ironmesh.keys import load_keys
-            pp = args.keys_passphrase or os.environ.get("IRONMESH_PASSPHRASE")
-            # Try in order: (a) the provided passphrase, (b) no passphrase
-            # (plaintext key file), (c) interactive prompt IF there's a tty.
-            # Never hang on a closed stdin — doctor is often run headless.
+            # Try in order: (a) the explicit --keys-passphrase, (b) the
+            # --keys-passphrase-file contents, (c) IRONMESH_KEYS_PASSPHRASE,
+            # (d) IRONMESH_PASSPHRASE, (e) the mesh passphrase from
+            # --passphrase-file (setup encrypts keys with the mesh
+            # passphrase), (f) no passphrase (plaintext key file),
+            # then (g) interactive prompt IF there's a tty. Never hang
+            # on a closed stdin — doctor is often run headless.
             attempt_errors = []
-            for pp_try in (pp, None):
+            candidates = [args.keys_passphrase]
+            kp_file = getattr(args, "keys_passphrase_file", None)
+            if kp_file:
+                try:
+                    candidates.append(_read_passphrase_file_safe(kp_file))
+                except (IOError, OSError, ValueError) as e:
+                    attempt_errors.append(
+                        f"--keys-passphrase-file unreadable: {e}")
+            candidates.append(os.environ.get("IRONMESH_KEYS_PASSPHRASE"))
+            candidates.append(os.environ.get("IRONMESH_PASSPHRASE"))
+            if args.passphrase_file:
+                try:
+                    candidates.append(
+                        _read_passphrase_file_safe(args.passphrase_file))
+                except (IOError, OSError, ValueError):
+                    pass  # reported by the --peer check if relevant
+            candidates.append(None)
+            seen = set()
+            for pp_try in candidates:
+                if pp_try in seen:
+                    continue
+                seen.add(pp_try)
                 try:
                     keypair = load_keys(keys_path, passphrase=pp_try)
                     break
@@ -2095,7 +2311,8 @@ def cmd_doctor(args):
                 print(f"      OK — fingerprint {keypair.get_fingerprint()}")
             else:
                 print(f"      FAIL — could not decrypt key file. "
-                      f"Set IRONMESH_PASSPHRASE or pass --keys-passphrase. "
+                      f"Set IRONMESH_KEYS_PASSPHRASE, pass "
+                      f"--keys-passphrase-file, or pass --keys-passphrase. "
                       f"(tried errors: {attempt_errors[-1]})")
                 failures += 1
         except Exception as e:

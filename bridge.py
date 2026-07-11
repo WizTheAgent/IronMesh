@@ -242,29 +242,83 @@ class _DaemonConfig:
 # Key management helpers
 # ---------------------------------------------------------------------------
 
-async def ensure_agent_keys(keys_path: str, passphrase: Optional[str] = None) -> ew_keys.AgentKeys:
+def _keys_decrypt_error(path, cause: str) -> ValueError:
+    """Build an actionable error for a key file that could not be
+    decrypted, listing every supported passphrase source."""
+    return ValueError(
+        f"Could not decrypt key file {path}: {cause}.\n"
+        + ew_keys.KEYS_PASSPHRASE_SOURCES_HELP
+    )
+
+
+async def ensure_agent_keys(keys_path: str, passphrase: Optional[str] = None,
+                            fallback_passphrase: Optional[str] = None,
+                            allow_plaintext: bool = False) -> ew_keys.AgentKeys:
     """Load or generate Ed25519 identity keypair.
 
-    If a plaintext key file is found and a passphrase is available,
-    automatically re-encrypts the key file (migration).
+    ``passphrase`` is the explicit key-file passphrase. When it is not
+    supplied and the on-disk key file is encrypted, ``fallback_passphrase``
+    (the mesh passphrase — ``ironmesh setup`` encrypts the key file with
+    the same passphrase it writes to the passphrase file) is tried
+    before failing, so the wizard's printed ``ironmesh run`` command
+    works with no extra flags.
+
+    Key files are encrypted by default: an auto-generated key file is
+    encrypted with ``passphrase`` or ``fallback_passphrase``, and a
+    plaintext key file found on disk is re-encrypted forward when any
+    passphrase is available (migration). A plaintext key file is only
+    ever written with the explicit ``allow_plaintext=True`` opt-in
+    (``--plaintext-keys`` on the CLI); with no passphrase and no
+    opt-in, generation fails with an actionable error.
     """
     path = Path(os.path.expanduser(keys_path))
     os.makedirs(path.parent, exist_ok=True)
 
     if path.exists():
         try:
-            keys = ew_keys.load_keys(str(path), passphrase=passphrase)
+            effective = passphrase
+            try:
+                keys = ew_keys.load_keys(str(path), passphrase=effective)
+            except ValueError as e:
+                if effective is None and "no passphrase provided" in str(e):
+                    if not fallback_passphrase:
+                        raise _keys_decrypt_error(
+                            path, "the file is encrypted but no passphrase "
+                                  "was provided") from None
+                    try:
+                        keys = ew_keys.load_keys(
+                            str(path), passphrase=fallback_passphrase)
+                    except ValueError:
+                        raise _keys_decrypt_error(
+                            path, "the file is encrypted with a passphrase "
+                                  "different from the mesh passphrase") from None
+                    effective = fallback_passphrase
+                    logger.info(
+                        "Key file %s decrypted with the mesh passphrase "
+                        "(no separate key-file passphrase was supplied)",
+                        path,
+                    )
+                elif "Wrong passphrase" in str(e):
+                    raise _keys_decrypt_error(
+                        path, "wrong passphrase or corrupted key file") from None
+                else:
+                    raise
             logger.info("Keys loaded from %s (fingerprint: %s)", path, keys.get_fingerprint())
 
-            # Auto-migrate: if key file is plaintext and the code have a passphrase, re-encrypt
-            if passphrase:
+            # Auto-migrate: if the key file is plaintext and any
+            # passphrase is available (explicit key-file passphrase or
+            # the mesh passphrase), re-encrypt — unless the caller
+            # explicitly opted into plaintext keys.
+            encryption_pp = effective or fallback_passphrase
+            if encryption_pp and not allow_plaintext:
                 import json as _json
                 with open(str(path)) as _f:
                     _data = _json.load(_f)
                 if not _data.get("encrypted", False):
                     logger.warning("Migrating plaintext key file to encrypted: %s", path)
-                    ew_keys.save_keys(keys, str(path), passphrase=passphrase)
+                    ew_keys.save_keys(keys, str(path), passphrase=encryption_pp)
                     logger.info("Key file migration complete — now encrypted with Argon2id")
+                    effective = encryption_pp
 
             # v0.9.4 Phase 2 auto-migration: a daemon running v0.9.4 that
             # loads a legacy v1/v2 keystore (no master-seed envelope)
@@ -281,8 +335,8 @@ async def ensure_agent_keys(keys_path: str, passphrase: Optional[str] = None) ->
                 try:
                     keys = ew_keys.migrate_keys_to_master_seed(
                         str(path),
-                        passphrase=passphrase,
-                        allow_plaintext=not passphrase,
+                        passphrase=effective,
+                        allow_plaintext=not effective,
                     )
                     logger.warning(
                         "v0.9.4 Phase 2 auto-migration: legacy keys "
@@ -305,24 +359,67 @@ async def ensure_agent_keys(keys_path: str, passphrase: Optional[str] = None) ->
             raise
 
     keypair = ew_keys.generate_keypair()
-    if not passphrase:
-        logger.warning("No passphrase provided for key file — storing unencrypted (INSECURE)")
-    ew_keys.save_keys(keypair, str(path), passphrase=passphrase,
-                      allow_plaintext=not passphrase)
+    effective = passphrase or fallback_passphrase
+    if effective:
+        ew_keys.save_keys(keypair, str(path), passphrase=effective)
+        if not passphrase:
+            logger.info(
+                "Auto-generated key file encrypted with the mesh "
+                "passphrase (no separate key-file passphrase was "
+                "supplied): %s", path,
+            )
+    elif allow_plaintext:
+        logger.warning(
+            "Storing the new identity key UNENCRYPTED — plaintext keys "
+            "were explicitly enabled. INSECURE for production use."
+        )
+        ew_keys.save_keys(keypair, str(path), passphrase=None,
+                          allow_plaintext=True)
+    else:
+        raise ValueError(
+            f"Refusing to auto-generate a PLAINTEXT identity key file at "
+            f"{path}: no passphrase is available to encrypt it. Provide a "
+            "key-file passphrase or the mesh passphrase, or explicitly "
+            "opt in to an unencrypted key file with --plaintext-keys "
+            "(allow_plaintext=True from the library)."
+        )
     logger.info("New keypair generated -> %s (fingerprint: %s)", path, keypair.get_fingerprint())
     return keypair
 
 
-async def rotate_keys(keys_path: str, passphrase: Optional[str] = None) -> ew_keys.AgentKeys:
-    """Generate a new keypair and save to disk."""
+async def rotate_keys(keys_path: str, passphrase: Optional[str] = None,
+                      fallback_passphrase: Optional[str] = None,
+                      allow_plaintext: bool = False) -> ew_keys.AgentKeys:
+    """Generate a new keypair and save to disk.
+
+    Same encryption contract as :func:`ensure_agent_keys`: the new key
+    file is encrypted with ``passphrase`` (or ``fallback_passphrase`` —
+    the mesh passphrase — when no key-file passphrase was supplied);
+    a plaintext key file requires the explicit ``allow_plaintext``
+    opt-in.
+    """
     path = Path(os.path.expanduser(keys_path))
     os.makedirs(path.parent, exist_ok=True)
 
     keypair = ew_keys.generate_keypair()
-    if not passphrase:
-        logger.warning("No passphrase provided for key file — storing unencrypted (INSECURE)")
-    ew_keys.save_keys(keypair, str(path), passphrase=passphrase,
-                      allow_plaintext=not passphrase)
+    effective = passphrase or fallback_passphrase
+    if effective:
+        ew_keys.save_keys(keypair, str(path), passphrase=effective)
+    elif allow_plaintext:
+        logger.warning(
+            "Storing the rotated identity key UNENCRYPTED — plaintext "
+            "keys were explicitly enabled. INSECURE for production use."
+        )
+        ew_keys.save_keys(keypair, str(path), passphrase=None,
+                          allow_plaintext=True)
+    else:
+        raise ValueError(
+            f"Refusing to rotate to a PLAINTEXT identity key file at "
+            f"{path}: no passphrase is available to encrypt it. Provide a "
+            "key-file passphrase or the mesh passphrase, or explicitly "
+            "opt in to an unencrypted key file with --plaintext-keys "
+            "(allow_plaintext=True from the library)."
+        )
     logger.info("Key rotation complete -> %s", path)
     return keypair
 
@@ -404,7 +501,11 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
                  # host. The startup banner emits a loud warning when
                  # this is non-loopback so it cannot quietly make it
                  # into a production config.
-                 gui_bind: str = "127.0.0.1"):
+                 gui_bind: str = "127.0.0.1",
+                 # Explicit opt-in to an UNENCRYPTED auto-generated key
+                 # file. Without it, auto-generated keys are encrypted
+                 # with keys_passphrase (or the mesh passphrase).
+                 plaintext_keys: bool = False):
         self.name = name
         self.port = port
         self.bind_address = bind_address
@@ -446,6 +547,7 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
                     trust_path = os.path.join(_key_dir, "known_peers.json")
         self.keys_path = keys_path
         self.keys_passphrase = keys_passphrase
+        self.plaintext_keys = plaintext_keys
         self.tls_cert = tls_cert
         self.tls_key = tls_key
         self.max_message_size = max_message_size
@@ -736,12 +838,24 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
         """Launch the bridge and all background tasks."""
         self._loop = asyncio.get_event_loop()
         # Load or generate identity keys
-        self._keypair = await ensure_agent_keys(self.keys_path, self.keys_passphrase)
+        # The mesh passphrase doubles as the key-file fallback: `ironmesh
+        # setup` encrypts the key file with the same passphrase it writes
+        # to the passphrase file, so the wizard's printed run command
+        # works without a separate --keys-passphrase.
+        self._keypair = await ensure_agent_keys(
+            self.keys_path, self.keys_passphrase,
+            fallback_passphrase=self.passphrase,
+            allow_plaintext=self.plaintext_keys,
+        )
 
         # Key rotation via env var
         if os.environ.get("IRONMESH_ROTATE_KEYS") == "1":
             logger.info("Key rotation triggered")
-            self._keypair = await rotate_keys(self.keys_path, self.keys_passphrase)
+            self._keypair = await rotate_keys(
+                self.keys_path, self.keys_passphrase,
+                fallback_passphrase=self.passphrase,
+                allow_plaintext=self.plaintext_keys,
+            )
 
         # v0.8.5.6: silence the websockets-server "did not receive a valid
         # HTTP request" ERROR that fires every time a peer dials wss://

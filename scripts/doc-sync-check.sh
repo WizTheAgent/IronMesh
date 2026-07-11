@@ -109,6 +109,9 @@ DENY=(
   'canonical fingerprint of a passphrase mismatch'  # doctor --peer overstatement
   'verify reachability + passphrase match'          # doctor --peer overstatement
   'passphrases agree'                               # doctor --peer cannot confirm this
+  'does not reuse the mesh passphrase'              # run tries the mesh passphrase automatically
+  'stored unencrypted'                              # auto-generated keys are encrypted by default
+  'auto-generates an unencrypted key file'          # plaintext requires --plaintext-keys opt-in
 )
 scope_files="$(git ls-files '*.md' 2>/dev/null | grep -vE 'CHANGELOG\.md|docs/RELEASE_NOTES_v|REVIEW_EVIDENCE')"
 deny_hits=0

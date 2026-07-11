@@ -73,19 +73,21 @@ That's it. Both agents are now communicating over an encrypted channel. No inter
 
 ## 5. Generate keys (optional)
 
-Keys are auto-generated on first run. **Auto-generated keys are stored
-unencrypted** (the daemon logs an `INSECURE` warning) unless you pass
-`--keys-passphrase` to `ironmesh run`. To generate an encrypted key
-file up front:
+Keys are auto-generated on first run, **encrypted with the mesh
+passphrase** (an unencrypted key file requires the explicit
+`--plaintext-keys` opt-in). To generate an encrypted key file up
+front with its own passphrase:
 
 ```bash
 ironmesh keys generate --path ~/.ironmesh/keys.json --passphrase mykeyspassword
 ```
 
-> **Note:** A daemon started with `--keys-passphrase` re-encrypts a
+> **Note:** A daemon started with a passphrase available re-encrypts a
 > legacy plaintext key file automatically on startup. If the key file
-> is encrypted, `ironmesh run` needs the same `--keys-passphrase` to
-> open it — it does not reuse the mesh passphrase.
+> is encrypted with the mesh passphrase (what `ironmesh setup` does),
+> `ironmesh run` opens it automatically; a different key passphrase is
+> supplied via `--keys-passphrase-file`, `IRONMESH_KEYS_PASSPHRASE`,
+> or an interactive prompt.
 
 ## 6. Send messages programmatically
 
