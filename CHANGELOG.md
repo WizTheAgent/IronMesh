@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] — 2026-07-12 — HELLO domain separation + RNS link binding (protocol ironmesh/0.9)
+
 ### Changed
 
 - AutoGen adapter: new `create_mesh_tools()` returns the mesh functions as construction-time tools for the modern `autogen-agentchat` API (legacy `register_ironmesh()` unchanged); the adapter integration test now drives a real `AssistantAgent` end-to-end instead of skipping, and CI installs `autogen-agentchat` in place of the discontinued legacy `pyautogen` module.

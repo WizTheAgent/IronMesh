@@ -9,9 +9,9 @@
 
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **v0.9.4.2 — operator-polish patch on the v0.9.4 pre-audit-hardening + dual-use-migration line.** 1083 tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus live cross-host validation on the new wire surfaces.
+> **v0.9.5 — security-hardening release on the v0.9.4 pre-audit-hardening + dual-use-migration line.** 1192 tests green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus live cross-host validation on the new wire surfaces.
 > Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
-> Wire-format `ironmesh/0.8` added opt-in feature flags (handshake-skip, group-broadcast) without disturbing any existing path; the `ironmesh/0.9` protocol line on `main` (unreleased) adds domain-separated HELLO signatures and RNS link binding, version-gated so older peers keep interoperating. The headline doc — [`docs/STABILITY_PROMISE.md`](docs/STABILITY_PROMISE.md) — is the v1.0 contract for everything we commit to keeping stable.
+> Wire-format `ironmesh/0.8` added opt-in feature flags (handshake-skip, group-broadcast) without disturbing any existing path; the `ironmesh/0.9` protocol line adds domain-separated HELLO signatures and RNS link binding, version-gated so older peers keep interoperating. The headline doc — [`docs/STABILITY_PROMISE.md`](docs/STABILITY_PROMISE.md) — is the v1.0 contract for everything we commit to keeping stable.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
 **IronMesh** — Local-first, end-to-end encrypted mesh protocol for AI agents.
@@ -150,7 +150,7 @@ in the repo root.
 
 ```bash
 pip install ironmesh            # PyPI
-# or: docker pull wiztheagent/ironmesh:0.9.4.2
+# or: docker pull wiztheagent/ironmesh:0.9.5
 # or: ./scripts/install.sh       (Linux / macOS systemd)
 # or: see docs/TERMUX.md         (Android)
 ```
@@ -599,8 +599,8 @@ path: `pip install --upgrade ironmesh`. See
 
 Where to get it and what's still rough:
 
-- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport, `[keychain]` for OS-keychain passphrase storage, `[otel]` for OpenTelemetry tracing). Latest: **v0.9.4.2**.
-- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.9.4.2` (or `:latest`). Non-root UID 1000. See [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml), and [`docker-compose.demo.yml`](docker-compose.demo.yml) for an instant 2-node demo.
+- **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport, `[keychain]` for OS-keychain passphrase storage, `[otel]` for OpenTelemetry tracing). Latest: **v0.9.5**.
+- **Docker Hub** — `docker pull wiztheagent/ironmesh:0.9.5` (or `:latest`). Non-root UID 1000. See [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml), and [`docker-compose.demo.yml`](docker-compose.demo.yml) for an instant 2-node demo.
 - **GitHub releases** — annotated tags, wheel + sdist attached: [releases page](https://github.com/WizTheAgent/IronMesh/releases).
 - **Go client** — `clients/go/` (reference implementation, crypto primitives verified against Python).
 - **LoRa end-to-end latency** — Measured live at 915 MHz SF8/BW125 between two RNode-equipped nodes (1 hop, strong signal): 16-byte probe 1.07 — 1.23 s, 64-byte probe 1.17 — 1.25 s, 256-byte probe 1.77 — 1.98 s, 100% delivery across 9 probes. Multi-hop + long-range interference sweeps are still pending — see [`docs/LORA_VALIDATION.md`](docs/LORA_VALIDATION.md).

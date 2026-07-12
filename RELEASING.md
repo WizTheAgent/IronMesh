@@ -30,11 +30,21 @@ git push origin v0.9.5                   # release.yml does the rest
 3. **Run the gate locally:** `bash scripts/release-qc.sh`. It must end `FAIL: 0`.
    The doc-sync check ([`scripts/doc-sync-check.sh`](scripts/doc-sync-check.sh))
    verifies the version strings agree, the CHANGELOG heading chain is intact, and
-   no retired claim has reappeared.
-4. **Open a PR.** `main` is protected — CI (tests + `release qc`) must pass before
+   no retired claim has reappeared. The gate's site-version step
+   ([`scripts/check-site-version.sh`](scripts/check-site-version.sh)) also fails
+   if the marketing site's `SITE_VERSION.json` is behind this release — see step 4.
+4. **Bump the marketing site's `SITE_VERSION.json` to match.** The site lives in
+   a separate checkout (not a submodule), so it drifts behind the daemon on its
+   own. Update its `version` (and `version_tag`) to this release and redeploy.
+   [`scripts/check-site-version.sh`](scripts/check-site-version.sh) confirms the
+   two agree — run it directly, or rely on `release-qc.sh` step 14. It reads the
+   site from `../ironmesh-site/SITE_VERSION.json` by default and honors
+   `IRONMESH_SITE_DIR` / `IRONMESH_SITE_VERSION_FILE`; it skips cleanly (does not
+   fail) on a machine that has no site checkout, so CI stays green.
+5. **Open a PR.** `main` is protected — CI (tests + `release qc`) must pass before
    merge. This is the gate that stops stale strings or a broken CHANGELOG from
    landing.
-5. **Tag and push:**
+6. **Tag and push:**
    ```bash
    git tag -a vX.Y.Z -m "IronMesh X.Y.Z — <headline>"
    git push origin vX.Y.Z
@@ -57,6 +67,13 @@ and build only — the PyPI, Docker, and GitHub-Release jobs are skipped.
   disagree, whose CHANGELOG heading chain is broken, or that resurrects a retired
   claim. **When you correct a false public claim, add its phrasing to that
   script's denylist so it can't come back.**
+- **`scripts/check-site-version.sh`** (release-qc step 14) blocks a release whose
+  marketing-site `SITE_VERSION.json` still advertises an older version than the
+  daemon. The site is a separate checkout, not a submodule, so on a clean CI
+  checkout the script has nothing to compare against and skips (exit 0) — the gate
+  only bites on a machine that has the site checked out and drifting. This is the
+  pre-tag counterpart to the nightly surface check below, which catches drift only
+  after publishing.
 - **`release-surface-check.yml`** (nightly) compares PyPI, the latest GitHub
   Release, Docker Hub, and ironmesh.org, and opens a "Release surface drift" issue
   on any mismatch.

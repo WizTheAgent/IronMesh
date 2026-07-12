@@ -267,6 +267,22 @@ else
     fail "doc-sync-check reported drift (see indented output above)"
 fi
 
+# ───── 14. marketing-site version drift ──────────────────────────
+# The site lives in a separate repo/checkout, not a submodule, so this
+# gate cannot see it on a clean CI checkout. check-site-version.sh
+# no-ops cleanly (exit 0) when the site directory is absent, so this
+# step is a PASS on CI and only FAILs on a real, observed mismatch on a
+# machine that has the site checked out. See RELEASING.md.
+echo "[14] marketing-site version drift (skips cleanly when the site checkout is absent)"
+site_ver_rc=0
+site_ver_out="$(bash scripts/check-site-version.sh 2>&1)" || site_ver_rc=$?
+printf '%s\n' "$site_ver_out" | sed 's/^/      /'
+if [ "$site_ver_rc" -eq 0 ]; then
+    ok "site version in sync (or site checkout not present — skipped)"
+else
+    fail "marketing-site SITE_VERSION.json is behind the daemon version"
+fi
+
 # ───── Summary ───────────────────────────────────────────────────
 echo
 echo "═══════════════════════════════════════════════════════════════"

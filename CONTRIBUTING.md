@@ -90,7 +90,7 @@ To change a dependency, edit `pyproject.toml` and regenerate the
 lockfile — the exact command is in the header of `requirements.lock`.
 Commit both files together.
 
-As of v0.9.4.2 the suite runs **1083 tests** (8 skipped, 1 xpassed) on
+As of v0.9.5 the suite runs **1192 tests** (5 skipped, 1 xpassed) on
 the matrix Ubuntu + Windows + macOS × Python 3.10–3.13. Anything
 substantially below that on a clean checkout is a regression — open
 an issue with the platform + Python version.
