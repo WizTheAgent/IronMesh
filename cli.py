@@ -691,6 +691,83 @@ def parse_args():
     setup_parser.add_argument("--force", action="store_true",
                               help="Overwrite existing key file / passphrase file without "
                                    "prompting.")
+    # v0.9.6 wizard enhancements — all optional; the zero-config default
+    # path is unchanged when none are supplied.
+    setup_parser.add_argument("--profile", default=None,
+                              choices=["lan", "lora", "homelab", "tactical",
+                                       "custom", "secure", "dev", "offline"],
+                              help="Deployment posture (see `ironmesh run "
+                                   "--profile`). Selects sensible wizard "
+                                   "defaults; interactive mode prompts.")
+    setup_parser.add_argument("--generate-passphrase", action="store_true",
+                              help="Auto-generate a strong mesh passphrase with "
+                                   "`secrets` and show it ONCE. It must be "
+                                   "copied to every node EXACTLY.")
+    setup_parser.add_argument("--use-keychain", action="store_true",
+                              help="Store the passphrase in the OS keyring "
+                                   "(requires the [keychain] extra) instead of "
+                                   "a plaintext passphrase file. Degrades to a "
+                                   "file if no backend is available.")
+    setup_parser.add_argument("--from-invite", default=None, metavar="TOKEN",
+                              help="Bootstrap this node FROM an invite token "
+                                   "issued by an existing node (`ironmesh "
+                                   "invite create`). Validates the token, pins "
+                                   "the inviter identity, and connects to the "
+                                   "inviter's endpoint to complete trust via "
+                                   "the pending-trust gate.")
+    setup_parser.add_argument("--from-invite-file", default=None, metavar="PATH",
+                              help="Read the invite token from a file instead "
+                                   "of the command line (keeps it out of shell "
+                                   "history).")
+
+    # --- invite ---
+    invite_parser = sub.add_parser(
+        "invite",
+        help="Issue / manage ephemeral single-use bootstrap invite tokens",
+    )
+    invite_sub = invite_parser.add_subparsers(dest="invite_command",
+                                              help="Invite actions")
+    invite_create = invite_sub.add_parser(
+        "create",
+        help="Create an ephemeral single-use invite token for a new node",
+    )
+    invite_create.add_argument("--keys-path", default="~/.ironmesh/keys.json",
+                               help="Identity key file to sign the invite with")
+    invite_create.add_argument("--keys-passphrase", default=None,
+                               help="Passphrase for the key file (DISCOURAGED "
+                                    "on argv — prefer --keys-passphrase-file "
+                                    "or IRONMESH_KEYS_PASSPHRASE).")
+    invite_create.add_argument("--keys-passphrase-file", default=None,
+                               help="Read the key-file passphrase from a file")
+    invite_create.add_argument("--endpoint", default=None, metavar="HOST:PORT",
+                               help="Bootstrap endpoint the joiner connects to "
+                                    "first: this node's reachable host:port (or "
+                                    "rns:<dest-hash>). REQUIRED — the joiner "
+                                    "first-contacts the inviter directly.")
+    invite_create.add_argument("--profile", default=None,
+                               choices=["lan", "lora", "homelab", "tactical",
+                                        "custom", "secure", "dev", "offline"],
+                               help="Deployment profile hint carried in the "
+                                    "token; also selects the default expiry "
+                                    "(tactical=5m, lan/homelab=15m, "
+                                    "lora/offline=30m).")
+    invite_create.add_argument("--expires-in", default=None, metavar="DURATION",
+                               help="Override the token lifetime, e.g. '10m', "
+                                    "'1h', '900s' or a bare number of seconds. "
+                                    "Defaults to the per-profile value.")
+    invite_create.add_argument("--allowed-peers", default="",
+                               help="Suggested --allowed-peers hint for the "
+                                    "joiner (carried in the token).")
+    invite_create.add_argument("--qr", action="store_true",
+                               help="Also render the token as an in-terminal "
+                                    "ASCII QR code (needs the [qr] extra; "
+                                    "degrades to the string with a note).")
+    invite_create.add_argument("--qr-png", default=None, metavar="PATH",
+                               help="Write the token as a PNG QR to PATH. "
+                                    "WARNING: phone camera rolls often sync to "
+                                    "the cloud — only acceptable because the "
+                                    "token is single-use + short-lived. Needs "
+                                    "the [qr] extra.")
 
     # --- upgrade ---
     upgrade_parser = sub.add_parser(
@@ -3506,6 +3583,140 @@ def cmd_upgrade(args):
     return 0
 
 
+def _parse_duration(text: str) -> float:
+    """Parse a human duration into seconds.
+
+    Accepts a bare number of seconds, or a suffixed value: '900s', '15m',
+    '1h', '1d'. Raises ValueError on anything else.
+    """
+    s = str(text).strip().lower()
+    if not s:
+        raise ValueError("empty duration")
+    units = {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
+    if s[-1] in units:
+        value = float(s[:-1])
+        return value * units[s[-1]]
+    return float(s)  # bare seconds
+
+
+def cmd_invite(args):
+    """Issue / manage ephemeral single-use bootstrap invite tokens."""
+    action = getattr(args, "invite_command", None)
+    if action != "create":
+        print("Usage: ironmesh invite create --endpoint <host:port> "
+              "[--profile <p>] [--expires-in <dur>] [--qr]")
+        return 1
+
+    import os
+    from ironmesh import invite as ew_invite
+    from ironmesh import protocol as ew_protocol
+    from ironmesh import qr as ew_qr
+    from ironmesh.keys import load_keys
+
+    endpoint = getattr(args, "endpoint", None)
+    if not endpoint:
+        print("ERROR: --endpoint is required. The joiner first-contacts the "
+              "inviter directly, so the token must pin this node's reachable "
+              "host:port (or rns:<dest-hash>).")
+        return 1
+
+    keys_path = os.path.expanduser(args.keys_path)
+    if not os.path.isfile(keys_path):
+        print(f"ERROR: identity key file not found at {keys_path}. Run "
+              f"`ironmesh setup` first.")
+        return 1
+
+    try:
+        passphrase = _resolve_keys_passphrase(
+            keys_path,
+            explicit=getattr(args, "keys_passphrase", None),
+            passphrase_file=getattr(args, "keys_passphrase_file", None),
+            allow_prompt=True,
+        )
+    except ValueError as exc:
+        print(f"ERROR: {exc}")
+        return 1
+
+    try:
+        keypair = load_keys(keys_path, passphrase=passphrase)
+    except Exception as exc:  # noqa: BLE001 — surface any load failure clearly
+        print(f"ERROR: could not load identity keypair: {exc}")
+        return 1
+
+    profile = getattr(args, "profile", None)
+    ttl = None
+    expires_in = getattr(args, "expires_in", None)
+    if expires_in:
+        try:
+            ttl = _parse_duration(expires_in)
+        except ValueError:
+            print(f"ERROR: could not parse --expires-in '{expires_in}'. Use "
+                  f"e.g. '10m', '1h', '900s', or a bare number of seconds.")
+            return 1
+        if ttl <= 0:
+            print("ERROR: --expires-in must be a positive duration.")
+            return 1
+
+    token = ew_invite.create_invite(
+        keypair,
+        endpoint,
+        profile=profile,
+        ttl_seconds=ttl,
+        allowed_peers=getattr(args, "allowed_peers", "") or "",
+    )
+    token_str = token.to_string()
+
+    effective_ttl = ttl if ttl is not None else ew_protocol.invite_max_age_for_profile(profile)
+    minutes = effective_ttl / 60.0
+
+    print()
+    print("IronMesh bootstrap invite (ephemeral, single-use)")
+    print("=" * 52)
+    print(f"  Inviter fingerprint : {token.inviter_id}")
+    print(f"  Endpoint            : {endpoint}")
+    print(f"  Profile             : {profile or '(none)'}")
+    print(f"  Expires in          : {minutes:g} min")
+    if token.allowed_peers:
+        print(f"  Suggested peers     : {token.allowed_peers}")
+    print()
+    print("Give this token to the joining node. It gets that node PAST")
+    print("first-contact identity verification only — the joiner still lands")
+    print("in your pending-trust gate for explicit approval. It carries NO")
+    print("passphrase. It is useless once consumed or expired.")
+    print()
+    print("On the new node, run:")
+    print(f"  ironmesh setup --from-invite '{token_str}'")
+    print()
+    print("Token:")
+    print(f"  {token_str}")
+    print()
+
+    if getattr(args, "qr", False):
+        art, note = ew_qr.render_for_terminal(token_str)
+        if art is not None:
+            print("Scan this QR from the new node's camera or a QR reader:")
+            print(art)
+        else:
+            print(note)
+        print()
+
+    qr_png = getattr(args, "qr_png", None)
+    if qr_png:
+        ok = ew_qr.png_qr(token_str, os.path.expanduser(qr_png))
+        if ok:
+            print(f"Wrote QR PNG to {qr_png}")
+            print("WARNING: a phone that scans this PNG may sync the image to")
+            print("the cloud. That is acceptable ONLY because this token is")
+            print("single-use and short-lived — it is useless after the join")
+            print("or expiry. NEVER put the mesh passphrase in a QR code.")
+        else:
+            print("QR PNG output needs the optional [qr] extra "
+                  "(`pip install ironmesh[qr]`). Token string printed above.")
+        print()
+
+    return 0
+
+
 def cmd_setup(args):
     """Interactive first-run wizard.
 
@@ -3563,6 +3774,65 @@ def cmd_setup(args):
         print("until the final confirmation.")
         print()
 
+    # 0. Bootstrap-from-invite (optional). Validate the token up front so
+    # an expired / forged / malformed token fails BEFORE any files are
+    # written. Single-use is enforced INVITER-side when the daemon later
+    # connects to the pinned endpoint — not here (the joiner cannot be
+    # authoritative about consumption).
+    invite_token = None
+    invite_raw = getattr(args, "from_invite", None)
+    invite_file = getattr(args, "from_invite_file", None)
+    if invite_file and not invite_raw:
+        try:
+            invite_raw = Path(os.path.expanduser(invite_file)).read_text(
+                encoding="utf-8").strip()
+        except OSError as exc:
+            print(f"ERROR: cannot read invite file {invite_file}: {exc}")
+            return 1
+    if invite_raw:
+        from ironmesh import invite as ew_invite
+        try:
+            invite_token = ew_invite.parse_invite(invite_raw)
+            # Signature + expiry. Identity is checked at handshake time
+            # (verified-first-use) once we reach the endpoint.
+            ew_invite.validate_invite(invite_token)
+        except ew_invite.InviteExpired:
+            print("ERROR: this invite has expired. Ask the inviting node to "
+                  "issue a fresh one (`ironmesh invite create`).")
+            return 1
+        except ew_invite.InviteError as exc:
+            print(f"ERROR: invalid invite token: {exc}")
+            return 1
+        print("Invite accepted (signature + expiry OK).")
+        print(f"  Inviter fingerprint : {invite_token.inviter_id}")
+        print(f"  Connect endpoint    : {invite_token.endpoint}")
+        if invite_token.profile:
+            print(f"  Profile hint        : {invite_token.profile}")
+        print("  The inviting node must be REACHABLE at that endpoint when")
+        print("  you start this node — the join completes by connecting to")
+        print("  it directly. You will land in its pending-trust gate.")
+        print()
+        # Adopt token hints as defaults unless the operator overrode them.
+        if getattr(args, "profile", None) is None and invite_token.profile:
+            args.profile = invite_token.profile
+        if args.allowed_peers is None and invite_token.allowed_peers:
+            args.allowed_peers = invite_token.allowed_peers
+
+    # 0b. Profile selection (optional). Sets sensible wizard defaults; the
+    # extended --profile system is the single source of truth for postures.
+    profile = getattr(args, "profile", None)
+    if profile is None and interactive:
+        profile = _prompt(
+            "Deployment profile (lan/lora/homelab/tactical/custom, blank=lan)",
+            default="",
+        ) or None
+        args.profile = profile
+    if profile:
+        print(f"Profile: {profile}")
+        # tactical implies the pending-trust gate on unless overridden.
+        if profile == "tactical" and not args.no_trust_gate:
+            args.enable_trust_gate = True
+
     # 1. Node name
     default_name = args.name or socket.gethostname().split(".")[0]
     name = _prompt("Node name", default_name)
@@ -3584,6 +3854,7 @@ def cmd_setup(args):
     pass_existing = pass_path.is_file()
     write_pass = True
     passphrase = None
+    stored_in_keychain = False
 
     if pass_existing and not args.force:
         if interactive:
@@ -3617,30 +3888,80 @@ def cmd_setup(args):
                       "passphrase file at --passphrase-file OR "
                       "--passphrase-from-env with IRONMESH_SETUP_PASSPHRASE.")
                 return 1
+        elif getattr(args, "generate_passphrase", False):
+            # Non-interactive strong-passphrase generation.
+            import secrets
+            passphrase = secrets.token_urlsafe(24)
+            print()
+            print("Generated a strong mesh passphrase. COPY IT EXACTLY to")
+            print("every node — it is shown ONCE and never again:")
+            print()
+            print(f"    {passphrase}")
+            print()
         else:
             print()
             print("Set the shared passphrase. Every peer on the mesh must")
             print("use this exact passphrase. Minimum 12 characters.")
-            while True:
-                p1 = getpass.getpass("Passphrase: ")
-                if len(p1) < 12:
-                    print("Too short — minimum 12 characters.")
-                    continue
-                p2 = getpass.getpass("Confirm:    ")
-                if p1 != p2:
-                    print("Passphrases do not match. Try again.")
-                    continue
-                passphrase = p1
-                break
+            offer_gen = getattr(args, "generate_passphrase", False) or _yes_no(
+                "Auto-generate a strong passphrase now?", default=False)
+            if offer_gen:
+                import secrets
+                passphrase = secrets.token_urlsafe(24)
+                print()
+                print("Generated a strong mesh passphrase. COPY IT EXACTLY to")
+                print("every node — it is shown ONCE and never again:")
+                print()
+                print(f"    {passphrase}")
+                print()
+                _prompt("Press Enter once you have copied it")
+            else:
+                while True:
+                    p1 = getpass.getpass("Passphrase: ")
+                    if len(p1) < 12:
+                        print("Too short — minimum 12 characters.")
+                        continue
+                    p2 = getpass.getpass("Confirm:    ")
+                    if p1 != p2:
+                        print("Passphrases do not match. Try again.")
+                        continue
+                    passphrase = p1
+                    break
 
-        # Write the passphrase file with strict permissions
-        pass_path.parent.mkdir(parents=True, exist_ok=True)
-        pass_path.write_text(passphrase, encoding="utf-8")
-        try:
-            pass_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
-        except OSError:
-            # Windows / non-POSIX filesystems may reject chmod; skip silently
-            pass
+        # Prefer the OS keyring when requested and available; otherwise
+        # fall back to the plaintext passphrase file (still chmod 600).
+        # `name` is already resolved (step 1) so the keyring entry can be
+        # keyed on it.
+        want_keychain = getattr(args, "use_keychain", False)
+        if want_keychain:
+            try:
+                from ironmesh import keychain as ew_keychain
+                if ew_keychain.is_available():
+                    try:
+                        ew_keychain.store(name, passphrase)
+                        stored_in_keychain = True
+                        print(f"Stored the mesh passphrase in the OS keyring "
+                              f"(service entry for '{name}').")
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"NOTE: keyring store failed ({exc}); falling "
+                              f"back to a passphrase file.")
+                else:
+                    print("NOTE: --use-keychain requested but no OS keyring "
+                          "backend is available; falling back to a "
+                          "passphrase file.")
+            except ImportError:
+                print("NOTE: the [keychain] extra is not installed; falling "
+                      "back to a passphrase file. "
+                      "Install with `pip install ironmesh[keychain]`.")
+
+        if not stored_in_keychain:
+            # Write the passphrase file with strict permissions
+            pass_path.parent.mkdir(parents=True, exist_ok=True)
+            pass_path.write_text(passphrase, encoding="utf-8")
+            try:
+                pass_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+            except OSError:
+                # Windows / non-POSIX filesystems may reject chmod; skip silently
+                pass
 
     if not passphrase or len(passphrase) < 12:
         print("ERROR: passphrase is missing or too short.")
@@ -3711,8 +4032,13 @@ def cmd_setup(args):
     print("=" * 40)
     print(f"  Node name        : {name}")
     print(f"  Port             : {port}")
-    print(f"  Passphrase file  : {pass_path}  "
-          f"{'(new)' if write_pass else '(existing)'}")
+    if profile:
+        print(f"  Profile          : {profile}")
+    if stored_in_keychain:
+        print(f"  Passphrase       : OS keyring entry for '{name}'")
+    else:
+        print(f"  Passphrase file  : {pass_path}  "
+              f"{'(new)' if write_pass else '(existing)'}")
     print(f"  Identity keys    : {keys_path}  "
           f"{'(new)' if write_keys else '(existing)'}")
     print(f"  Fingerprint      : {fingerprint}")
@@ -3721,16 +4047,36 @@ def cmd_setup(args):
     else:
         print("  Allowed peers    : (none — default-deny)")
     print(f"  Pending-trust    : {'enabled' if gate else 'disabled (opt-in)'}")
+    if invite_token is not None:
+        print(f"  Bootstrap via    : invite -> {invite_token.endpoint}")
     print()
+
+    # Network checks — OS-detect and PRINT (never auto-run) the exact
+    # firewall command for this port. Reuses the single network-detection
+    # code path built on this branch.
+    try:
+        os_family = _detect_os()
+        fw_cmd = _firewall_command(os_family, port)
+        print("Network check (review before running — NOT auto-applied):")
+        print(f"  Detected OS      : {os_family}")
+        print(f"  Open the port    : {fw_cmd}")
+        print("  mDNS/Bonjour must be allowed on the LAN for auto-discovery.")
+        print("  Run `ironmesh doctor --onboard` to diagnose reachability.")
+        print()
+    except Exception:  # noqa: BLE001 — diagnostics must never abort setup
+        pass
 
     # Build the run command
     run_cmd = [
         "ironmesh run",
         f"--name {name}",
         f"--port {port}",
-        f"--passphrase-file {pass_path}",
-        f"--keys-path {keys_path}",
     ]
+    if not stored_in_keychain:
+        run_cmd.append(f"--passphrase-file {pass_path}")
+    run_cmd.append(f"--keys-path {keys_path}")
+    if profile:
+        run_cmd.append(f"--profile {profile}")
     if allowed_peers:
         run_cmd.append(f"--allowed-peers {allowed_peers}")
     if gate:
@@ -3740,21 +4086,50 @@ def cmd_setup(args):
     print()
     print("  " + " \\\n      ".join(run_cmd))
     print()
-    print("Or set the env var once and shorten the command:")
-    print(f"  export IRONMESH_PASSPHRASE_FILE={pass_path}")
-    if gate:
-        print("  export IRONMESH_REQUIRE_MSG_PROMOTION=true")
-    print(f"  ironmesh run --name {name} --port {port}"
-          f"{' --allowed-peers ' + allowed_peers if allowed_peers else ''}")
+    if invite_token is not None:
+        print("Bootstrap-from-invite: the inviting node must be REACHABLE at")
+        print(f"  {invite_token.endpoint}")
+        print("when you start this daemon. On first contact your node verifies")
+        print("the inviter's identity against the token (verified-first-use)")
+        print("and lands in the inviter's pending-trust gate for approval.")
+        print("If the inviter is offline you cannot complete the join — this")
+        print("is BY DESIGN (the invite pins that endpoint).")
+        print()
+    if not stored_in_keychain:
+        print("Or set the env var once and shorten the command:")
+        print(f"  export IRONMESH_PASSPHRASE_FILE={pass_path}")
+        if gate:
+            print("  export IRONMESH_REQUIRE_MSG_PROMOTION=true")
+        print(f"  ironmesh run --name {name} --port {port}"
+              f"{' --allowed-peers ' + allowed_peers if allowed_peers else ''}")
+        print()
+
+    # Post-wizard actions (interactive only — never blocks automation).
+    if interactive:
+        print("Next actions:")
+        if _yes_no("  Run the 60-second demo now (ironmesh demo)?",
+                   default=False):
+            return cmd_demo(_demo_args_namespace())
+        print("  - Start the daemon with the command above.")
+        print("  - Open the dashboard: add --gui, then browse to "
+              f"http://127.0.0.1:{port + 1}")
+        print("  - `ironmesh invite create --endpoint <this-host>:%d` to add "
+              "a node." % port)
     print()
     print("Next steps:")
-    print("  - Repeat this wizard on a second machine with the SAME")
-    print("    passphrase file (copy it via USB / age / paper).")
+    print("  - Add nodes with `ironmesh invite create` (ephemeral single-use")
+    print("    token) OR repeat this wizard with the SAME passphrase.")
     print("  - Add each node's name to the other's --allowed-peers.")
     print("  - See docs/QUICKSTART.md for the full walkthrough,")
-    print("    docs/deployments/homelab.md for a CrewAI + Ollama recipe,")
+    print("    docs/CONFIGURATION.md for the invite-token format,")
     print("    docs/NAT_TRAVERSAL.md for cross-network setups.")
     return 0
+
+
+def _demo_args_namespace():
+    """Build a minimal args namespace for cmd_demo's defaults."""
+    import argparse
+    return argparse.Namespace(port=18765, timeout=60)
 
 
 def _ensure_utf8_stdio() -> None:
@@ -3804,6 +4179,8 @@ def main():
         return cmd_demo(args)
     elif command == "setup":
         return cmd_setup(args)
+    elif command == "invite":
+        return cmd_invite(args)
     elif command == "upgrade":
         return cmd_upgrade(args)
     elif args.name:

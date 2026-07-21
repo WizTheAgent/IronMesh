@@ -192,6 +192,13 @@ SIG_CTX_FUTURE_FRAME_INNER_SOURCE: bytes = b"ironmesh-sig-v1/frame-inner-source\
 # to the legacy attached signature (mixed-version meshes keep working).
 SIG_CTX_HELLO: bytes = b"ironmesh-sig-v1/hello\x00"
 SIG_CTX_FUTURE_REVOCATION: bytes = b"ironmesh-sig-v1/revocation\x00"
+# Bootstrap invite token (ephemeral single-use). The inviter signs the
+# canonical invite body (identity pin + endpoint + nonce + expiry, see
+# ``protocol.canonical_invite_bytes``) under this label so a joiner can
+# verify the token came from the advertised identity — and so a signature
+# captured from any other IronMesh surface (HELLO, capability announce)
+# can never be replayed as an invite. NEVER carries the mesh passphrase.
+SIG_CTX_INVITE: bytes = b"ironmesh-sig-v1/invite\x00"
 
 # Deprecated alias — the HELLO label was published under this name during
 # the pre-ironmesh/0.9 migration window. Import ``SIG_CTX_HELLO`` instead.

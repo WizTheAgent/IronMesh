@@ -46,6 +46,12 @@ keychain = [
     # works fine without it via passphrase-file or env var.
     "keyring>=24.0,<26",
 ]
+qr = [
+    # QR rendering for invite tokens (ASCII in-terminal + PNG). Optional:
+    # without it, `ironmesh invite create --qr` degrades to printing the
+    # token string plus a note. segno is small and pure-Python.
+    "segno>=1.5,<2",
+]
 otel = [
     # OpenTelemetry SDK + OTLP exporter. Spans are emitted on the
     # handshake, message dispatch, and MCP surface. Configure via

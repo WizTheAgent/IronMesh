@@ -593,6 +593,13 @@ class HandshakeMixin:
         }
         if my_link_binding is not None:
             outgoing_hello["rns_link_id"] = my_link_binding
+        # Bootstrap-invite path: present the full single-use token so the
+        # inviter (server) can enforce single-use at its TOFU pin point.
+        # The token is a bearer credential that is useless after it is
+        # consumed or expires; it carries no passphrase or root secret.
+        pending_invite = getattr(self, "_pending_invite", None)
+        if pending_invite is not None:
+            outgoing_hello["invite_token"] = pending_invite.to_string()
         # v0.9.4 Phase 2 advertisement — same shape as the server-side
         # HELLO. See _hello_x25519_advertisement docstring for compat
         # rationale.
@@ -693,6 +700,26 @@ class HandshakeMixin:
             peer_id = ew_keys.get_fingerprint(base64.b64decode(peer_identity_b64))
         else:
             peer_id = claimed_peer_id
+
+        # Verified-first-use: if this connection is bootstrapping from an
+        # invite, the server's presented identity key MUST equal the key
+        # the token pinned. The server HELLO signature above already proved
+        # the server controls that key, so a match means we are talking to
+        # the exact inviter the token named — NOT blind TOFU. A mismatch
+        # (or an unsigned server that presented no identity) fails closed.
+        pending_invite = getattr(self, "_pending_invite", None)
+        if pending_invite is not None:
+            if not pending_invite.matches_identity(peer_identity_b64):
+                logger.warning(
+                    "Invite bootstrap to %s FAILED verified-first-use: server "
+                    "identity does not match the invite's pinned inviter key",
+                    label,
+                )
+                return None
+            logger.info(
+                "Invite bootstrap to %s: server identity matches pinned "
+                "inviter key (verified-first-use)", label,
+            )
 
         from nacl.public import PublicKey as X25519PublicKey
         peer_ephemeral_public = X25519PublicKey(base64.b64decode(peer_ephemeral_b64))
