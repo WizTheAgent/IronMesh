@@ -238,6 +238,16 @@ def canonical_capability_hash(capabilities) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+class TrustStoreError(Exception):
+    """A trust-store mutation could not be durably persisted.
+
+    Raised when an in-memory change (e.g. a pin) was made but the atomic
+    write to disk failed, so the change did NOT persist. Callers must treat
+    this as a hard failure of their operation — a change that is present in
+    memory but absent from disk is a half-state that vanishes on restart.
+    """
+
+
 class TrustStore:
     """TOFU key pinning database backed by JSON file with integrity MAC."""
 
@@ -596,7 +606,16 @@ class TrustStore:
         if pinned_via is not None:
             record["pinned_via"] = pinned_via
         self._peers[node_id] = record
-        self._save()
+        if not self._save():
+            # The pin did not persist. Roll the in-memory record back so
+            # memory and disk agree (both un-pinned), then fail loudly — a
+            # pin present in memory but absent from disk is a half-state
+            # that silently vanishes on restart. No retry, no fallback
+            # persistence, no reconcile-later: success means persisted, and
+            # a caller must handle this as a hard failure of its operation.
+            self._peers.pop(node_id, None)
+            raise TrustStoreError(
+                f"failed to persist pin for peer {node_id} — not pinned")
         logger.info("Pinned peer %s (fingerprint: %s, trust_state: %s, via: %s)",
                     node_id, fp, trust_state, pinned_via or "tofu")
 

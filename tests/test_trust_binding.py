@@ -16,7 +16,7 @@ import os
 import pytest
 from hypothesis import given, settings, strategies as st
 
-from ironmesh.trust import canonical_capability_hash, TrustStore
+from ironmesh.trust import canonical_capability_hash, TrustStore, TrustStoreError
 from ironmesh.mesh import DedupCache
 
 
@@ -144,8 +144,13 @@ class TestMacMismatchReadOnlyLatch:
         # _load detected MAC mismatch and latched read-only
         assert rogue._readonly_due_to_mac_failure is True
         assert len(rogue._peers) == 0
-        # Mutate + save — should be a no-op on disk
-        rogue.pin_peer("rogue" * 6 + "xx", PEER_PUB_B64)
+        # Mutate + save — the read-only latch makes _save() refuse, so the
+        # pin must fail LOUDLY (raise) rather than silently not-persist, and
+        # the in-memory record must be rolled back (no pinned-in-memory,
+        # absent-on-disk half-state).
+        with pytest.raises(TrustStoreError):
+            rogue.pin_peer("rogue" * 6 + "xx", PEER_PUB_B64)
+        assert len(rogue._peers) == 0
 
         # Disk must STILL have the production daemon's three peers
         prod2 = TrustStore(agent_key=b"\xaa" * 32, path=path)

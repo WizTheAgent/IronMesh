@@ -1430,7 +1430,7 @@ def cmd_run(args):
 def cmd_trust(args):
     """Manage peer trust."""
     from ironmesh import keys as ew_keys
-    from ironmesh.trust import TrustStore
+    from ironmesh.trust import TrustStore, TrustStoreError
     # TrustStore is bound to the agent identity. Load keys to derive
     # the MAC key. Require a passphrase to decrypt them.
     keys_path = getattr(args, "keys_path", "~/.ironmesh/keys.json")
@@ -1991,7 +1991,7 @@ def cmd_trust(args):
         state = getattr(args, "state", "trusted")
         try:
             store.pin_peer(nid, pubkey_b64, trust_state=state)
-        except ValueError as e:
+        except (ValueError, TrustStoreError) as e:
             print(f"ERROR: {e}")
             return 1
         rec = store.get_peer(nid)
