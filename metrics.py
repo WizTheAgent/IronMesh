@@ -103,6 +103,13 @@ class Metrics:
         # announces (missing inner sig where required, bad sig, stale,
         # replay-dedup hit). Healthy fleets sum near zero.
         self.capability_announce_bad_signature_total = 0
+        # v0.10.0 (inner end-to-end source signature): frames dropped by the
+        # receive-side inner-source check — relay tampering with
+        # source/dest/msg_id, a bad inner signature, or a missing signature on
+        # a relayed frame. Registered at init so the Prometheus surface reads a
+        # trustworthy 0 from the start (a security metric's "no drops" must be
+        # an explicit zero, not an absent series). Healthy fleets stay at 0.
+        self.inner_source_sig_drops = 0
 
     def to_dict(self) -> dict:
         return {
@@ -144,6 +151,7 @@ class Metrics:
             "group_broadcasts_received": self.group_broadcasts_received,
             "group_broadcasts_deduped": self.group_broadcasts_deduped,
             "capability_announce_bad_signature_total": self.capability_announce_bad_signature_total,
+            "inner_source_sig_drops": self.inner_source_sig_drops,
         }
 
 
@@ -700,6 +708,9 @@ class MetricsMixin:
              "1 when --strict-tls is set on this daemon, else 0. Outbound WSS requires CA-validated certs in strict mode."),
             ("global_msg_rate_limit_total", "ironmesh_global_msg_rate_limit_total", "counter",
              "Inbound messages dropped by the daemon-wide --max-msgs-per-sec cap"),
+            # v0.10.0: inner end-to-end source-signature enforcement.
+            ("inner_source_sig_drops", "ironmesh_inner_source_sig_drops_total", "counter",
+             "Frames dropped by the inner E2E source-signature check (relay tampering with source/dest/msg_id, bad inner signature, or missing signature on a relayed frame)"),
         ]
         lines = []
         for key, name, kind, help_text in spec:

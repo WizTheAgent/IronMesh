@@ -1024,9 +1024,9 @@ class RoutingMixin:
             "Dropping %s from %s — inner source signature %s (claimed source=%s)",
             frame.msg_type, peer_id[:12], reason, (frame.source or "")[:12],
         )
-        self.metrics.inner_source_sig_drops = (
-            getattr(self.metrics, "inner_source_sig_drops", 0) + 1
-        )
+        # Registered at init in Metrics (reads a trustworthy 0 from the
+        # start), so a plain increment is safe — no defensive getattr.
+        self.metrics.inner_source_sig_drops += 1
         if self._audit:
             try:
                 self._audit.log(EVENT_INNER_SOURCE_SIG_DROP, {
