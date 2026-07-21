@@ -131,6 +131,16 @@ class IronMeshConfig:
     # Oldest message is evicted on overflow.
     pending_trust_queue_cap: int = 100
 
+    # RESERVED — group crypto suite selector. Keyed to the pending keying
+    # RFC (rfcs/RFC-key-hierarchy-group-messaging-v0.1-skeleton.md). Left
+    # UNSET on purpose: naming a group-keying suite before the RFC picks
+    # one would read as a decision that hasn't been made. Reserved here so
+    # a future strict posture (e.g. `--profile=tactical`) can pin a suite
+    # WITHOUT a schema migration. No validator rejects None, and it is
+    # excluded from save() so it stays invisible on disk until the RFC
+    # lands. Do NOT default this to any real suite.
+    group_crypto_suite: Optional[str] = None
+
     def __post_init__(self):
         # Clamp announce interval to a sane minimum to prevent flooding
         if self.route_announce_interval < 1.0:
@@ -204,8 +214,11 @@ class IronMeshConfig:
         """Save current config to JSON file."""
         path = os.path.expanduser(path)
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        # Don't save sensitive fields
+        # Don't save sensitive fields. Also omit the reserved
+        # group_crypto_suite stub so it stays invisible on disk until the
+        # keying RFC lands (see the field comment above).
         data = {k: v for k, v in self.__dict__.items()
-                if k not in ("passphrase", "keys_passphrase")}
+                if k not in ("passphrase", "keys_passphrase",
+                             "group_crypto_suite")}
         with open(path, "w") as f:
             json.dump(data, f, indent=2)

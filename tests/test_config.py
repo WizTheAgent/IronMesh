@@ -113,3 +113,44 @@ class TestSave:
             data = json.load(f)
         assert "passphrase" not in data
         assert "keys_passphrase" not in data
+
+
+# ---------------------------------------------------------------------------
+# Reserved group_crypto_suite stub (keyed to the pending keying RFC)
+# ---------------------------------------------------------------------------
+
+class TestReservedCryptoSuiteStub:
+    """The group_crypto_suite field is an INERT reservation: unset by
+    default, never rejected by a validator, and invisible on disk until
+    the keying RFC selects a suite."""
+
+    def test_defaults_to_none(self):
+        cfg = IronMeshConfig()
+        assert cfg.group_crypto_suite is None
+
+    def test_none_does_not_break_post_init(self):
+        """__post_init__ must not reject the unset stub."""
+        cfg = IronMeshConfig(group_crypto_suite=None)
+        assert cfg.group_crypto_suite is None
+
+    def test_excluded_from_save(self, tmp_path):
+        """Stays invisible on disk until the RFC lands — even if a value
+        was somehow set in memory, save() omits it."""
+        cfg = IronMeshConfig(agent_name="x")
+        cfg.group_crypto_suite = "some-future-suite"
+        path = str(tmp_path / "out.json")
+        cfg.save(path)
+        with open(path) as f:
+            data = json.load(f)
+        assert "group_crypto_suite" not in data
+
+    def test_config_load_save_roundtrip_unaffected(self, tmp_path):
+        """Adding the stub must not break normal load/save."""
+        cfg = IronMeshConfig(agent_name="rt", port=6001)
+        path = str(tmp_path / "cfg.json")
+        cfg.save(path)
+        reloaded = IronMeshConfig.from_file(path)
+        assert reloaded.agent_name == "rt"
+        assert reloaded.port == 6001
+        # The stub stays at its default after a roundtrip (never persisted).
+        assert reloaded.group_crypto_suite is None

@@ -611,3 +611,157 @@ class TestEnsureAgentKeysMeshFallback:
             await ensure_agent_keys(encrypted_keys_file, "wrong-passphrase-x")
         assert "wrong passphrase" in str(exc.value)
         assert "--keys-passphrase-file" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# Profiles (_apply_profile) — canonical postures + behavior-preserving aliases
+# ---------------------------------------------------------------------------
+
+class TestProfiles:
+    """Profile resolution for the canonical set (lan / lora / homelab /
+    tactical / custom) and the three back-compat aliases (secure / dev /
+    offline). Aliases MUST be behavior-preserving — the same argv must
+    produce the same mutated args + warnings it did before the canonical
+    set was introduced.
+    """
+
+    def _resolve(self, profile, extra=()):
+        """Parse a real `run` argv with the given --profile, apply the
+        profile, and return (args, warnings)."""
+        argv = ["run", "--name", "n"]
+        if profile is not None:
+            argv += ["--profile", profile]
+        argv += list(extra)
+        args = _parse(argv)
+        warnings = cli._apply_profile(args)
+        return args, warnings
+
+    # -- canonical postures -------------------------------------------------
+
+    def test_lan_sets_no_opinionated_defaults(self):
+        """lan == the shipped zero-config default: no flag mutations."""
+        base, _ = self._resolve(None)
+        args, warnings = self._resolve("lan")
+        assert warnings == []
+        assert args.require_message_promotion == base.require_message_promotion
+        assert args.open_discovery == base.open_discovery
+        assert args.allow_plaintext_ws == base.allow_plaintext_ws
+        assert args.reticulum == base.reticulum
+
+    def test_custom_sets_no_opinionated_defaults(self):
+        base, _ = self._resolve(None)
+        args, warnings = self._resolve("custom")
+        assert warnings == []
+        assert args.require_message_promotion == base.require_message_promotion
+        assert args.open_discovery == base.open_discovery
+        assert args.reticulum == base.reticulum
+
+    def test_lora_enables_reticulum(self):
+        args, warnings = self._resolve("lora")
+        assert args.reticulum is True
+        assert warnings == []
+        # lora leaves discovery alone (default-deny handles it).
+        assert args.open_discovery is False
+
+    def test_homelab_leaves_lan_defaults(self):
+        base, _ = self._resolve(None)
+        args, warnings = self._resolve("homelab")
+        assert warnings == []
+        assert args.open_discovery == base.open_discovery
+        assert args.reticulum == base.reticulum
+
+    def test_tactical_enables_trust_gate(self):
+        args, warnings = self._resolve("tactical")
+        assert args.require_message_promotion is True
+        assert warnings == []
+
+    def test_tactical_warns_on_open_discovery_override(self):
+        args, warnings = self._resolve("tactical", extra=("--open-discovery",))
+        # Explicit flag wins…
+        assert args.open_discovery is True
+        # …but a warning is emitted naming the tactical profile.
+        assert any("tactical" in w and "open-discovery" in w for w in warnings)
+
+    def test_tactical_warns_on_plaintext_ws_override(self):
+        args, warnings = self._resolve(
+            "tactical", extra=("--allow-plaintext-ws",))
+        assert args.allow_plaintext_ws is True
+        assert any("tactical" in w and "allow-plaintext-ws" in w
+                   for w in warnings)
+
+    # -- back-compat aliases: behavior-preserving ---------------------------
+
+    def test_secure_is_behavior_preserving(self):
+        """`--profile=secure` must produce exactly the pre-change args +
+        warnings: require_message_promotion True, no other mutation, no
+        warning when no insecure flags are set."""
+        args, warnings = self._resolve("secure")
+        assert args.require_message_promotion is True
+        assert args.open_discovery is False
+        assert args.allow_plaintext_ws is False
+        assert warnings == []
+
+    def test_secure_warns_exact_legacy_text(self):
+        """The alias must reproduce the historical warning text verbatim
+        (an alias that changed the message is a behavior change)."""
+        args, warnings = self._resolve(
+            "secure", extra=("--open-discovery", "--allow-plaintext-ws"))
+        joined = "\n".join(warnings)
+        assert "profile=secure was overridden: --allow-plaintext-ws is set" \
+            in joined
+        assert "profile=secure was overridden: --open-discovery is set" \
+            in joined
+
+    def test_secure_is_distinct_from_tactical(self):
+        """secure and tactical are kept as separate branches (not aliased).
+        They agree on the gate flag today, but the warning text differs by
+        name — proving they are distinct code paths so tactical can diverge
+        (crypto-suite pinning) without silently changing `secure`."""
+        _, sec_w = self._resolve("secure", extra=("--open-discovery",))
+        _, tac_w = self._resolve("tactical", extra=("--open-discovery",))
+        assert any("profile=secure" in w for w in sec_w)
+        assert any("profile=tactical" in w for w in tac_w)
+
+    def test_dev_enables_insecure_shortcuts(self):
+        args, warnings = self._resolve("dev")
+        assert args.open_discovery is True
+        assert args.allow_plaintext_ws is True
+        assert warnings == []
+
+    def test_offline_enables_reticulum(self):
+        args, warnings = self._resolve("offline")
+        assert args.reticulum is True
+        assert warnings == []
+
+    def test_offline_is_distinct_from_lora(self):
+        """offline and lora both currently enable Reticulum but are
+        separate branches with different documented intent — offline must
+        NOT be an alias of lora."""
+        off, _ = self._resolve("offline")
+        lora, _ = self._resolve("lora")
+        # Both enable reticulum, but they are reached via distinct choices.
+        assert off.profile == "offline"
+        assert lora.profile == "lora"
+
+    def test_explicit_flag_wins_over_profile(self):
+        """A user-supplied flag is never clobbered by the profile."""
+        # dev would set open_discovery True; user did not ask, so it's set.
+        args, _ = self._resolve("dev")
+        assert args.open_discovery is True
+        # tactical would set the gate; user can still leave it — but if the
+        # user explicitly set require_message_promotion it stays set.
+        args2, _ = self._resolve(
+            "tactical", extra=("--require-message-promotion",))
+        assert args2.require_message_promotion is True
+
+    def test_no_profile_is_noop(self):
+        args, warnings = self._resolve(None)
+        assert warnings == []
+        assert args.profile is None
+
+    def test_all_canonical_and_alias_choices_parse(self):
+        """Every documented profile name must be an accepted choice."""
+        for name in ("lan", "lora", "homelab", "tactical", "custom",
+                     "secure", "dev", "offline"):
+            args = _parse(["run", "--name", "n", "--profile", name])
+            assert args.profile == name

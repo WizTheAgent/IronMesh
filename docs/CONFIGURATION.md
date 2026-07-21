@@ -42,7 +42,7 @@ secrets like the passphrase in JSON config.
 | `--name` | str (required) | — | Agent name; advertised via mDNS, used in handshake. |
 | `--port` | int | `8765` | WebSocket peer port. The dashboard binds to `--port + 1`. |
 | `--bind` | str | `0.0.0.0` | Mesh WebSocket bind address. |
-| `--profile` | `secure\|dev\|offline` | none | Bundled flag preset. See [Profiles](#profiles). |
+| `--profile` | `lan\|lora\|homelab\|tactical\|custom` (+ aliases `secure\|dev\|offline`) | none | Bundled flag preset. See [Profiles](#profiles). |
 | `--keys-path` | path | `~/.ironmesh/keys.json` | Encrypted identity keypair. |
 | `--keys-passphrase` | str | — | Passphrase to decrypt the key file. **Discouraged** — argv is visible in the process list; prefer `--keys-passphrase-file` or `IRONMESH_KEYS_PASSPHRASE`. Usually unnecessary: when the key file was created by `ironmesh setup`, the daemon decrypts it with the mesh passphrase automatically, and otherwise prompts on a terminal. |
 | `--keys-passphrase-file` | path | — | Read the key-file passphrase from a file (trailing newline stripped). `chmod 600`. Preferred headless source when the key passphrase differs from the mesh passphrase. |
@@ -195,14 +195,38 @@ All paths are tilde-expanded.
 
 ## Profiles
 
-`--profile=<name>` bundles related flags. Explicit flags always win
-over the profile but emit a warning if they conflict.
+`--profile=<name>` bundles related flags into a named deployment
+posture. A profile sets **defaults only** — every value stays
+individually overridable. Explicit flags always win over the profile
+but emit a warning if they conflict with the posture's intent.
+
+### Canonical postures
 
 | Profile | Flags applied | Use when |
 |---|---|---|
-| `secure` | `--require-message-promotion`. Warns if `--open-discovery` or `--allow-plaintext-ws` set. | Production hardening. |
-| `dev` | `--open-discovery`, `--allow-plaintext-ws`. | Same-machine localhost testing only. |
-| `offline` | `--reticulum`. | Reticulum / LoRa-only mesh. |
+| `lan` | *(none — the shipped zero-config default)*. mDNS stays default-deny; pass `--allowed-peers` or `--open-discovery` to auto-connect. | Ordinary LAN mesh. Naming it just makes "the default" explicit. |
+| `lora` | `--reticulum`. | Off-grid RF *is* the network. Reticulum / LoRa transport on. |
+| `homelab` | *(none)* — leaves permissive LAN defaults in place; pair with `--allowed-peers` for the swarm members. | Local Ollama / agent-swarm homelab. Doctor's Ollama probe keys off this posture. |
+| `tactical` | `--require-message-promotion`. Warns if `--open-discovery` or `--allow-plaintext-ws` set. | Strictest posture: pre-pinned peers only, pending-trust gate on, discovery off. Reserved to pin a group crypto suite once the keying RFC lands. |
+| `custom` | *(none)* — no opinionated defaults; explicit flags only. | You want the profile machinery out of the way. |
+
+### Back-compat aliases (pre-1.0)
+
+These names predate the canonical set and are kept **behavior-preserving** —
+an existing `--profile=secure` invocation produces exactly the same
+flags and warnings it did before.
+
+| Alias | Flags applied | Notes |
+|---|---|---|
+| `secure` | `--require-message-promotion`. Warns if `--open-discovery` or `--allow-plaintext-ws` set. | Production hardening. Kept **distinct** from `tactical` (their intents overlap today, but `tactical` is documented to pin a group crypto suite later — aliasing would silently change behavior once it does). |
+| `dev` | `--open-discovery`, `--allow-plaintext-ws`. | **INSECURE.** Same-machine localhost testing only. |
+| `offline` | `--reticulum`. | Air-gapped / no clearnet. **Distinct from `lora`**: `offline` = no network at all; `lora` = off-grid RF is the network. |
+
+> **Reserved:** `tactical` will gain a pinned group crypto suite via the
+> reserved (currently unset) `group_crypto_suite` config field once
+> [`rfcs/RFC-key-hierarchy-group-messaging-v0.1-skeleton.md`](../rfcs/RFC-key-hierarchy-group-messaging-v0.1-skeleton.md)
+> selects one. The field is omitted from the saved config until then, so
+> no schema migration is required when it lands.
 
 ## Logging
 

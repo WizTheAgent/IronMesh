@@ -69,14 +69,22 @@ def parse_args():
     run_parser.add_argument("--port", type=int, default=8765, help="WebSocket port (default: 8765)")
     run_parser.add_argument(
         "--profile", default=None,
-        choices=["secure", "dev", "offline"],
+        choices=[
+            # Canonical deployment postures.
+            "lan", "lora", "homelab", "tactical", "custom",
+            # Back-compat aliases (pre-1.0). Kept behavior-preserving.
+            "secure", "dev", "offline",
+        ],
         help=(
-            "Bundled flag preset. 'secure' = production hardening "
-            "(pending-trust gate on, no plaintext-ws fallback, mDNS "
-            "default-deny). 'dev' = same-machine localhost shortcuts "
-            "(open discovery, plaintext ws — INSECURE). 'offline' = "
-            "Reticulum/LoRa transport only, mDNS off. Explicit flags "
-            "override the profile but emit a warning."
+            "Bundled flag preset — sets DEFAULTS only; every value stays "
+            "individually overridable (explicit flags win but emit a "
+            "warning on conflict). Postures: 'lan' = zero-config mDNS LAN "
+            "(the no-profile default). 'lora' = off-grid RF is the network "
+            "(Reticulum on). 'homelab' = local Ollama swarm posture. "
+            "'tactical' = strictest (pre-pinned peers only, pending-trust "
+            "gate on, discovery off). 'custom' = no opinionated defaults. "
+            "Aliases: 'secure' (production hardening), 'dev' (INSECURE "
+            "localhost shortcuts), 'offline' (air-gapped, no network)."
         ),
     )
     # --passphrase REMOVED from run parser — leaks in process list (ps aux).
@@ -957,12 +965,23 @@ def setup_logging(level: str = "INFO", log_file: str = None,
 
 
 def _apply_profile(args):
-    """Apply a `--profile=secure|dev|offline` preset.
+    """Apply a `--profile=<name>` preset.
 
-    Profiles set boolean flags to safe defaults but never override an
-    explicit user-supplied value. When the user combines a profile
-    with a flag that conflicts with the profile's intent, log a clear
-    WARNING and let the explicit flag win (argparse-consistent).
+    Profiles set flags to a named deployment posture's DEFAULTS but never
+    override an explicit user-supplied value — every value stays
+    individually overridable. When the user combines a profile with a
+    flag that conflicts with the profile's intent, log a clear WARNING
+    and let the explicit flag win (argparse-consistent).
+
+    Canonical postures: lan / lora / homelab / tactical / custom.
+    Back-compat aliases (pre-1.0, behavior-preserving): secure / dev /
+    offline. Each alias reproduces the exact arg mutations + warnings its
+    name produced before the canonical set was introduced — an alias
+    that changed behavior would be a rename in disguise, so `secure` is
+    kept as its own distinct branch rather than folded into `tactical`
+    (their intents overlap today but `tactical` is documented to pin a
+    group crypto suite once the keying RFC lands, so they must not be
+    silently conflated).
 
     Returns the list of warning messages so the caller can also log
     them through the structured logger once it is set up.
@@ -973,22 +992,69 @@ def _apply_profile(args):
 
     warnings = []
 
-    if profile == "secure":
-        # Production hardening: pending-trust gate ON, no plaintext-ws.
-        if not getattr(args, "require_message_promotion", False):
-            args.require_message_promotion = True
+    def _warn_insecure_for(name):
+        """Warn when discovery/plaintext-ws are set under a hardened
+        posture. Shared by `secure` and `tactical` so the two stay in
+        lock-step on the checks they have in common."""
         if getattr(args, "allow_plaintext_ws", False):
             warnings.append(
-                "profile=secure was overridden: --allow-plaintext-ws is set "
-                "explicitly, secure profile would have left it OFF. "
+                f"profile={name} was overridden: --allow-plaintext-ws is set "
+                f"explicitly, {name} profile would have left it OFF. "
                 "Consider removing the flag for a real deployment."
             )
         if getattr(args, "open_discovery", False):
             warnings.append(
-                "profile=secure was overridden: --open-discovery is set "
-                "explicitly, secure profile would have left it OFF. "
+                f"profile={name} was overridden: --open-discovery is set "
+                f"explicitly, {name} profile would have left it OFF. "
                 "Consider removing the flag for a real deployment."
             )
+
+    # --- Canonical postures ---------------------------------------------
+    if profile == "lan":
+        # Zero-config mDNS LAN posture — identical to running with no
+        # profile at all. mDNS is already default-deny (an allowlist or
+        # --open-discovery is required to auto-connect), so there is
+        # nothing to set: this posture is the shipped baseline. Named so
+        # operators can be explicit about "the default LAN behavior".
+        pass
+    elif profile == "lora":
+        # Off-grid RF is the network: Reticulum/LoRa transport on.
+        if hasattr(args, "reticulum") and not getattr(args, "reticulum", False):
+            args.reticulum = True
+        # Leave mDNS untouched — an RF node may also share a local LAN
+        # segment, and discovery stays default-deny regardless.
+    elif profile == "homelab":
+        # Local Ollama swarm posture. mDNS discovery on a trusted home
+        # LAN is expected, so pre-seed the allowlist affordance without
+        # forcing open discovery: operators pass --allowed-peers for the
+        # swarm members. No flag mutation beyond leaving the permissive
+        # LAN defaults in place; kept as a named posture so the doctor's
+        # Ollama probe and future wizard can key off it.
+        pass
+    elif profile == "tactical":
+        # Strictest posture: pre-pinned peers only, pending-trust gate on,
+        # discovery off. Discovery is already default-deny, so the gate
+        # flag is the only positive mutation; we additionally warn if the
+        # operator has explicitly loosened either insecure flag.
+        if not getattr(args, "require_message_promotion", False):
+            args.require_message_promotion = True
+        _warn_insecure_for("tactical")
+        # NOTE: no traffic-padding flag exists in the current schema, so
+        # the "padding on" intent cannot be applied here. The reserved
+        # `group_crypto_suite` config stub (config.py) lets tactical pin a
+        # suite once the keying RFC lands — WITHOUT a schema migration.
+    elif profile == "custom":
+        # No opinionated defaults — explicit flags only.
+        pass
+
+    # --- Back-compat aliases (behavior-preserving) ----------------------
+    elif profile == "secure":
+        # Production hardening: pending-trust gate ON, no plaintext-ws.
+        # Kept distinct from `tactical` (see docstring). Byte-identical to
+        # the pre-canonical `secure` behavior.
+        if not getattr(args, "require_message_promotion", False):
+            args.require_message_promotion = True
+        _warn_insecure_for("secure")
     elif profile == "dev":
         # Same-machine localhost shortcuts. Insecure by design.
         if not getattr(args, "open_discovery", False):
@@ -996,7 +1062,10 @@ def _apply_profile(args):
         if not getattr(args, "allow_plaintext_ws", False):
             args.allow_plaintext_ws = True
     elif profile == "offline":
-        # Reticulum/LoRa transport only.
+        # Air-gapped / no network at all. DISTINCT from `lora` (off-grid
+        # RF *is* the network). Historically this turned Reticulum on as
+        # the "no clearnet" transport; preserved verbatim for existing
+        # `--profile=offline` invocations.
         if hasattr(args, "reticulum") and not getattr(args, "reticulum", False):
             args.reticulum = True
         # Note: leaving allowed_peers / open_discovery untouched —
