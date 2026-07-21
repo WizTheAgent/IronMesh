@@ -100,7 +100,8 @@ secrets like the passphrase in JSON config.
 | Subcommand | Purpose |
 |---|---|
 | `ironmesh run` | Start the daemon. (See flags above.) |
-| `ironmesh setup` | Interactive first-run wizard. Writes passphrase + keypair. |
+| `ironmesh setup` | Interactive first-run wizard. Writes passphrase + keypair. Supports `--profile`, `--generate-passphrase`, `--use-keychain`, and `--from-invite <token>` to bootstrap from an existing node (see [Bootstrap invite tokens](#bootstrap-invite-tokens)). |
+| `ironmesh invite create` | Issue an ephemeral single-use bootstrap invite token for a new node (see [Bootstrap invite tokens](#bootstrap-invite-tokens)). |
 | `ironmesh demo` | Spawn two local agents, exchange a ping, print RTT. |
 | `ironmesh upgrade` | Check PyPI for a newer release. |
 | `ironmesh trust list \| revoke \| set-state \| list-revoked \| verify \| pin \| export \| migrate` | Trust-store management. Capability-binding subcommands (`cap-*`) are listed under the Capability-set binding section below. |
@@ -192,6 +193,7 @@ All paths are tilde-expanded.
 | `~/.ironmesh/audit.log` | Tamper-evident HMAC-chained audit log. | `chmod 600` |
 | `~/.ironmesh/routes.json` | Persisted multi-hop routing table. | `chmod 600` |
 | `~/.ironmesh/capabilities.json` | Advertised capabilities. | `chmod 600` |
+| `~/.ironmesh/invite_ledger.json` | Spent-nonce ledger for single-use invite tokens (inviter-side). Co-located with the trust store. | `chmod 600` |
 
 ## Profiles
 
@@ -227,6 +229,126 @@ flags and warnings it did before.
 > [`rfcs/RFC-key-hierarchy-group-messaging-v0.1-skeleton.md`](../rfcs/RFC-key-hierarchy-group-messaging-v0.1-skeleton.md)
 > selects one. The field is omitted from the saved config until then, so
 > no schema migration is required when it lands.
+
+## Bootstrap invite tokens
+
+An **invite token** lets an operator add a new node to the mesh without
+retyping the shared passphrase on every machine and without any central
+coordinator. It is an **ephemeral, single-use** bootstrap credential: it
+gets a joining node *past first-contact identity verification* but never
+past explicit operator approval, and it is useless once consumed or
+expired.
+
+```
+# On an existing node — issue a token pinned to this node's endpoint:
+ironmesh invite create --endpoint mesh-node-a:8765 --profile lan
+
+# On the new node — bootstrap from it:
+ironmesh setup --from-invite 'ironmesh-invite-v1:…'
+```
+
+### What the token contains
+
+The token is a signed JSON envelope, serialized as
+`ironmesh-invite-v1:<base64url(body)>`. The body carries:
+
+| Field | Purpose |
+|---|---|
+| `inviter_key` | The inviter's **current Ed25519 identity public key** — the key the joiner pins. |
+| `inviter_id` | The inviter's identity fingerprint (for display). |
+| `endpoint` | The inviter's **bootstrap endpoint** (`host:port` or `rns:<dest-hash>`) the joiner connects to first. |
+| `nonce` | A single-use random id. |
+| `issued_at` / `expires_at` | The validity window. |
+| `allowed_peers` | Suggested `--allowed-peers` hint for the joiner. |
+| `profile` | Deployment-profile hint (also sets the default expiry). |
+| `signature` | Detached Ed25519 signature over the canonical body under the domain-separation context `SIG_CTX_INVITE`. |
+
+The token **never contains the mesh passphrase or any root secret.** A
+signature captured from another IronMesh surface (HELLO, capability
+announce) cannot be replayed as an invite because the domain-separation
+label differs.
+
+### Expiry — per-profile default, always overridable
+
+Expiry reuses the protocol's existing freshness arithmetic (`issued_at` +
+a per-profile max-age). Defaults:
+
+| Profile | Default lifetime | Rationale |
+|---|---|---|
+| `lan`, `homelab` | 15 min | On-LAN, the joiner is nearby. |
+| `lora`, `offline` | 30 min | Off-grid — you may be physically walking the token between nodes. |
+| `tactical` | 5 min | Shortest window; pre-pinned peers only. |
+| *(unset / other)* | 15 min | Safe fallback. |
+
+Override with `--expires-in` (`10m`, `1h`, `900s`, or a bare number of
+seconds). A joiner rejects an expired token, and the inviter re-checks
+expiry when the join lands.
+
+### Single-use — the inviting node is authoritative
+
+The token pins the **inviter's** endpoint, so the joiner first-contacts
+the inviter directly. The inviter holds a small persisted
+**spent-nonce ledger** (`~/.ironmesh/invite_ledger.json`) and marks the
+token spent at its TOFU pin point on a successful join. A token that is
+already spent — or expired, or not issued by this node — is rejected
+there. There is **no** distributed/quorum consumption and **no** mesh-wide
+gossip; consumption is a single authoritative decision on the inviter.
+
+### Identity pinning — verified-first-use, not blind TOFU
+
+When the joiner connects to the pinned endpoint, it validates the inviter
+identity presented in the handshake HELLO against the `inviter_key` in the
+token. The HELLO signature already proves the server controls that key, so
+a match means the joiner is talking to the exact inviter the token named.
+A mismatch fails the connection closed. This is **verified-first-use**, not
+blind trust-on-first-use.
+
+> **Deferred:** SIO / FROST alignment is left to the keying RFC. The token
+> pins the current Ed25519 identity now — forward-compatible, not
+> forward-implemented.
+
+### Resulting trust — `pending`, not auto-trust
+
+An invited joiner is pinned in the **`pending`** trust state **regardless
+of the global `--require-message-promotion` setting** — the token gets it
+past first-contact identity verification, not past operator approval. It
+lands in the pending-trust gate for explicit promotion, exactly like any
+other new peer under the gate. Deny-by-default stays intact. The peer
+record gets an optional `pinned_via="invite"` provenance marker (for audit
+/ UX) — this is **not** a new trust state.
+
+### The inviter must be reachable at first-contact
+
+**Because the token is inviter-endpoint-pinned, the inviting node MUST be
+reachable at its `endpoint` when the joiner bootstraps.** The join
+completes by connecting to that endpoint directly; if the inviter is
+offline or partitioned at that moment, the join cannot complete. **This is
+by design, not a bug** — the single-use ledger and the identity pin both
+live on the inviter, so the inviter has to be up to consume the token and
+present its identity.
+
+This matters most for **`lora` / off-grid** deployments: *the node that
+issued the invite must be up when you join.* Plan the walk-over so the
+inviting node is running and reachable on RF/LAN before you start the new
+node.
+
+### QR transport
+
+`ironmesh invite create` can render the token as a QR code so it can be
+scanned off one screen onto another without the string transiting a chat
+app or clipboard sync:
+
+- `--qr` renders an **in-terminal ASCII QR** (preferred). Requires the
+  optional `[qr]` extra (`pip install ironmesh[qr]`); without it, the
+  command prints the token string plus a note — the string is itself a
+  complete transport.
+- `--qr-png <path>` writes a **PNG**. A warning is printed because phone
+  camera rolls commonly sync to the cloud. That exposure is acceptable
+  **only** because the token is single-use and short-lived (useless after
+  consumption / expiry).
+
+The mesh passphrase is **never** emitted as a QR code or otherwise placed
+in an invite.
 
 ## Doctor onboarding & auto-fix
 

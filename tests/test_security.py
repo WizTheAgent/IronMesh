@@ -212,10 +212,12 @@ class TestTOFUEnforcement:
 
         with patch("ironmesh.trust.TrustStore", return_value=mock_trust):
             await d._check_tofu("peer1", identity_b64)
-            # v0.8.5: pin_peer now takes a trust_state kwarg. Default-off
-            # gate ⇒ "trusted" (preserves pre-v0.8.5 behavior).
+            # v0.8.5: pin_peer takes a trust_state kwarg. Default-off gate ⇒
+            # "trusted" (preserves pre-v0.8.5 behavior). v0.9.6: the ordinary
+            # (no-invite) path also passes pinned_via=None — the provenance
+            # marker is only "invite" on the bootstrap-token path.
             mock_trust.pin_peer.assert_called_once_with(
-                "peer1", identity_b64, trust_state="trusted",
+                "peer1", identity_b64, trust_state="trusted", pinned_via=None,
             )
 
     async def test_tofu_trusted_peer_passes(self, tmp_path):

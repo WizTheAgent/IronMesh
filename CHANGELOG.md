@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Ephemeral single-use invite tokens (`ironmesh invite create`).** Issue a
+  short-lived bootstrap token that adds a new node without retyping the mesh
+  passphrase and without a central coordinator. The token pins the inviter's
+  current Ed25519 identity key + bootstrap endpoint, is signed under a new
+  `SIG_CTX_INVITE` domain-separation context, and **never carries the
+  passphrase**. Expiry is per-profile (tactical 5 min, lan/homelab 15 min,
+  lora/offline 30 min) and overridable with `--expires-in`. Single-use is
+  enforced authoritatively on the inviting node via a persisted spent-nonce
+  ledger (`~/.ironmesh/invite_ledger.json`), consumed at its TOFU pin point.
+  The joiner does **verified-first-use** — it validates the inviter identity
+  presented in the handshake against the token, not blind TOFU — and still
+  lands in the pending-trust gate for explicit approval (never auto-trust; a
+  `pinned_via="invite"` provenance marker is recorded). `ironmesh setup
+  --from-invite <token>` bootstraps a node from a token. Optional QR transport
+  (`--qr` ASCII, `--qr-png`) via the `[qr]` extra, degrading to the token
+  string when absent. Because the token is endpoint-pinned, the inviting node
+  must be reachable at first-contact — by design; see docs/CONFIGURATION.md.
+
+- **`ironmesh setup` wizard enhancements.** Optional profile selection, a
+  strong-passphrase generator (`--generate-passphrase`, shown once), OS-keyring
+  storage preference (`--use-keychain`, degrades to a file), OS-detected
+  firewall/mDNS command hints (printed, never auto-run — reuses the shared
+  network-detection helper), and post-wizard actions. The zero-config default
+  path and the 60-second `ironmesh demo` are unchanged.
+
 - **`ironmesh doctor` onboarding + safe auto-fix.** New diagnostics
   (`[N/M]` scheme): passphrase-file permissions (reuses the daemon's own
   permission check), mDNS/multicast reachability (WARN if blocked),
