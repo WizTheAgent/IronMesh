@@ -11,6 +11,10 @@ import json
 import logging
 import os
 import time
+from collections import OrderedDict
+from enum import Enum
+from types import MappingProxyType
+from typing import Any, Callable, Dict, Optional
 
 import nacl.exceptions as nacl_exceptions
 import nacl.utils
@@ -229,10 +233,124 @@ def canonical_hello_bytes(
             raise ValueError("rns_link_id must be a non-empty string when provided")
         body["rns_link_id"] = rns_link_id
     return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
-from collections import OrderedDict
-from enum import Enum
-from types import MappingProxyType
-from typing import Any, Callable, Dict, Optional
+
+
+# ---------------------------------------------------------------------------
+# INVITE token — signed-envelope canonicalization
+# ---------------------------------------------------------------------------
+#
+# An invite is an ephemeral, single-use bootstrap token. It carries the
+# inviter's CURRENT Ed25519 identity public key (to pin), the inviter's
+# bootstrap endpoint (host:port or RNS destination), a single-use nonce,
+# an issued_at / expires_at window, and two hints (a suggested peer
+# allowlist and the deployment profile). It NEVER carries the mesh
+# passphrase or any root secret.
+#
+# Wire shape (signed, v1):
+#   {
+#     "version":       1,
+#     "nonce":         "<hex single-use id>",
+#     "inviter_id":    "<inviter node id / fingerprint>",
+#     "inviter_key":   "<b64 Ed25519 identity public>",
+#     "endpoint":      "host:port"   (or "rns:<dest-hash>"),
+#     "issued_at":     1736812800.0,
+#     "expires_at":    1736813700.0,
+#     "allowed_peers": "alice,bob"   (suggested --allowed-peers, may be ""),
+#     "profile":       "lan"         (deployment profile hint, may be ""),
+#     "signature":     "<b64 Ed25519 over canonical_invite_bytes,
+#                        under crypto.SIG_CTX_INVITE>"
+#   }
+#
+# The canonical bytes are the JSON serialization of the body WITHOUT the
+# signature, with ``sort_keys=True, separators=(",", ":")`` — the same
+# convention as ``canonical_capability_announce_bytes`` so cross-language
+# clients reproduce the byte sequence exactly. The signature is a
+# domain-separated detached Ed25519 signature under
+# ``crypto.SIG_CTX_INVITE`` (see ``crypto.sign_detached_with_context``),
+# so a signature captured from another surface cannot be replayed here.
+#
+# Freshness is enforced with the same clock arithmetic as everywhere else
+# in the protocol: ``issued_at`` + a per-profile max-age gives
+# ``expires_at``; a joiner rejects a token past its ``expires_at`` and the
+# inviter re-checks it at pin time. Single-use is enforced INVITER-SIDE
+# via a persisted spent-nonce ledger (see ``ironmesh.invite``), not here —
+# this module only defines the signed byte format.
+
+INVITE_SIGNED_VERSION: int = 1
+
+# Per-profile default lifetime (seconds) for a freshly created invite.
+# lan / homelab: 15 min. lora / offline: 30 min (physically walking a
+# token between off-grid nodes). tactical: 5 min (shortest, pre-pinned
+# only). Every value is overridable at ``invite create`` time.
+INVITE_MAX_AGE_BY_PROFILE: "Dict[str, float]" = MappingProxyType({
+    "lan": 900.0,
+    "homelab": 900.0,
+    "lora": 1800.0,
+    "offline": 1800.0,
+    "tactical": 300.0,
+})
+# Fallback when no profile (or an unknown profile) is supplied.
+INVITE_MAX_AGE_DEFAULT: float = 900.0
+
+
+def invite_max_age_for_profile(profile: "Optional[str]") -> float:
+    """Return the default invite lifetime (seconds) for ``profile``.
+
+    Unknown / None profiles fall back to ``INVITE_MAX_AGE_DEFAULT``.
+    """
+    if not profile:
+        return INVITE_MAX_AGE_DEFAULT
+    return INVITE_MAX_AGE_BY_PROFILE.get(profile, INVITE_MAX_AGE_DEFAULT)
+
+
+def canonical_invite_bytes(
+    nonce: str,
+    inviter_id: str,
+    inviter_key: str,
+    endpoint: str,
+    issued_at: float,
+    expires_at: float,
+    allowed_peers: str = "",
+    profile: str = "",
+    version: int = INVITE_SIGNED_VERSION,
+) -> bytes:
+    """Build the canonical byte sequence the invite signature binds to.
+
+    Both the inviter (at sign time) and the joiner (at verify time) MUST
+    use this exact function so the produced bytes match byte-for-byte.
+    The ``signature`` field is deliberately NOT part of the body.
+    """
+    if not isinstance(nonce, str) or not nonce:
+        raise ValueError("nonce must be non-empty string")
+    if not isinstance(inviter_id, str) or not inviter_id:
+        raise ValueError("inviter_id must be non-empty string")
+    if not isinstance(inviter_key, str) or not inviter_key:
+        raise ValueError("inviter_key must be non-empty string")
+    if not isinstance(endpoint, str) or not endpoint:
+        raise ValueError("endpoint must be non-empty string")
+    if not isinstance(issued_at, (int, float)):
+        raise ValueError("issued_at must be a numeric timestamp")
+    if not isinstance(expires_at, (int, float)):
+        raise ValueError("expires_at must be a numeric timestamp")
+    if not isinstance(allowed_peers, str):
+        raise ValueError("allowed_peers must be a string")
+    if not isinstance(profile, str):
+        raise ValueError("profile must be a string")
+    if not isinstance(version, int) or version < 1:
+        raise ValueError("version must be a positive int")
+    body = {
+        "version": version,
+        "nonce": nonce,
+        "inviter_id": inviter_id,
+        "inviter_key": inviter_key,
+        "endpoint": endpoint,
+        "issued_at": float(issued_at),
+        "expires_at": float(expires_at),
+        "allowed_peers": allowed_peers,
+        "profile": profile,
+    }
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
 
 logger = logging.getLogger("ironmesh.protocol")
 
