@@ -185,7 +185,14 @@ SIG_CTX_TRUST_PIN_EXPORT: bytes = b"ironmesh-sig-v1/trust-pin-export\x00"
 # identity they have pinned.
 SIG_CTX_X25519_BINDING: bytes = b"ironmesh-sig-v1/x25519-identity-binding\x00"
 SIG_CTX_FUTURE_FRAME_OUTER: bytes = b"ironmesh-sig-v1/frame-outer\x00"
-SIG_CTX_FUTURE_FRAME_INNER_SOURCE: bytes = b"ironmesh-sig-v1/frame-inner-source\x00"
+# Active as of protocol version ironmesh/0.9 — the bound v2 inner
+# end-to-end source signature is a detached Ed25519 signature under this
+# context over ``protocol.canonical_inner_source_bytes``, binding the
+# originator to source/destination/msg_id/payload so a relay cannot
+# redirect, replay-relabel, or re-attribute an authentically-sourced
+# frame. The wire label is unchanged from when it was reserved as
+# ``SIG_CTX_FUTURE_FRAME_INNER_SOURCE`` below, so there is no wire impact.
+SIG_CTX_FRAME_INNER_SOURCE: bytes = b"ironmesh-sig-v1/frame-inner-source\x00"
 # Active as of protocol version ironmesh/0.9 — when both peers advertise
 # 0.9+, the HELLO signature is a detached Ed25519 signature under this
 # context over ``protocol.canonical_hello_bytes``. Older peers fall back
@@ -203,6 +210,11 @@ SIG_CTX_INVITE: bytes = b"ironmesh-sig-v1/invite\x00"
 # Deprecated alias — the HELLO label was published under this name during
 # the pre-ironmesh/0.9 migration window. Import ``SIG_CTX_HELLO`` instead.
 SIG_CTX_FUTURE_HELLO: bytes = SIG_CTX_HELLO
+
+# Deprecated alias — the inner-source label was published under this name
+# while it was reserved for future use. Import ``SIG_CTX_FRAME_INNER_SOURCE``
+# instead.
+SIG_CTX_FUTURE_FRAME_INNER_SOURCE: bytes = SIG_CTX_FRAME_INNER_SOURCE
 
 
 def sign_detached_with_context(

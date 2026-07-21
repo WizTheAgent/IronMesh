@@ -57,6 +57,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a group crypto suite once the keying RFC selects one, without a schema
   migration.
 
+### Security
+
+- **Inner end-to-end source signature is now verified on receive.** The
+  signature was previously produced and carried on the wire but never
+  verified on the production receive paths, so any node on a multi-hop
+  path could attribute arbitrary content to any source identity. The
+  receiver now authenticates the originator of user-payload frames
+  (`MSG`/`REQ`/`RESP`/`CONV`) at a single chokepoint on the inbound
+  dispatch path shared by the WebSocket and RNS/Reticulum transports.
+  Relayed frames lacking a verifiable inner source signature are dropped
+  (fail-closed). Direct frames remain covered by the outer per-hop
+  signature.
+  - **Bound v2 signature.** The inner signature now binds
+    `source`/`destination`/`msg_id`/`payload` via a length-prefixed
+    canonical form under a domain-separation context, so a relay cannot
+    redirect, replay-relabel, or re-attribute an authentically-sourced
+    frame. Self-describing on the wire via the new `source_sig_scheme` tag;
+    legacy v1 (payload-only) accepted below protocol floor `ironmesh/0.9`,
+    refused at/above it. This is an **additive, backward-compatible** wire
+    change — the tag is optional (absence ⇒ v1) and no handshake
+    negotiation is required.
+  - Consequence: relayed delivery now requires the destination to know the
+    originator's identity (a live peer or an existing TOFU pin).
+
 ## [0.9.5] — 2026-07-12 — HELLO domain separation + RNS link binding (protocol ironmesh/0.9)
 
 ### Changed

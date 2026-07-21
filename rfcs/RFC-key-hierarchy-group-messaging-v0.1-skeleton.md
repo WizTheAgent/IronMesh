@@ -115,6 +115,7 @@ Pre-shared or leader-distributed group key, rotated on schedule and on membershi
 
 - **Non-goals:** emission/traffic-analysis controls (separate tactical-profile doc), routing metrics, reputation systems (demoted to research question per July 2026 review).
 - **Open:** SIO/FROST identity alignment vs IronMesh Ed25519 identities — one identity root or bridged? Multi-device per member (does a member = one leaf or a subtree)? Fork healing after long partitions (A and B differ sharply). Key recovery (k-of-n) interaction with group membership — does recovery = new leaf (revoke old) or restored leaf?
+- **Already decided (do not re-derive):** the inner end-to-end source-signature / frame-integrity chokepoint lives in `routing.py`'s `RoutingMixin` (`_verify_inner_source`, wired at the `deserialize_and_decrypt` dispatch point) — group messaging should extend that chokepoint, not build a new one.
 
 ## 9. Decision Procedure
 
