@@ -69,14 +69,22 @@ def parse_args():
     run_parser.add_argument("--port", type=int, default=8765, help="WebSocket port (default: 8765)")
     run_parser.add_argument(
         "--profile", default=None,
-        choices=["secure", "dev", "offline"],
+        choices=[
+            # Canonical deployment postures.
+            "lan", "lora", "homelab", "tactical", "custom",
+            # Back-compat aliases (pre-1.0). Kept behavior-preserving.
+            "secure", "dev", "offline",
+        ],
         help=(
-            "Bundled flag preset. 'secure' = production hardening "
-            "(pending-trust gate on, no plaintext-ws fallback, mDNS "
-            "default-deny). 'dev' = same-machine localhost shortcuts "
-            "(open discovery, plaintext ws — INSECURE). 'offline' = "
-            "Reticulum/LoRa transport only, mDNS off. Explicit flags "
-            "override the profile but emit a warning."
+            "Bundled flag preset — sets DEFAULTS only; every value stays "
+            "individually overridable (explicit flags win but emit a "
+            "warning on conflict). Postures: 'lan' = zero-config mDNS LAN "
+            "(the no-profile default). 'lora' = off-grid RF is the network "
+            "(Reticulum on). 'homelab' = local Ollama swarm posture. "
+            "'tactical' = strictest (pre-pinned peers only, pending-trust "
+            "gate on, discovery off). 'custom' = no opinionated defaults. "
+            "Aliases: 'secure' (production hardening), 'dev' (INSECURE "
+            "localhost shortcuts), 'offline' (air-gapped, no network)."
         ),
     )
     # --passphrase REMOVED from run parser — leaks in process list (ps aux).
@@ -583,7 +591,10 @@ def parse_args():
     # --- doctor (v0.8.5.2) ---
     doctor_parser = sub.add_parser(
         "doctor",
-        help="One-shot diagnostic — trust file, schema, queues, gate flag, key file, port",
+        help="One-shot diagnostic — keys, trust file, schema, queues, port, "
+             "audit chain, passphrase perms, mDNS, firewall, Reticulum, "
+             "Ollama. --onboard for first-run guidance, --fix for safe "
+             "local auto-fixes.",
     )
     doctor_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json",
                                 help="Identity key file to check (default: ~/.ironmesh/keys.json)")
@@ -612,6 +623,44 @@ def parse_args():
                                      "(wss://) will report as a transport error.")
     doctor_parser.add_argument("--passphrase-file", default=None,
                                 help="Passphrase file for the --peer dry-run reachability check")
+    # v0.9.6 onboarding additions.
+    doctor_parser.add_argument("--onboard", action="store_true",
+                                help="Walk the common first-run failure modes "
+                                     "(passphrase mismatch, mDNS blocked, "
+                                     "dashboard 401) with the exact next "
+                                     "action for each.")
+    doctor_parser.add_argument("--fix", action="store_true",
+                                help="Auto-apply ONLY safe, idempotent, LOCAL "
+                                     "fixes: chmod 600 on the passphrase file, "
+                                     "regenerate a MISSING key file, create a "
+                                     "MISSING config. Firewall/network rules "
+                                     "are NEVER auto-applied — the exact "
+                                     "command is printed and applied only on "
+                                     "explicit per-rule confirmation.")
+    doctor_parser.add_argument("--allow-remote-network-fix", action="store_true",
+                                help="Permit a network --fix (firewall rule) "
+                                     "while connected over SSH. Off by default: "
+                                     "a bad rule can lock out a headless box. "
+                                     "Local file fixes are always allowed over "
+                                     "SSH regardless of this flag.")
+    doctor_parser.add_argument("--profile", default=None,
+                                choices=["lan", "lora", "homelab", "tactical",
+                                         "custom", "secure", "dev", "offline"],
+                                help="Deployment posture — tailors the "
+                                     "profile-specific probes (Ollama for "
+                                     "homelab, Reticulum config for "
+                                     "lora/offline).")
+    doctor_parser.add_argument("--name", default=None,
+                                help="Node name — used when --fix regenerates "
+                                     "a missing key file or writes a config.")
+    doctor_parser.add_argument("--reticulum", action="store_true",
+                                help="Treat the RF transport as in-use so the "
+                                     "Reticulum config check runs even without "
+                                     "--profile=lora.")
+    doctor_parser.add_argument("--rns-configdir",
+                                default=os.path.expanduser("~/.reticulum"),
+                                help="Reticulum config directory to check "
+                                     "(default: ~/.reticulum)")
 
     # --- setup ---
     setup_parser = sub.add_parser(
@@ -957,12 +1006,23 @@ def setup_logging(level: str = "INFO", log_file: str = None,
 
 
 def _apply_profile(args):
-    """Apply a `--profile=secure|dev|offline` preset.
+    """Apply a `--profile=<name>` preset.
 
-    Profiles set boolean flags to safe defaults but never override an
-    explicit user-supplied value. When the user combines a profile
-    with a flag that conflicts with the profile's intent, log a clear
-    WARNING and let the explicit flag win (argparse-consistent).
+    Profiles set flags to a named deployment posture's DEFAULTS but never
+    override an explicit user-supplied value — every value stays
+    individually overridable. When the user combines a profile with a
+    flag that conflicts with the profile's intent, log a clear WARNING
+    and let the explicit flag win (argparse-consistent).
+
+    Canonical postures: lan / lora / homelab / tactical / custom.
+    Back-compat aliases (pre-1.0, behavior-preserving): secure / dev /
+    offline. Each alias reproduces the exact arg mutations + warnings its
+    name produced before the canonical set was introduced — an alias
+    that changed behavior would be a rename in disguise, so `secure` is
+    kept as its own distinct branch rather than folded into `tactical`
+    (their intents overlap today but `tactical` is documented to pin a
+    group crypto suite once the keying RFC lands, so they must not be
+    silently conflated).
 
     Returns the list of warning messages so the caller can also log
     them through the structured logger once it is set up.
@@ -973,22 +1033,69 @@ def _apply_profile(args):
 
     warnings = []
 
-    if profile == "secure":
-        # Production hardening: pending-trust gate ON, no plaintext-ws.
-        if not getattr(args, "require_message_promotion", False):
-            args.require_message_promotion = True
+    def _warn_insecure_for(name):
+        """Warn when discovery/plaintext-ws are set under a hardened
+        posture. Shared by `secure` and `tactical` so the two stay in
+        lock-step on the checks they have in common."""
         if getattr(args, "allow_plaintext_ws", False):
             warnings.append(
-                "profile=secure was overridden: --allow-plaintext-ws is set "
-                "explicitly, secure profile would have left it OFF. "
+                f"profile={name} was overridden: --allow-plaintext-ws is set "
+                f"explicitly, {name} profile would have left it OFF. "
                 "Consider removing the flag for a real deployment."
             )
         if getattr(args, "open_discovery", False):
             warnings.append(
-                "profile=secure was overridden: --open-discovery is set "
-                "explicitly, secure profile would have left it OFF. "
+                f"profile={name} was overridden: --open-discovery is set "
+                f"explicitly, {name} profile would have left it OFF. "
                 "Consider removing the flag for a real deployment."
             )
+
+    # --- Canonical postures ---------------------------------------------
+    if profile == "lan":
+        # Zero-config mDNS LAN posture — identical to running with no
+        # profile at all. mDNS is already default-deny (an allowlist or
+        # --open-discovery is required to auto-connect), so there is
+        # nothing to set: this posture is the shipped baseline. Named so
+        # operators can be explicit about "the default LAN behavior".
+        pass
+    elif profile == "lora":
+        # Off-grid RF is the network: Reticulum/LoRa transport on.
+        if hasattr(args, "reticulum") and not getattr(args, "reticulum", False):
+            args.reticulum = True
+        # Leave mDNS untouched — an RF node may also share a local LAN
+        # segment, and discovery stays default-deny regardless.
+    elif profile == "homelab":
+        # Local Ollama swarm posture. mDNS discovery on a trusted home
+        # LAN is expected, so pre-seed the allowlist affordance without
+        # forcing open discovery: operators pass --allowed-peers for the
+        # swarm members. No flag mutation beyond leaving the permissive
+        # LAN defaults in place; kept as a named posture so the doctor's
+        # Ollama probe and future wizard can key off it.
+        pass
+    elif profile == "tactical":
+        # Strictest posture: pre-pinned peers only, pending-trust gate on,
+        # discovery off. Discovery is already default-deny, so the gate
+        # flag is the only positive mutation; we additionally warn if the
+        # operator has explicitly loosened either insecure flag.
+        if not getattr(args, "require_message_promotion", False):
+            args.require_message_promotion = True
+        _warn_insecure_for("tactical")
+        # NOTE: no traffic-padding flag exists in the current schema, so
+        # the "padding on" intent cannot be applied here. The reserved
+        # `group_crypto_suite` config stub (config.py) lets tactical pin a
+        # suite once the keying RFC lands — WITHOUT a schema migration.
+    elif profile == "custom":
+        # No opinionated defaults — explicit flags only.
+        pass
+
+    # --- Back-compat aliases (behavior-preserving) ----------------------
+    elif profile == "secure":
+        # Production hardening: pending-trust gate ON, no plaintext-ws.
+        # Kept distinct from `tactical` (see docstring). Byte-identical to
+        # the pre-canonical `secure` behavior.
+        if not getattr(args, "require_message_promotion", False):
+            args.require_message_promotion = True
+        _warn_insecure_for("secure")
     elif profile == "dev":
         # Same-machine localhost shortcuts. Insecure by design.
         if not getattr(args, "open_discovery", False):
@@ -996,7 +1103,10 @@ def _apply_profile(args):
         if not getattr(args, "allow_plaintext_ws", False):
             args.allow_plaintext_ws = True
     elif profile == "offline":
-        # Reticulum/LoRa transport only.
+        # Air-gapped / no network at all. DISTINCT from `lora` (off-grid
+        # RF *is* the network). Historically this turned Reticulum on as
+        # the "no clearnet" transport; preserved verbatim for existing
+        # `--profile=offline` invocations.
         if hasattr(args, "reticulum") and not getattr(args, "reticulum", False):
             args.reticulum = True
         # Note: leaving allowed_peers / open_discovery untouched —
@@ -2230,10 +2340,147 @@ def _parse_since(s: str) -> float:
         return 0.0
 
 
+def _detect_os() -> str:
+    """Return a coarse OS family: 'linux' | 'macos' | 'windows' | 'unknown'.
+
+    This is the single OS-detection code path. `doctor` uses it to pick
+    the right firewall/mDNS remediation command, and the first-run wizard
+    reuses it so the two never drift. Mirrors scripts/install.sh's
+    detect_os() intent (which resolves distro IDs for package install);
+    here we only need the family to choose an operator command.
+    """
+    plat = sys.platform
+    if plat.startswith("linux"):
+        return "linux"
+    if plat == "darwin":
+        return "macos"
+    if plat in ("win32", "cygwin"):
+        return "windows"
+    return "unknown"
+
+
+def _firewall_command(os_family: str, port: int) -> str:
+    """Return the EXACT, copy-pasteable command to allow ``port`` through
+    the host firewall for the detected OS. Never run — printed only. The
+    caller decides whether to surface it (doctor) or apply it on explicit
+    per-rule confirmation (`--fix`, local sessions only)."""
+    if os_family == "linux":
+        # ufw is the common front-end; firewall-cmd (RHEL) and raw
+        # iptables are the fallbacks operators reach for.
+        return (
+            f"ufw allow {port}/tcp    "
+            f"# or: firewall-cmd --add-port={port}/tcp --permanent && "
+            f"firewall-cmd --reload    "
+            f"# or: iptables -A INPUT -p tcp --dport {port} -j ACCEPT"
+        )
+    if os_family == "macos":
+        return (
+            "# macOS application firewall is per-binary; allow the python "
+            "running ironmesh:\n"
+            "      /usr/libexec/ApplicationFirewall/socketfilterfw "
+            "--add $(command -v python3)"
+        )
+    if os_family == "windows":
+        return (
+            f'netsh advfirewall firewall add rule '
+            f'name="IronMesh {port}" dir=in action=allow '
+            f'protocol=TCP localport={port}'
+        )
+    return f"# (unknown OS) open TCP port {port} through your firewall"
+
+
+def _detect_network_posture(port: int, bind: str) -> dict:
+    """Probe local network posture for onboarding diagnostics. This is the
+    single network-detection code path shared by `doctor` (and reused by
+    the first-run wizard). Read-only — never mutates host state.
+
+    Returns a dict with keys:
+      os               — coarse OS family (see _detect_os)
+      over_ssh         — True if this looks like an SSH session
+      mdns_ok          — True/False/None: can we open a multicast socket?
+      mdns_detail      — human-readable explanation
+      port_bindable    — True if we could bind (port,bind) right now
+      firewall_hint    — exact OS command to allow the port (printed only)
+    """
+    import socket
+
+    os_family = _detect_os()
+    over_ssh = bool(os.environ.get("SSH_CONNECTION")
+                    or os.environ.get("SSH_TTY")
+                    or os.environ.get("SSH_CLIENT"))
+
+    # mDNS / multicast reachability. zeroconf is a core dependency, so we
+    # can lean on it to detect whether multicast is usable at all. We do a
+    # cheap, self-contained probe: open a UDP socket, request membership
+    # in the mDNS multicast group (224.0.0.251). If the OS/firewall blocks
+    # multicast, IP_ADD_MEMBERSHIP raises — a clean WARN signal without
+    # standing up a full Zeroconf instance (which would touch the network).
+    mdns_ok = None
+    mdns_detail = ""
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM,
+                             socket.IPPROTO_UDP)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("", 0))
+        group = socket.inet_aton("224.0.0.251")
+        mreq = group + socket.inet_aton("0.0.0.0")
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        mdns_ok = True
+        mdns_detail = "multicast group join succeeded (mDNS discovery usable)"
+    except OSError as e:
+        mdns_ok = False
+        mdns_detail = (f"multicast group join failed ({e}); mDNS "
+                       "auto-discovery is likely blocked on this network")
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    # Port bindability — a proxy for "is the port free / is something
+    # already listening". Distinct from firewall reachability (which we
+    # cannot test without a second host), so we report both separately.
+    port_bindable = None
+    try:
+        s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s2.bind((bind, port))
+            port_bindable = True
+        finally:
+            s2.close()
+    except OSError:
+        port_bindable = False
+
+    return {
+        "os": os_family,
+        "over_ssh": over_ssh,
+        "mdns_ok": mdns_ok,
+        "mdns_detail": mdns_detail,
+        "port_bindable": port_bindable,
+        "firewall_hint": _firewall_command(os_family, port),
+    }
+
+
 def cmd_doctor(args):
     """v0.8.5.2: one-shot diagnostic. Prints a checklist and exits non-zero
     on any failed check. Designed to be safe to run on a host with a live
-    daemon (read-only, no mutations)."""
+    daemon (read-only, no mutations).
+
+    v0.9.6 onboarding additions:
+      --onboard  walks the common first-run failure modes with the exact
+                 next action for each (passphrase mismatch, mDNS blocked,
+                 dashboard 401).
+      --fix      auto-applies ONLY idempotent, non-destructive, LOCAL
+                 fixes (chmod 600 on the passphrase file, regenerate a
+                 MISSING key file, create a MISSING config). Firewall /
+                 network rules are NEVER auto-applied — the exact command
+                 is printed and applied only on explicit per-rule y/N.
+                 Network fixes are REFUSED over SSH unless
+                 --allow-remote-network-fix is passed (a bad rule can lock
+                 out a headless box); local file fixes are always allowed.
+    """
     import socket
     import sqlite3
 
@@ -2242,6 +2489,20 @@ def cmd_doctor(args):
     trust_path = os.path.expanduser(
         args.trust_path or "~/.ironmesh/known_peers.json"
     )
+
+    # Shared network/OS posture — the single detection code path. Computed
+    # once and reused by the mDNS, firewall, --onboard, and --fix paths.
+    posture = _detect_network_posture(args.port, args.bind)
+
+    # --M-scheme step counter. Total is fixed so operators see stable
+    # [N/M] labels across runs; optional probes (Reticulum, Ollama) always
+    # emit a line (INFO/SKIP when not relevant) so N stays deterministic.
+    _TOTAL_CHECKS = 13
+    _step = {"n": 0}
+
+    def step() -> str:
+        _step["n"] += 1
+        return f"[{_step['n']}/{_TOTAL_CHECKS}]"
 
     failures = 0
     print("ironmesh doctor — IronMesh installation diagnostic")
@@ -2257,11 +2518,19 @@ def cmd_doctor(args):
         pass
 
     # 1. Identity key file readable + decryptable.
-    print(f"[1/8] Identity key file: {keys_path}")
+    print(f"{step()} Identity key file: {keys_path}")
     if not os.path.exists(keys_path):
         print("      FAIL — file does not exist (run 'ironmesh keys generate')")
         failures += 1
         keypair = None
+        # --fix: regenerating a MISSING key file is idempotent + local
+        # (creating a file that is not there — never overwrites an
+        # existing key). Applied only under --fix.
+        if getattr(args, "fix", False):
+            regenerated = _doctor_fix_missing_keys(keys_path, args)
+            if regenerated is not None:
+                keypair = regenerated
+                failures -= 1  # the fix cleared the failure
     else:
         keypair = None
         try:
@@ -2320,7 +2589,7 @@ def cmd_doctor(args):
             failures += 1
 
     # 2. Trust file readable + integrity check passes.
-    print(f"[2/8] Trust store: {trust_path}")
+    print(f"{step()} Trust store: {trust_path}")
     if not os.path.exists(trust_path):
         print("      OK — file does not exist yet (will be created on first peer)")
     elif keypair is None:
@@ -2344,7 +2613,7 @@ def cmd_doctor(args):
             failures += 1
 
     # 3. SQLite schema version.
-    print(f"[3/8] Message store: {db_path}")
+    print(f"{step()} Message store: {db_path}")
     if not os.path.exists(db_path):
         print("      OK — DB does not exist yet (will be created at daemon startup)")
     else:
@@ -2366,7 +2635,7 @@ def cmd_doctor(args):
             failures += 1
 
     # 4. Pending-trust queue health.
-    print("[4/8] Pending-trust queue (SQLite v3 only):")
+    print(f"{step()} Pending-trust queue (SQLite v3 only):")
     if not os.path.exists(db_path):
         print("      SKIP — DB not present")
     else:
@@ -2397,7 +2666,7 @@ def cmd_doctor(args):
             failures += 1
 
     # 5. Gate flag + queue cap from env (if a daemon were started now).
-    print("[5/8] Gate environment:")
+    print(f"{step()} Gate environment:")
     gate_env = os.environ.get("IRONMESH_REQUIRE_MSG_PROMOTION", "").lower()
     cap_env = os.environ.get("IRONMESH_PENDING_QUEUE_CAP")
     trust_env = os.environ.get("IRONMESH_TRUST_PATH")
@@ -2408,7 +2677,7 @@ def cmd_doctor(args):
     print("      OK — env reported (informational; CLI flags override env)")
 
     # 6. Port availability.
-    print(f"[6/8] Port {args.port} on {args.bind}:")
+    print(f"{step()} Port {args.port} on {args.bind}:")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.bind((args.bind, args.port))
@@ -2426,7 +2695,7 @@ def cmd_doctor(args):
     # while the daemon writes to <db-dir>/audit.log — and report on a
     # different log entirely.
     audit_path = os.path.join(os.path.dirname(db_path), "audit.log")
-    print(f"[7/8] Audit log: {audit_path}")
+    print(f"{step()} Audit log: {audit_path}")
     if not os.path.exists(audit_path):
         print("      OK — audit log does not exist yet (will be created on daemon start)")
     else:
@@ -2454,7 +2723,7 @@ def cmd_doctor(args):
             failures += 1
 
     # 8. v0.9.3 features in use on disk.
-    print("[8/8] v0.9.3 features (on-disk state):")
+    print(f"{step()} v0.9.3 features (on-disk state):")
     # Trust-store envelope version. v2 = encrypted at rest, v1 = legacy
     # plaintext (still accepted, migrates forward on next save).
     if os.path.exists(trust_path):
@@ -2486,19 +2755,384 @@ def cmd_doctor(args):
           "in the daemon's startup log) and check the "
           "`strict_tls_enabled` and `global_msg_rate_limit_total` fields.")
 
+    # 9. Passphrase-file permissions (DEDICATED check, reuses the existing
+    #    _read_passphrase_file_safe perm logic — no reimplementation). Only
+    #    meaningful when a passphrase file was supplied.
+    pp_file = getattr(args, "passphrase_file", None)
+    print(f"{step()} Passphrase-file permissions:")
+    if not pp_file:
+        print("      SKIP — no --passphrase-file supplied "
+              "(nothing to check)")
+    else:
+        pp_resolved = os.path.expanduser(pp_file)
+        if not os.path.exists(pp_resolved):
+            print(f"      FAIL — {pp_file} does not exist")
+            failures += 1
+        else:
+            perm_warn = _passphrase_file_perm_warning(pp_resolved)
+            if perm_warn is None:
+                # _read_passphrase_file_safe validates shape + perms; a
+                # clean read means regular file, sane perms, non-empty.
+                try:
+                    _read_passphrase_file_safe(pp_file)
+                    print("      OK — regular file, restrictive perms")
+                except (IOError, OSError, ValueError) as e:
+                    print(f"      FAIL — {e}")
+                    failures += 1
+            else:
+                print(f"      WARN — {perm_warn}")
+                if getattr(args, "fix", False):
+                    _doctor_fix_passphrase_perms(pp_resolved, args)
+
+    # 10. mDNS / multicast reachability (WARN, never FAIL — a blocked
+    #     network is a valid deployment, e.g. pinned-peer / RF meshes).
+    print(f"{step()} mDNS / multicast reachability:")
+    if posture["mdns_ok"] is True:
+        print(f"      OK — {posture['mdns_detail']}")
+    elif posture["mdns_ok"] is False:
+        print(f"      WARN — {posture['mdns_detail']}. "
+              "Pin peers with --allowed-peers, or use the Reticulum "
+              "transport, if discovery cannot be unblocked.")
+    else:
+        print("      INFO — could not determine multicast state")
+
+    # 11. Firewall posture — DETECT ONLY, never modify. Reports whether the
+    #     daemon port looks locally bindable and prints the exact OS command
+    #     to open it (printed, not run).
+    print(f"{step()} Firewall posture ({posture['os']}):")
+    if posture["port_bindable"] is True:
+        print(f"      INFO — port {args.port} is free locally; if remote "
+              "peers cannot reach it, a host/network firewall may be "
+              "blocking inbound.")
+    elif posture["port_bindable"] is False:
+        print(f"      INFO — port {args.port} is already in use (a daemon "
+              "may be running); firewall not assessed.")
+    print(f"      To allow the port (run yourself — doctor NEVER applies "
+          f"network rules):\n      {posture['firewall_hint']}")
+    if getattr(args, "fix", False):
+        _doctor_fix_firewall(args, posture)
+
+    # 12. Reticulum config presence — relevant when the RF transport is in
+    #     play (--reticulum or a LoRa/offline profile). INFO otherwise.
+    rns_relevant = (getattr(args, "reticulum", False)
+                    or getattr(args, "profile", None) in ("lora", "offline"))
+    rns_configdir = os.path.expanduser(
+        getattr(args, "rns_configdir", None) or "~/.reticulum")
+    print(f"{step()} Reticulum config: {rns_configdir}")
+    if not rns_relevant:
+        print("      INFO — RF transport not selected "
+              "(use --reticulum or --profile=lora); config not required")
+    elif os.path.isdir(rns_configdir):
+        cfg_file = os.path.join(rns_configdir, "config")
+        if os.path.exists(cfg_file):
+            print("      OK — Reticulum config directory + config present")
+        else:
+            print("      WARN — config directory exists but no `config` "
+                  "file yet (Reticulum writes defaults on first run)")
+    else:
+        print("      WARN — config directory missing; Reticulum will "
+              "create defaults on first start, or run `rnsd` once to "
+              "initialize it")
+
+    # 13. Ollama presence — relevant for the swarm/homelab posture. Probe
+    #     the local Ollama endpoint; INFO/WARN only, never a failure.
+    print(f"{step()} Ollama (swarm/homelab):")
+    ollama_relevant = getattr(args, "profile", None) == "homelab"
+    ollama_up, ollama_detail = _probe_ollama()
+    if ollama_up:
+        print(f"      OK — {ollama_detail}")
+    elif ollama_relevant:
+        print(f"      WARN — {ollama_detail} "
+              "(profile=homelab expects a local Ollama)")
+    else:
+        print(f"      INFO — {ollama_detail}")
+
     # Optional: dry-run a WebSocket handshake against a peer.
     if args.peer:
         print(f"[peer] Dry-run handshake against {args.peer}")
         peer_result = _doctor_peer_handshake(args, keypair)
         if peer_result != 0:
             failures += 1
+        # Dashboard token validity is only meaningful against a RUNNING
+        # --gui daemon, so it lives in the runtime/peer-probe path (not the
+        # on-disk path). Surface how to check it when a peer probe ran.
+        _doctor_dashboard_token_hint(args)
+
+    # --fix: create a MISSING config file with defaults (idempotent, local,
+    # never overwrites). Only under --fix.
+    if getattr(args, "fix", False):
+        _doctor_fix_missing_config(args)
+
+    # --onboard: a terse walkthrough of the common first-run failure modes
+    # with the exact next action for each, keyed to what we just observed.
+    if getattr(args, "onboard", False):
+        _doctor_onboard_walkthrough(args, posture, keys_path)
 
     print("=" * 60)
     if failures == 0:
         print("ALL CHECKS PASSED")
+        # Local-first: point to the feedback channel, never phone home.
+        print("Share feedback: "
+              "https://github.com/WizTheAgent/IronMesh/issues")
         return 0
     print(f"{failures} CHECK(S) FAILED — see above for remediation")
+    if not getattr(args, "onboard", False):
+        print("Tip: run `ironmesh doctor --onboard` for first-run guidance, "
+              "or `--fix` to auto-apply safe local fixes.")
+    print("Share feedback: https://github.com/WizTheAgent/IronMesh/issues")
     return 1
+
+
+def _passphrase_file_perm_warning(resolved_path: str):
+    """Return a human-readable warning string if the passphrase file has
+    permissive (group/other-readable) POSIX permissions, else None.
+
+    Uses the same 0o077 mask that _read_passphrase_file_safe warns on, so
+    doctor's dedicated check agrees with the daemon's read path. On
+    Windows (where NTFS perms don't map to these bits) always returns None.
+    """
+    if os.name != "posix":
+        return None
+    try:
+        import stat as _stat
+        st = os.stat(resolved_path)
+    except OSError:
+        return None
+    if (st.st_mode & 0o077) != 0:
+        return (f"permissive mode {oct(st.st_mode & 0o777)} — "
+                f"group/other can read it; run `chmod 600 {resolved_path}`")
+    return None
+
+
+def _over_ssh() -> bool:
+    """True if this process looks like an interactive SSH session. Used to
+    gate remote network --fix (a bad firewall rule can lock out a headless
+    box, so network fixes are refused over SSH unless explicitly allowed)."""
+    return bool(os.environ.get("SSH_CONNECTION")
+                or os.environ.get("SSH_TTY")
+                or os.environ.get("SSH_CLIENT"))
+
+
+def _doctor_fix_passphrase_perms(resolved_path: str, args) -> bool:
+    """--fix: tighten a passphrase file to 0600. Idempotent, local, and
+    non-destructive (only changes the mode bits — never the contents).
+    Always allowed, including over SSH (it's a local file operation, not a
+    network rule). Returns True if applied."""
+    if os.name != "posix":
+        print("      FIX SKIP — chmod not applicable on this OS")
+        return False
+    try:
+        os.chmod(resolved_path, 0o600)
+        print(f"      FIX APPLIED — chmod 600 {resolved_path} "
+              "(reversible: restore prior mode if intended)")
+        return True
+    except OSError as e:
+        print(f"      FIX FAILED — could not chmod: {e}")
+        return False
+
+
+def _doctor_fix_missing_keys(keys_path: str, args):
+    """--fix: regenerate a MISSING identity key file. Idempotent + local —
+    refuses to touch an existing file (the missing-file guard in the caller
+    already ensures we only reach here when the file is absent, but we
+    re-check to be safe). Encrypts with the resolved mesh passphrase when
+    available, matching `ironmesh setup`. Returns the new keypair or None.
+    """
+    if os.path.exists(keys_path):
+        # Never overwrite — not our job under --fix.
+        print("      FIX SKIP — key file already exists (not overwriting)")
+        return None
+    # Resolve a passphrase to encrypt with, mirroring the decrypt order.
+    passphrase = getattr(args, "keys_passphrase", None)
+    kp_file = getattr(args, "keys_passphrase_file", None)
+    if passphrase is None and kp_file:
+        try:
+            passphrase = _read_passphrase_file_safe(kp_file)
+        except (IOError, OSError, ValueError):
+            passphrase = None
+    if passphrase is None:
+        passphrase = os.environ.get("IRONMESH_KEYS_PASSPHRASE") \
+            or os.environ.get("IRONMESH_PASSPHRASE")
+    if passphrase is None and getattr(args, "passphrase_file", None):
+        try:
+            passphrase = _read_passphrase_file_safe(args.passphrase_file)
+        except (IOError, OSError, ValueError):
+            passphrase = None
+    try:
+        from ironmesh.keys import generate_keypair, save_keys, load_keys
+        name = getattr(args, "name", None) or "node"
+        kp = generate_keypair(name)
+        os.makedirs(os.path.dirname(os.path.expanduser(keys_path)) or ".",
+                    exist_ok=True)
+        if passphrase:
+            save_keys(kp, keys_path, passphrase=passphrase)
+            print(f"      FIX APPLIED — generated encrypted key file "
+                  f"{keys_path} (fingerprint {kp.get_fingerprint()})")
+        else:
+            # No passphrase available: refuse to write a plaintext key file
+            # silently. That would be a security downgrade, not a safe fix.
+            print("      FIX SKIP — no passphrase available to encrypt a new "
+                  "key file; run `ironmesh setup` or set "
+                  "IRONMESH_KEYS_PASSPHRASE, then re-run --fix")
+            return None
+        # Reload to confirm it round-trips.
+        return load_keys(keys_path, passphrase=passphrase)
+    except Exception as e:
+        print(f"      FIX FAILED — could not generate key file: {e}")
+        return None
+
+
+def _doctor_fix_missing_config(args) -> bool:
+    """--fix: create a MISSING config file with defaults. Idempotent +
+    local — never overwrites an existing config. Returns True if created.
+    """
+    from ironmesh.config import IronMeshConfig, DEFAULT_CONFIG_PATH
+    cfg_path = os.path.expanduser(DEFAULT_CONFIG_PATH)
+    if os.path.exists(cfg_path):
+        return False  # present — leave it alone, silently
+    print(f"[fix] Config file: {cfg_path}")
+    try:
+        cfg = IronMeshConfig()
+        name = getattr(args, "name", None)
+        if name:
+            cfg.agent_name = name
+        cfg.save(cfg_path)
+        print("      FIX APPLIED — wrote a default config "
+              "(delete the file to revert)")
+        return True
+    except OSError as e:
+        print(f"      FIX FAILED — could not write config: {e}")
+        return False
+
+
+def _doctor_fix_firewall(args, posture) -> bool:
+    """--fix path for the firewall rule. NON-NEGOTIABLE safety rules:
+
+      * NEVER auto-applied. The exact OS-detected command is applied only
+        on explicit per-rule interactive y/N confirmation.
+      * REFUSED over SSH unless --allow-remote-network-fix is passed — a
+        bad firewall rule can lock an operator out of a headless box.
+      * If stdin isn't a TTY (no way to confirm), we print the command and
+        do nothing.
+
+    Returns True only if a rule was actually applied.
+    """
+    cmd = posture["firewall_hint"]
+
+    # SSH guard — the load-bearing safety rule. Local file fixes are fine
+    # over SSH, but a network rule is not, because a mistake severs the
+    # very session applying it.
+    if _over_ssh() and not getattr(args, "allow_remote_network_fix", False):
+        print("      FIX REFUSED — network fixes are disabled over SSH "
+              "(a bad firewall rule can lock out a headless box). "
+              "Re-run with --allow-remote-network-fix if you accept that "
+              "risk, or apply the printed command yourself.")
+        return False
+
+    if not sys.stdin.isatty():
+        print("      FIX SKIP — firewall rule needs interactive "
+              "confirmation (no TTY); apply the printed command yourself.")
+        return False
+
+    # The command string may bundle several alternatives (ufw/firewalld/
+    # iptables) for the operator to choose from — we do not parse+exec that
+    # ourselves. Present it and require an explicit y to run the FIRST,
+    # primary form only; anything else is a no-op.
+    primary = cmd.split("#", 1)[0].strip()
+    if not primary:
+        print("      FIX SKIP — no single primary command to apply on this "
+              "OS; apply the printed command yourself.")
+        return False
+    try:
+        answer = input(f"      Apply firewall rule now? [y/N]\n"
+                       f"        {primary}\n      > ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\n      FIX SKIP — no confirmation given")
+        return False
+    if answer != "y":
+        print("      FIX SKIP — not confirmed")
+        return False
+    import subprocess
+    import shlex
+    try:
+        # Split with shlex on POSIX; on Windows netsh, pass as a string.
+        if os.name == "posix":
+            rc = subprocess.call(shlex.split(primary))
+        else:
+            rc = subprocess.call(primary, shell=True)
+        if rc == 0:
+            print("      FIX APPLIED — firewall rule added. To revert, "
+                  "remove the rule with your firewall's delete command.")
+            return True
+        print(f"      FIX FAILED — command exited {rc} "
+              "(you may need elevated privileges)")
+        return False
+    except Exception as e:
+        print(f"      FIX FAILED — {e}")
+        return False
+
+
+def _probe_ollama(timeout: float = 1.0):
+    """Probe the local Ollama endpoint. Returns (up, detail). Never raises;
+    a short timeout keeps doctor snappy on hosts without Ollama."""
+    import urllib.request
+    url = "http://127.0.0.1:11434/api/version"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read(256).decode("utf-8", "replace").strip()
+        return True, f"Ollama reachable at 127.0.0.1:11434 ({body[:80]})"
+    except Exception:
+        return False, "Ollama not reachable at 127.0.0.1:11434"
+
+
+def _doctor_dashboard_token_hint(args) -> None:
+    """Dashboard token validity is a RUNTIME property of a --gui daemon
+    (the token is minted per-process), so doctor cannot read it from disk.
+    Print the exact way to confirm it against a running daemon — surfaced
+    from the peer-probe path so it appears when the operator is already
+    debugging live connectivity (e.g. a dashboard 401)."""
+    gui_port = getattr(args, "port", 8765) + 1
+    print(f"[peer] Dashboard token: only valid against a RUNNING --gui "
+          f"daemon (token is minted per-process). If the dashboard returns "
+          f"401, the token in your URL is stale — copy the fresh "
+          f"`GUI token:` line from the daemon's startup log and open "
+          f"http://127.0.0.1:{gui_port}/?token=<token>.")
+
+
+def _doctor_onboard_walkthrough(args, posture, keys_path) -> None:
+    """Terse, human-readable walkthrough of the common first-run failure
+    modes with the specific next action for each. Prints observed state so
+    the operator sees which apply to them."""
+    print("-" * 60)
+    print("ONBOARD — common first-run issues + the fix for each:")
+
+    # 1. Passphrase mismatch (key file won't decrypt).
+    print("  1) Key file won't decrypt / 'wrong passphrase':")
+    print("     The key file must be decrypted with the SAME passphrase "
+          "that encrypted it. `ironmesh setup` encrypts keys with the mesh "
+          "passphrase; if your key passphrase differs, pass "
+          "--keys-passphrase-file. Confirm with check [1/13] above.")
+
+    # 2. mDNS blocked (peers don't discover each other).
+    print("  2) Peers don't find each other (mDNS):")
+    if posture["mdns_ok"] is False:
+        print("     DETECTED HERE: multicast join failed on this host. "
+              "Either unblock mDNS/multicast on the network, or pin peers "
+              "explicitly with --allowed-peers, or switch to the Reticulum "
+              "transport (--reticulum / --profile=lora).")
+    else:
+        print("     multicast looks usable here. If peers still don't "
+              "connect, they are on different subnets (mDNS is link-local) "
+              "— pin them with --allowed-peers.")
+
+    # 3. Dashboard 401.
+    gui_port = getattr(args, "port", 8765) + 1
+    print("  3) Dashboard returns 401 / Unauthorized:")
+    print(f"     The GUI token is minted fresh each daemon start. Copy the "
+          f"`GUI token:` line from the daemon's startup log and open "
+          f"http://127.0.0.1:{gui_port}/?token=<token>. An old bookmarked "
+          f"token will always 401.")
+    print("-" * 60)
 
 
 def _doctor_peer_handshake(args, keypair) -> int:
@@ -2521,7 +3155,7 @@ def _doctor_peer_handshake(args, keypair) -> int:
         print(f"      FAIL — port {port_s!r} is not an integer")
         return 1
     if keypair is None:
-        print("      SKIP — identity key did not load (see check [1/8])")
+        print("      SKIP — identity key did not load (see check [1/13])")
         return 1
 
     passphrase = (
