@@ -233,6 +233,43 @@ jobs:
         run: |
           ./scripts/ci-pytest.sh pytest tests/integration -v
 
+  qr-fallback:
+    # The QR invite-token export degrades gracefully when the optional
+    # [qr] extra (segno) is absent. The standard `test` job installs segno
+    # (it is test-required so the positive QR path is always exercised),
+    # which means the no-segno FALLBACK direction never runs there. This
+    # job installs WITHOUT segno, runs the fallback tests, and fails if the
+    # fallback test did not actually run — a silent-skip guard so a
+    # security-adjacent path can't quietly become untested in both
+    # directions.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install WITHOUT the [qr] extra (no segno)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install "pytest>=7.0,<9" "pytest-asyncio>=0.21.0,<1"
+          # The whole point of this job: segno must genuinely be absent.
+          python -c "import importlib.util, sys; sys.exit(1 if importlib.util.find_spec('segno') else 0)" \
+            || { echo 'segno is present — this job must run WITHOUT it'; exit 1; }
+      - name: Run the QR fallback tests (no segno)
+        shell: bash
+        run: |
+          out=$(python -m pytest tests/test_invite.py::TestQR -v -p no:cacheprovider 2>&1); echo "$out"
+          # The no-dep fallback test MUST run and pass here (not skip),
+          # otherwise the graceful-degradation direction is untested.
+          echo "$out" | grep -q "test_png_returns_false_without_dep PASSED" \
+            || { echo 'FAIL: the no-segno PNG fallback test did not run/pass'; exit 1; }
+          # And the segno-only positive test MUST skip here (proves the
+          # skip condition keys on the dep, not something incidental).
+          echo "$out" | grep -q "test_png_writes_valid_token_png SKIPPED" \
+            || { echo 'FAIL: the positive PNG test should skip without segno'; exit 1; }
+
   packaging:
     # Build the wheel + sdist, run scripts/release-smoke.sh against the
     # wheel, and verify the conformance vector tests pass from a fresh

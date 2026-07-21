@@ -319,9 +319,59 @@ class TestQR:
             assert note and "token string" in note.lower()
 
     def test_png_returns_false_without_dep(self, tmp_path):
+        # Fallback direction: without the [qr] extra, png_qr must degrade to
+        # False (never raise). Not applicable when the extra IS installed —
+        # the positive direction is covered by test_png_writes_valid_token_png
+        # below, and the no-[qr] CI job exercises THIS branch.
         if ew_qr.is_available():
-            pytest.skip("[qr] extra installed — PNG path exercised elsewhere")
+            pytest.skip("[qr] extra installed — fallback covered by the no-[qr] CI job")
         assert ew_qr.png_qr("x", str(tmp_path / "out.png")) is False
+
+    @pytest.mark.skipif(
+        not ew_qr.is_available(),
+        reason="requires the [qr] extra (segno); segno is test-required so this "
+               "runs in the standard suite. The no-[qr] CI job covers the fallback.",
+    )
+    def test_png_writes_valid_token_png(self, tmp_path):
+        """With segno present, png_qr writes a real PNG that encodes EXACTLY
+        the invite token and nothing else — and never the mesh passphrase.
+
+        segno is a QR *writer*, not a reader, so we do NOT decode the image
+        (a literal camera-style round-trip would need a heavy QR-reader dep).
+        Content is proven two honest ways without a decoder:
+          1. PNG magic bytes + non-trivial size prove it is a real PNG;
+          2. the file is byte-identical to segno.make(token).save(...) with the
+             same render params — segno being deterministic, this proves the
+             PNG encodes exactly the token string and nothing extra.
+        Plus a no-leak guard that the passphrase never reaches the token/QR.
+        """
+        import json as _json
+
+        import segno
+
+        kp = generate_keypair("inviter")
+        SECRET_PASSPHRASE = "do-not-leak-this-passphrase-1234567890"
+        tok = ew_invite.create_invite(kp, "mesh-node-a:8765", profile="lan")
+        token_str = tok.to_string()
+
+        # no-leak: neither the token string nor any payload field carries the
+        # passphrase (regression guard against a future field being added).
+        assert SECRET_PASSPHRASE not in token_str
+        payload = ew_invite.parse_invite(token_str).to_dict()
+        assert SECRET_PASSPHRASE not in _json.dumps(payload)
+        assert "passphrase" not in payload and "secret" not in payload
+
+        out = tmp_path / "invite.png"
+        assert ew_qr.png_qr(token_str, str(out)) is True
+        data = out.read_bytes()
+        assert data[:8] == b"\x89PNG\r\n\x1a\n"  # real PNG
+        assert len(data) > 100
+
+        # content round-trip at the data level (no decoder needed): the written
+        # PNG must equal a QR built from exactly the token string.
+        expected = tmp_path / "expected.png"
+        segno.make(token_str, error="l").save(str(expected), scale=6, border=4)
+        assert out.read_bytes() == expected.read_bytes()
 
 
 # ---------------------------------------------------------------------------
