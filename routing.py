@@ -31,7 +31,9 @@ from ironmesh import (
 from ironmesh.audit import (
     EVENT_CAPABILITY_ANNOUNCE_BAD_SIG,
     EVENT_CAPABILITY_LEARNED,
+    EVENT_INNER_SOURCE_SIG_DROP,
 )
+from ironmesh.handshake import _parse_protocol_version
 from ironmesh.telemetry import span as _otel_span
 
 logger = logging.getLogger("ironmesh.bridge")
@@ -236,6 +238,17 @@ class RoutingMixin:
         msg_type = frame.msg_type
         msg_id = frame.msg_id
         payload = frame.payload
+
+        # Authenticate the originator of user-payload frames via the inner
+        # end-to-end source signature BEFORE any decompression, gating,
+        # storage, bus-publish, or relay. Verified here — the single inbound
+        # chokepoint shared by the WebSocket binary, WebSocket JSON, and
+        # RNS/Reticulum paths (all reach this via ``_dispatch_message``) —
+        # over the exact decrypted bytes the originator signed (i.e.
+        # pre-decompression). Relayed frames lacking a verifiable source
+        # signature are dropped (fail-closed).
+        if not self._verify_inner_source(peer_id, frame):
+            return
 
         # v0.5.2: decompress LoRa-compressed payloads
         if getattr(frame, 'routing', {}).get("compressed"):
@@ -915,6 +928,115 @@ class RoutingMixin:
                 if pub:
                     return pub
         return None
+
+    # ------------------------------------------------------------------
+    # Inner end-to-end source-signature verification (receive-side)
+    # ------------------------------------------------------------------
+
+    # User-payload frame types whose ``source`` attribution drives storage /
+    # bus / application behaviour. ONLY these are subject to inner-source-
+    # signature enforcement. Control-plane frames (ROUTE_*, CAPABILITY_*,
+    # GROUP_BROADCAST, REKEY_*, HELLO, …) authenticate via their own
+    # mechanisms and are exempt — a relayed CAPABILITY_ANNOUNCE, for example,
+    # carries its own origin signature, not frame.source_signature.
+    _SOURCE_SIG_REQUIRED_TYPES: frozenset = frozenset({"MSG", "REQ", "RESP", "CONV"})
+
+    def _lookup_source_verify_key(self, node_id: str):
+        """Return the originator's Ed25519 ``VerifyKey``, or None.
+
+        Resolves the claimed source's identity via the live peer registry
+        then the TOFU-pinned table (reusing ``_lookup_dest_identity``). A
+        None return means the originator's identity is unknown to us — a
+        relayed frame from such a source cannot be authenticated and is
+        dropped (fail-closed). Consequence: relayed delivery requires the
+        destination to know the originator's identity (direct contact or an
+        existing TOFU pin).
+        """
+        pub = self._lookup_dest_identity(node_id)
+        if not pub:
+            return None
+        try:
+            from nacl.signing import VerifyKey
+            return VerifyKey(pub)
+        except Exception:
+            return None
+
+    def _inner_source_allow_v1(self) -> bool:
+        """Whether the legacy v1 (unbound, payload-only) inner signature is
+        still acceptable. Accepted only while the negotiated protocol floor
+        is below 0.9; at floor >= 0.9 every peer emits the bound v2 form so
+        v1 is refused."""
+        try:
+            return _parse_protocol_version(self._min_protocol_version) < (0, 9)
+        except Exception:
+            return True
+
+    def _verify_inner_source(self, peer_id: str,
+                             frame: "ew_protocol.Frame") -> bool:
+        """Chokepoint — authenticate the ORIGINATOR of a user-payload frame.
+
+        The inner Ed25519 source signature is produced by the original source
+        over its plaintext and survives per-hop re-encryption, so a successful
+        verify authenticates the originator of a relayed frame, not merely the
+        immediate hop. Returns True to deliver, False to drop (fail-closed).
+
+        Policy:
+          * Non-user-payload (control) types are exempt → True.
+          * Direct frame (source == immediate peer): the outer per-hop
+            signature already authenticates the sender. A present inner
+            signature must still verify; its absence is tolerated.
+          * Relayed frame (source != immediate peer): a valid inner source
+            signature is REQUIRED. Missing, originator-unknown, or invalid
+            → drop.
+          * A present-but-invalid signature is ALWAYS dropped, even direct —
+            it signals tampering / impersonation.
+        """
+        if frame.msg_type not in self._SOURCE_SIG_REQUIRED_TYPES:
+            return True
+        direct = (frame.source == peer_id)
+        allow_v1 = self._inner_source_allow_v1()
+
+        if frame.source_signature is not None:
+            vk = self._lookup_source_verify_key(frame.source)
+            if vk is None:
+                if direct:
+                    frame.source_authenticated = False
+                    return True  # outer per-hop signature already covers it
+                self._audit_inner_source_drop(peer_id, frame, "unknown-source")
+                return False
+            if frame.verify_source_signature(vk, allow_v1=allow_v1):
+                frame.source_authenticated = True
+                return True
+            self._audit_inner_source_drop(peer_id, frame, "verification-failed")
+            return False
+
+        # No inner signature present.
+        if direct:
+            frame.source_authenticated = False
+            return True
+        self._audit_inner_source_drop(peer_id, frame, "missing-on-relayed")
+        return False
+
+    def _audit_inner_source_drop(self, peer_id: str,
+                                 frame: "ew_protocol.Frame", reason: str) -> None:
+        """Log + audit a frame dropped by the inner-source check."""
+        logger.warning(
+            "Dropping %s from %s — inner source signature %s (claimed source=%s)",
+            frame.msg_type, peer_id[:12], reason, (frame.source or "")[:12],
+        )
+        self.metrics.inner_source_sig_drops = (
+            getattr(self.metrics, "inner_source_sig_drops", 0) + 1
+        )
+        if self._audit:
+            try:
+                self._audit.log(EVENT_INNER_SOURCE_SIG_DROP, {
+                    "peer": peer_id,
+                    "source": frame.source,
+                    "msg_type": frame.msg_type,
+                    "reason": reason,
+                })
+            except Exception:
+                logger.debug("audit log of inner-source drop failed", exc_info=True)
 
     async def _send_frame(self, peer_id: str, frame: ew_protocol.Frame):
         """Send a Frame to a connected peer using binary wire format.

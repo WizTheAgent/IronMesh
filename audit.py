@@ -177,6 +177,11 @@ EVENT_GLOBAL_RATE_LIMIT_TRIGGERED = "GLOBAL_RATE_LIMIT_TRIGGERED"
 # v0.9.4 — signed CAPABILITY_ANNOUNCE events.
 EVENT_CAPABILITY_ANNOUNCE_BAD_SIG = "CAPABILITY_ANNOUNCE_BAD_SIG"
 
+# A user-payload frame was dropped because its inner end-to-end source
+# signature was missing, unverifiable, or invalid. Carries
+# {"peer": <immediate hop>, "source": <claimed originator>, "reason": ...}.
+EVENT_INNER_SOURCE_SIG_DROP = "INNER_SOURCE_SIG_DROP"
+
 # Bootstrap invite-token events. Fired at the inviter's TOFU pin point
 # when a joiner presents an invite: accepted (consumed once, peer pinned
 # pending) or rejected (spent, expired, bad signature, identity mismatch).

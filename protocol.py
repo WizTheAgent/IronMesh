@@ -150,6 +150,46 @@ def canonical_capability_announce_bytes(
 
 
 # ---------------------------------------------------------------------------
+# Inner end-to-end source signature (v2 bound scheme) — canonicalization
+# ---------------------------------------------------------------------------
+#
+# The v2 inner source signature binds the originator identity, the delivery
+# target, the message id, and the body. A relay can re-encrypt per hop (it
+# holds the per-hop session key), so it *could* alter destination / msg_id /
+# source on a frame it forwards — but it cannot forge this signature without
+# the originator's Ed25519 secret. The destination recomputes the canonical
+# bytes from the received fields and rejects any frame whose signature does
+# not match, defeating relay redirection (destination), replay-relabel
+# (msg_id), and re-attribution (source). ttl/hops are deliberately NOT bound
+# — they legitimately change per hop, and binding them would break relaying.
+#
+# Encoding is length-prefixed (u32 big-endian per field) so concatenation is
+# unambiguous and trivially reproducible by the Go / TypeScript clients.
+
+def _lp(b: bytes) -> bytes:
+    """Length-prefix (u32 big-endian) a byte field for canonical concatenation."""
+    return len(b).to_bytes(4, "big") + b
+
+
+def canonical_inner_source_bytes(source: str, destination: str,
+                                 msg_id: str, payload: bytes) -> bytes:
+    """Canonical bytes the v2 inner source signature binds to.
+
+    Both signer (originator) and verifier (destination) MUST build these
+    bytes identically. The Ed25519 domain-separation context
+    ``crypto.SIG_CTX_FRAME_INNER_SOURCE`` is prepended at sign/verify time.
+    """
+    if not isinstance(payload, (bytes, bytearray)):
+        raise ValueError("payload must be bytes")
+    return b"".join((
+        _lp((source or "").encode("utf-8")),
+        _lp((destination or "").encode("utf-8")),
+        _lp((msg_id or "").encode("utf-8")),
+        _lp(bytes(payload)),
+    ))
+
+
+# ---------------------------------------------------------------------------
 # HELLO signature canonicalization
 # ---------------------------------------------------------------------------
 #
@@ -610,6 +650,16 @@ class Frame:
         # this field to recover the true plaintext.
         self.e2e_payload: Optional[bytes] = None
 
+        # Which inner-source-signature scheme produced ``source_signature``.
+        # None on receive means "tag absent" → treated as the legacy v1
+        # (payload-only) scheme for backward compatibility.
+        self.source_sig_scheme: Optional[str] = None
+        # Set by the receive-side chokepoint once the originator's inner
+        # signature has been verified (or for a wire-authenticated direct
+        # sender). Downstream storage / bus / UI must never present a frame
+        # as authentically-sourced unless this is True.
+        self.source_authenticated: bool = False
+
     def is_expired(self, max_age: float = 300.0) -> bool:
         return (time.time() - self.timestamp) > max_age
 
@@ -632,6 +682,11 @@ class Frame:
         }
         if self.source_signature is not None:
             d["source_signature"] = base64.b64encode(self.source_signature).decode()
+            # Self-describing scheme tag so the verifier picks the right
+            # canonical form without negotiating with a far source.
+            d["source_sig_scheme"] = (
+                self.source_sig_scheme or self.SOURCE_SIG_SCHEME_V1
+            )
         if self.e2e_payload is not None:
             d["e2e_payload"] = base64.b64encode(self.e2e_payload).decode()
         return d
@@ -686,6 +741,11 @@ class Frame:
         obj.retries = data.get("retries", 0)
         if data.get("source_signature"):
             obj.source_signature = base64.b64decode(data["source_signature"])
+        # Scheme tag is optional on the wire; absence => legacy v1.
+        scheme = data.get("source_sig_scheme")
+        if scheme is not None and not isinstance(scheme, str):
+            raise ValueError(f"source_sig_scheme must be a string, got {type(scheme).__name__}")
+        obj.source_sig_scheme = scheme
         if data.get("e2e_payload"):
             obj.e2e_payload = base64.b64decode(data["e2e_payload"])
         return obj
@@ -757,11 +817,27 @@ class Frame:
         obj.hops = hops
         if msg_dict.get("source_signature"):
             obj.source_signature = base64.b64decode(msg_dict["source_signature"])
+        # Scheme tag is optional on the wire; absence => legacy v1.
+        scheme = msg_dict.get("source_sig_scheme")
+        if scheme is not None and not isinstance(scheme, str):
+            raise ValueError(f"source_sig_scheme must be a string, got {type(scheme).__name__}")
+        obj.source_sig_scheme = scheme
         if msg_dict.get("e2e_payload"):
             obj.e2e_payload = base64.b64decode(msg_dict["e2e_payload"])
         return obj
 
     SIGNATURE_SIZE = 64  # Ed25519 detached signature
+
+    # Inner end-to-end source-signature schemes.
+    # v1 (legacy): Ed25519 over the plaintext payload bytes only.
+    # v2 (bound):  Ed25519 over SIG_CTX_FRAME_INNER_SOURCE ||
+    #              canonical_inner_source_bytes(source, destination, msg_id,
+    #              payload). v2 additionally defeats relay redirection
+    #              (destination), replay-relabel (msg_id), and re-attribution
+    #              (source). See ``verify_source_signature`` and
+    #              ``docs/PROTOCOL_SPEC.md``.
+    SOURCE_SIG_SCHEME_V1 = "v1"
+    SOURCE_SIG_SCHEME_V2 = "v2"
 
     def encrypt_and_serialize(self, shared_key: bytes,
                               signing_key=None,
@@ -783,12 +859,25 @@ class Frame:
         """
         from ironmesh.crypto import encrypt_message
 
-        # v0.4: compute inner source signature over plaintext payload
+        # Compute the inner source signature. This is the bound v2 scheme —
+        # Ed25519 over SIG_CTX_FRAME_INNER_SOURCE || canonical(source,
+        # destination, msg_id, payload) — which additionally defeats relay
+        # redirection, replay-relabel, and re-attribution. The receiver
+        # self-describes via the ``source_sig_scheme`` tag, so no protocol
+        # negotiation with a far destination is required.
         if source_signing_key is not None and self.source_signature is None:
             try:
-                self.source_signature = bytes(
-                    source_signing_key.sign(self.payload).signature
+                from ironmesh.crypto import (
+                    SIG_CTX_FRAME_INNER_SOURCE,
+                    sign_detached_with_context,
                 )
+                canon = canonical_inner_source_bytes(
+                    self.source, self.destination, self.msg_id, self.payload,
+                )
+                self.source_signature = sign_detached_with_context(
+                    source_signing_key, SIG_CTX_FRAME_INNER_SOURCE, canon,
+                )
+                self.source_sig_scheme = self.SOURCE_SIG_SCHEME_V2
             except (nacl_exceptions.CryptoError, TypeError, ValueError) as e:
                 # Inner-sig generation failed for a *crypto-input* reason
                 # (bad key type, payload not bytes, nacl-level signing error).
@@ -926,12 +1015,58 @@ class Frame:
                              obj.source, e)
                 src_vk = None
             if src_vk is not None:
-                try:
-                    src_vk.verify(obj.payload, obj.source_signature)
-                except nacl_exceptions.BadSignatureError as e:
-                    raise ValueError(f"Inner source signature verification failed: {e}")
+                # Scheme-aware verification (v1 payload-only or v2 bound).
+                # allow_v1=True here — this protocol-level path verifies
+                # cryptographic validity; the floor-based v1 refusal is
+                # policy enforced at the receive-side chokepoint.
+                if not obj.verify_source_signature(src_vk, allow_v1=True):
+                    raise ValueError("Inner source signature verification failed")
 
         return obj
+
+    def verify_source_signature(self, verify_key, *, allow_v1: bool = True) -> bool:
+        """Verify the inner end-to-end source signature against ``verify_key``.
+
+        Returns True iff a signature is present and valid. The inner
+        signature is produced by the ORIGINAL source over its plaintext and
+        survives per-hop re-encryption by relays, so a successful verify
+        authenticates the originator of a relayed frame — not merely the
+        immediate hop.
+
+        ``allow_v1`` gates the legacy payload-only scheme. A caller that
+        knows the negotiated protocol floor is >= 0.9 passes
+        ``allow_v1=False`` to refuse the unbound legacy form. The v2 (bound)
+        scheme is always accepted because it is strictly stronger.
+
+        This method performs the cryptographic check only. Policy (whether a
+        missing signature is tolerated, e.g. for a wire-authenticated direct
+        sender) is decided by the caller — see
+        ``RoutingMixin._verify_inner_source``.
+        """
+        if self.source_signature is None:
+            return False
+        scheme = self.source_sig_scheme or self.SOURCE_SIG_SCHEME_V1
+        try:
+            if scheme == self.SOURCE_SIG_SCHEME_V1:
+                if not allow_v1:
+                    return False
+                verify_key.verify(self.payload, self.source_signature)
+                return True
+            if scheme == self.SOURCE_SIG_SCHEME_V2:
+                from ironmesh.crypto import (
+                    SIG_CTX_FRAME_INNER_SOURCE,
+                    verify_detached_with_context,
+                )
+                canon = canonical_inner_source_bytes(
+                    self.source, self.destination, self.msg_id, self.payload,
+                )
+                return verify_detached_with_context(
+                    verify_key, SIG_CTX_FRAME_INNER_SOURCE, canon,
+                    self.source_signature,
+                )
+            return False  # unknown scheme — fail closed
+        except nacl_exceptions.BadSignatureError:
+            return False
 
     def serialize_plaintext(self) -> bytes:
         """Serialize to binary wire format WITHOUT encryption.

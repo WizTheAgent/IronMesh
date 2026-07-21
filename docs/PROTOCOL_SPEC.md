@@ -385,7 +385,8 @@ When decrypted, it produces a JSON object:
 - `hops`: Number of hops traversed so far.
 - `priority`: `"CRITICAL"`, `"HIGH"`, `"NORMAL"`, or `"LOW"`.
 - `e2e_payload`: Optional NaCl SealedBox ciphertext for end-to-end encryption through relays. Only the final destination can open it.
-- `source_signature`: Optional Ed25519 signature over the plaintext `payload` bytes, produced by the original source. Survives per-hop re-encryption by relays.
+- `source_signature`: Ed25519 signature produced by the original source over the inner-source canonical bytes (see below). Survives per-hop re-encryption by relays.
+- `source_sig_scheme` (v0.10.0+): `"v1"` or `"v2"`. Self-describes which canonical form `source_signature` covers. Absent ⇒ legacy `"v1"`.
 
 ### Outer Signature (when FLAG_SIGNED is set)
 
@@ -393,6 +394,52 @@ The 64-byte Ed25519 signature at the end of the frame covers the
 **encrypted payload bytes** (not the header, not the plaintext). This is
 per-hop authentication — each relay can verify the frame came from the
 previous hop, but cannot read the contents.
+
+### Inner Source Signature (end-to-end, v0.10.0+)
+
+The inner `source_signature` authenticates the **original source** of a
+frame end-to-end. It is produced once by the originator and is preserved
+verbatim by every relay (relays re-encrypt the per-hop layer but never
+re-sign or alter this field), so the final destination can authenticate who
+authored the payload — not merely the immediate hop.
+
+**This signature is verified on receive** for user-payload frame types
+(`MSG`, `REQ`, `RESP`, `CONV`). A **relayed** frame (`from` ≠ the immediate
+authenticated peer) whose inner signature is missing, unverifiable (source
+identity unknown to the receiver), or invalid is **dropped (fail-closed)**.
+A direct frame (`from` = immediate peer) is already authenticated by the
+outer per-hop signature, so a missing inner signature is tolerated, but a
+present one must still verify. Consequence: relayed delivery requires the
+destination to know the originator's identity (a live peer or an existing
+TOFU pin).
+
+Two schemes (selected by `source_sig_scheme`):
+
+- **v1 (legacy):** Ed25519 over the plaintext `payload` bytes only.
+- **v2 (bound, default for v0.10.0+ originators):** Ed25519 over
+  `SIG_CTX_FRAME_INNER_SOURCE || canonical_inner_source_bytes(from,
+  destination, msg_id, payload)`, where the context is the NUL-terminated
+  ASCII label `ironmesh-sig-v1/frame-inner-source\x00` and the canonical
+  bytes are the concatenation of four **u32-big-endian length-prefixed**
+  fields in this exact order:
+
+  ```
+  LP(from_utf8) || LP(destination_utf8) || LP(msg_id_utf8) || LP(payload)
+  where LP(x) = uint32_be(len(x)) || x
+  ```
+
+  v2 additionally binds `from`/`destination`/`msg_id`, so a relay cannot
+  redirect (alter `destination`), replay-relabel (alter `msg_id`), or
+  re-attribute (alter `from`) an authentically-sourced frame — any such
+  mutation invalidates the signature. `ttl` and `hops` are deliberately NOT
+  bound (they legitimately change per hop).
+
+**Negotiation / migration:** the scheme is self-describing on the wire, so
+no handshake negotiation with a far source is required. While the
+negotiated protocol floor (`min_protocol_version`) is below `ironmesh/0.9`,
+receivers accept both v1 and v2. At floor ≥ `ironmesh/0.9` the unbound v1
+form is **refused** — every v0.10.0+ originator emits v2. (Default floor:
+`ironmesh/0.4` in v0.10.0, raised to `ironmesh/0.9` in v0.11.0.)
 
 ## 4. Message Types
 
