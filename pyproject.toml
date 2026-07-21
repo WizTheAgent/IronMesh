@@ -76,6 +76,11 @@ dev = [
     "hypothesis>=6.0,<7",
     "ruff>=0.1.0,<1",
     "mypy>=1.0,<2",
+    # Test-required so the QR invite-token export path is always exercised
+    # (it carries a bootstrap token — it must not be silently skipped when a
+    # dep is absent). segno stays runtime-OPTIONAL for end users via the
+    # `qr` extra above; this entry only guarantees the test suite runs it.
+    "segno>=1.5,<2",
 ]
 
 [project.scripts]
