@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ironmesh doctor` onboarding + safe auto-fix.** New diagnostics
+  (`[N/M]` scheme): passphrase-file permissions (reuses the daemon's own
+  permission check), mDNS/multicast reachability (WARN if blocked),
+  firewall posture (detect-only, prints the exact per-OS command),
+  Reticulum config presence, and Ollama reachability. A dashboard-token
+  hint surfaces from the `--peer` probe path. `--onboard` walks the common
+  first-run failure modes (passphrase mismatch, mDNS blocked, dashboard
+  401) with the specific next action for each. `--fix` auto-applies **only**
+  idempotent, non-destructive, local fixes (`chmod 600` on the passphrase
+  file, regenerate a missing key file, create a missing config); firewall
+  rules are never auto-applied and are refused over SSH unless
+  `--allow-remote-network-fix` is passed. A single shared OS/network
+  detection helper backs the mDNS + firewall checks and the future wizard.
+
+- **Extended `--profile` postures.** Canonical set `lan / lora / homelab /
+  tactical / custom` (a profile sets defaults only; explicit flags still
+  win with a warning). `secure`, `dev`, and `offline` are kept as
+  behavior-preserving aliases; `secure` stays distinct from `tactical`,
+  and `offline` (air-gapped) stays distinct from `lora` (off-grid RF).
+  A reserved, unset `group_crypto_suite` config field lets `tactical` pin
+  a group crypto suite once the keying RFC selects one, without a schema
+  migration.
+
 ## [0.9.5] — 2026-07-12 — HELLO domain separation + RNS link binding (protocol ironmesh/0.9)
 
 ### Changed

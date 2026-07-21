@@ -110,7 +110,7 @@ secrets like the passphrase in JSON config.
 | `ironmesh restore --in <file>` | Restore from a backup. |
 | `ironmesh audit verify \| export \| verify-export \| tail \| stats` | Audit-log integrity + triage tools. |
 | `ironmesh session rotate` | Force session-key rotation with a peer. |
-| `ironmesh doctor [--peer HOST:PORT]` | One-shot diagnostic — keys, trust store, schema, ports, audit chain; `--peer` adds a dry-run reachability check. |
+| `ironmesh doctor [--peer HOST:PORT] [--onboard] [--fix]` | One-shot diagnostic — keys, trust store, schema, ports, audit chain, passphrase-file perms, mDNS/multicast, firewall posture, Reticulum config, Ollama. `--peer` adds a dry-run reachability check. `--onboard` walks first-run failure modes; `--fix` auto-applies safe local fixes only (see [Doctor onboarding & auto-fix](#doctor-onboarding--auto-fix)). |
 
 Run any subcommand with `--help` for the full list of options.
 
@@ -227,6 +227,51 @@ flags and warnings it did before.
 > [`rfcs/RFC-key-hierarchy-group-messaging-v0.1-skeleton.md`](../rfcs/RFC-key-hierarchy-group-messaging-v0.1-skeleton.md)
 > selects one. The field is omitted from the saved config until then, so
 > no schema migration is required when it lands.
+
+## Doctor onboarding & auto-fix
+
+`ironmesh doctor` runs a read-only diagnostic checklist (`[N/M]`) that is
+safe against a live daemon. Beyond the core checks (keys, trust store,
+schema, queues, port, audit chain) it also reports:
+
+- **Passphrase-file permissions** — a dedicated line reusing the daemon's
+  own permission logic (`chmod 600` recommended on POSIX).
+- **mDNS / multicast reachability** — probes whether the host can join
+  the mDNS multicast group. `WARN` (never `FAIL`) if blocked — pinned-peer
+  and RF meshes are valid without it.
+- **Firewall posture** — detect-only. Reports local port bindability and
+  prints the **exact** OS-specific command to open the port (ufw /
+  firewall-cmd / iptables / netsh). Doctor never runs it for you here.
+- **Reticulum config presence** — for `--reticulum` / `--profile=lora`.
+- **Ollama reachability** — probes `http://127.0.0.1:11434` (INFO, or
+  WARN under `--profile=homelab`).
+
+### `--onboard`
+
+Walks the three most common first-run failures with the specific next
+action for each, keyed to what the run observed:
+
+1. Key file won't decrypt → passphrase source guidance.
+2. Peers don't discover each other → mDNS/subnet guidance or `--allowed-peers`.
+3. Dashboard returns 401 → the GUI token is minted per daemon start; copy
+   the fresh `GUI token:` line from the startup log.
+
+### `--fix` (safe, local, idempotent only)
+
+`--fix` auto-applies **only** non-destructive, reversible, local fixes:
+
+| Fix | Behavior |
+|---|---|
+| `chmod 600` on the passphrase file | Only changes mode bits, never contents. Allowed over SSH. |
+| Regenerate a **missing** key file | Never overwrites an existing file. Encrypts with the resolved mesh passphrase; refuses to write a plaintext key file if no passphrase is available. |
+| Create a **missing** config file | Writes defaults; never overwrites. Revert by deleting the file. |
+
+**Network rules are never auto-applied.** The exact firewall command is
+printed; applying it requires an explicit interactive `y/N` confirmation.
+A network `--fix` is **refused over SSH** (detected via `SSH_CONNECTION`)
+unless you pass `--allow-remote-network-fix` — a bad firewall rule can
+lock you out of a headless box. Local file fixes are always allowed over
+SSH.
 
 ## Logging
 

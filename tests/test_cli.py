@@ -765,3 +765,204 @@ class TestProfiles:
                      "secure", "dev", "offline"):
             args = _parse(["run", "--name", "n", "--profile", name])
             assert args.profile == name
+
+
+# ---------------------------------------------------------------------------
+# Doctor onboarding + safe auto-fix (Item 1)
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace
+
+
+class TestDoctorDetectionHelpers:
+    """The single OS/network-detection code path shared by doctor and the
+    future wizard."""
+
+    def test_detect_os_returns_known_family(self):
+        assert cli._detect_os() in ("linux", "macos", "windows", "unknown")
+
+    def test_firewall_command_per_os(self):
+        assert "ufw allow 8765" in cli._firewall_command("linux", 8765)
+        assert "socketfilterfw" in cli._firewall_command("macos", 8765)
+        assert "netsh advfirewall" in cli._firewall_command("windows", 8765)
+        assert "8765" in cli._firewall_command("unknown", 8765)
+
+    def test_detect_network_posture_shape(self):
+        p = cli._detect_network_posture(0, "127.0.0.1")
+        for key in ("os", "over_ssh", "mdns_ok", "mdns_detail",
+                    "port_bindable", "firewall_hint"):
+            assert key in p
+        # Binding to an ephemeral port on loopback should be possible.
+        assert p["port_bindable"] in (True, False)
+
+    def test_over_ssh_reads_ssh_connection(self, monkeypatch):
+        monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 5 6.7.8.9 22")
+        assert cli._over_ssh() is True
+
+    def test_over_ssh_false_without_env(self, monkeypatch):
+        for v in ("SSH_CONNECTION", "SSH_TTY", "SSH_CLIENT"):
+            monkeypatch.delenv(v, raising=False)
+        assert cli._over_ssh() is False
+
+    def test_probe_ollama_never_raises(self):
+        up, detail = cli._probe_ollama(timeout=0.1)
+        assert isinstance(up, bool)
+        assert isinstance(detail, str)
+
+
+class TestDoctorParserFlags:
+    """The new doctor flags must be registered and default off."""
+
+    def test_onboard_fix_flags_default_off(self):
+        args = _parse(["doctor"])
+        assert args.onboard is False
+        assert args.fix is False
+        assert args.allow_remote_network_fix is False
+
+    def test_flags_settable(self):
+        args = _parse(["doctor", "--onboard", "--fix",
+                       "--allow-remote-network-fix"])
+        assert args.onboard is True
+        assert args.fix is True
+        assert args.allow_remote_network_fix is True
+
+    def test_doctor_accepts_profile(self):
+        args = _parse(["doctor", "--profile", "homelab"])
+        assert args.profile == "homelab"
+
+
+class TestDoctorFirewallFixSafety:
+    """--fix must NEVER auto-apply a firewall rule. It requires a TTY +
+    explicit y confirmation, and is refused over SSH without the opt-in."""
+
+    def _posture(self):
+        return {
+            "os": "linux",
+            "over_ssh": False,
+            "mdns_ok": True,
+            "mdns_detail": "",
+            "port_bindable": True,
+            "firewall_hint": cli._firewall_command("linux", 8765),
+        }
+
+    def test_refused_over_ssh_without_flag(self, monkeypatch, capsys):
+        monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 5 6.7.8.9 22")
+        args = SimpleNamespace(fix=True, allow_remote_network_fix=False)
+        applied = cli._doctor_fix_firewall(args, self._posture())
+        assert applied is False
+        assert "FIX REFUSED" in capsys.readouterr().out
+
+    def test_no_tty_skips_without_applying(self, monkeypatch, capsys):
+        """No TTY → cannot confirm → never applies (and never prompts)."""
+        for v in ("SSH_CONNECTION", "SSH_TTY", "SSH_CLIENT"):
+            monkeypatch.delenv(v, raising=False)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        # If this tried to run subprocess, the test would error — assert it
+        # never gets there.
+        with patch("subprocess.call") as sub:
+            args = SimpleNamespace(fix=True, allow_remote_network_fix=False)
+            applied = cli._doctor_fix_firewall(args, self._posture())
+        assert applied is False
+        sub.assert_not_called()
+        assert "FIX SKIP" in capsys.readouterr().out
+
+    def test_declined_confirmation_does_not_apply(self, monkeypatch, capsys):
+        for v in ("SSH_CONNECTION", "SSH_TTY", "SSH_CLIENT"):
+            monkeypatch.delenv(v, raising=False)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
+        with patch("subprocess.call") as sub:
+            args = SimpleNamespace(fix=True, allow_remote_network_fix=False)
+            applied = cli._doctor_fix_firewall(args, self._posture())
+        assert applied is False
+        sub.assert_not_called()
+
+    def test_ssh_allowed_with_optin_still_requires_confirmation(
+            self, monkeypatch):
+        """Even with --allow-remote-network-fix over SSH, a 'n' answer must
+        not apply the rule (the confirmation gate is independent)."""
+        monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 5 6.7.8.9 22")
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
+        with patch("subprocess.call") as sub:
+            args = SimpleNamespace(fix=True, allow_remote_network_fix=True)
+            applied = cli._doctor_fix_firewall(args, self._posture())
+        assert applied is False
+        sub.assert_not_called()
+
+
+class TestDoctorLocalFixes:
+    """Local file fixes are idempotent, non-destructive, and allowed even
+    over SSH."""
+
+    def test_chmod_fix_idempotent_and_ssh_allowed(self, tmp_path,
+                                                   monkeypatch):
+        if os.name != "posix":
+            pytest.skip("chmod perms only meaningful on POSIX")
+        pf = tmp_path / "passphrase"
+        pf.write_text("a-real-passphrase-1234")
+        os.chmod(str(pf), 0o644)
+        # Over SSH — local file fix must still be allowed.
+        monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 5 6.7.8.9 22")
+        args = SimpleNamespace()
+        assert cli._doctor_fix_passphrase_perms(str(pf), args) is True
+        assert (os.stat(str(pf)).st_mode & 0o777) == 0o600
+        # Idempotent — running again is still fine.
+        assert cli._doctor_fix_passphrase_perms(str(pf), args) is True
+
+    def test_missing_keys_fix_never_overwrites(self, tmp_path):
+        from ironmesh.keys import generate_keypair, save_keys
+        kp_path = tmp_path / "keys.json"
+        save_keys(generate_keypair("existing"), str(kp_path),
+                  allow_plaintext=True)
+        before = kp_path.read_bytes()
+        args = SimpleNamespace(keys_passphrase="pp-1234567890ab",
+                               keys_passphrase_file=None,
+                               passphrase_file=None, name="x")
+        # File exists → fix must refuse and return None (no overwrite).
+        assert cli._doctor_fix_missing_keys(str(kp_path), args) is None
+        assert kp_path.read_bytes() == before
+
+    def test_missing_keys_fix_regenerates_when_absent(self, tmp_path):
+        kp_path = tmp_path / "keys.json"
+        args = SimpleNamespace(keys_passphrase="pp-1234567890ab",
+                               keys_passphrase_file=None,
+                               passphrase_file=None, name="fixnode")
+        result = cli._doctor_fix_missing_keys(str(kp_path), args)
+        assert result is not None
+        assert kp_path.is_file()
+
+    def test_missing_keys_fix_refuses_plaintext_without_passphrase(
+            self, tmp_path, monkeypatch):
+        """No passphrase available → refuse rather than write a plaintext
+        key file (a security downgrade is not a 'safe fix')."""
+        for v in ("IRONMESH_KEYS_PASSPHRASE", "IRONMESH_PASSPHRASE"):
+            monkeypatch.delenv(v, raising=False)
+        kp_path = tmp_path / "keys.json"
+        args = SimpleNamespace(keys_passphrase=None, keys_passphrase_file=None,
+                               passphrase_file=None, name="x")
+        assert cli._doctor_fix_missing_keys(str(kp_path), args) is None
+        assert not kp_path.exists()
+
+    def test_missing_config_fix_creates_and_does_not_overwrite(
+            self, tmp_path, monkeypatch):
+        cfg_path = tmp_path / "config.json"
+        monkeypatch.setattr(
+            "ironmesh.config.DEFAULT_CONFIG_PATH", str(cfg_path))
+        args = SimpleNamespace(name="cfgnode")
+        assert cli._doctor_fix_missing_config(args) is True
+        assert cfg_path.is_file()
+        # Second run: present → no-op (returns False, does not overwrite).
+        before = cfg_path.read_bytes()
+        assert cli._doctor_fix_missing_config(args) is False
+        assert cfg_path.read_bytes() == before
+
+    def test_passphrase_perm_warning_flags_permissive(self, tmp_path):
+        if os.name != "posix":
+            pytest.skip("perm bits only meaningful on POSIX")
+        pf = tmp_path / "pp"
+        pf.write_text("x")
+        os.chmod(str(pf), 0o644)
+        assert cli._passphrase_file_perm_warning(str(pf)) is not None
+        os.chmod(str(pf), 0o600)
+        assert cli._passphrase_file_perm_warning(str(pf)) is None
