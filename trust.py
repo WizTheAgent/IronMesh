@@ -567,7 +567,8 @@ class TrustStore:
         return "mismatch"
 
     def pin_peer(self, node_id: str, identity_public_b64: str,
-                 trust_state: str = "trusted"):
+                 trust_state: str = "trusted",
+                 pinned_via: Optional[str] = None):
         """Pin a peer's identity key (first-use trust).
 
         Args:
@@ -575,21 +576,29 @@ class TrustStore:
                 "trusted" for backwards compatibility. Callers can pass
                 "pending" when ``require_message_promotion`` is enabled
                 so the peer's MSGs queue until an operator promotes.
+            pinned_via: Optional provenance marker for how this pin was
+                established (e.g. ``"invite"`` for the bootstrap-token
+                path). Purely informational for audit / UX — it is NOT a
+                trust state and does not affect gating. Omitted from the
+                record when None to keep legacy pins byte-identical.
         """
         if trust_state not in ("pending", "trusted", "blocked", "pending-cap-change"):
             raise ValueError(f"invalid trust_state: {trust_state!r}")
         fp = self.fingerprint(identity_public_b64)
         now = time.time()
-        self._peers[node_id] = {
+        record = {
             "pubkey": identity_public_b64,
             "fingerprint": fp,
             "first_seen": now,
             "last_seen": now,
             "trust_state": trust_state,
         }
+        if pinned_via is not None:
+            record["pinned_via"] = pinned_via
+        self._peers[node_id] = record
         self._save()
-        logger.info("Pinned peer %s (fingerprint: %s, trust_state: %s)",
-                    node_id, fp, trust_state)
+        logger.info("Pinned peer %s (fingerprint: %s, trust_state: %s, via: %s)",
+                    node_id, fp, trust_state, pinned_via or "tofu")
 
     def revoke_peer(self, node_id: str) -> bool:
         """Revoke trust for a peer."""

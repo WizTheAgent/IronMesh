@@ -26,6 +26,8 @@ from ironmesh import (
     protocol as ew_protocol,
 )
 from ironmesh.audit import (
+    EVENT_INVITE_ACCEPTED,
+    EVENT_INVITE_REJECTED,
     EVENT_MSG_GATED_DROP,
     EVENT_MSG_GATED_QUEUE,
     EVENT_PEER_BLOCKED,
@@ -639,14 +641,32 @@ class TrustOpsMixin:
     # TOFU (Trust-On-First-Use)
     # ------------------------------------------------------------------
 
-    async def _check_tofu(self, peer_id: str, identity_public_b64: Optional[str]):
+    async def _check_tofu(self, peer_id: str, identity_public_b64: Optional[str],
+                          invite_token_str: Optional[str] = None):
         """Check TOFU key pinning for a peer. Raises on mismatch (possible MITM).
 
         #12: This is called BEFORE the peer is added to self.peers/self.ws_clients,
         so on mismatch the code just raise — the caller never populates the dicts.
+
+        Invite path (``invite_token_str`` present): this node is the
+        INVITER. It is authoritative for single-use consumption. Before
+        pinning it (a) verifies the token was signed by ITS OWN identity
+        key — a token this node did not issue is rejected — (b) checks the
+        token is not expired, (c) checks the single-use ledger and rejects
+        an already-consumed nonce, then (d) pins the joiner as ``pending``
+        (regardless of the global gate) with ``pinned_via="invite"`` and
+        (e) marks the nonce spent. An invited joiner is ALWAYS gated for
+        explicit operator approval — deny-by-default stays intact.
         """
         if not identity_public_b64:
             return
+
+        # Inviter-authoritative invite validation happens BEFORE the pin.
+        # Returns the parsed token (to mark spent after a successful pin)
+        # or None on the ordinary (no-invite) path. Raises ConnectionError
+        # to fail the handshake closed on any invalid / spent / expired
+        # / forged token.
+        invite_token = self._validate_incoming_invite(peer_id, invite_token_str)
 
         try:
             from ironmesh.trust import TrustStore
@@ -667,12 +687,35 @@ class TrustOpsMixin:
                 # peers are pinned in "pending" state — their MSGs queue
                 # until an operator promotes. Default-off preserves the
                 # pre-v0.8.5 behavior (peers are immediately trusted).
+                #
+                # Invite path: an invited joiner is ALWAYS pinned "pending"
+                # regardless of the global gate — the token gets them past
+                # first-contact identity verification, not past operator
+                # approval. Provenance is recorded so audit/UX can show the
+                # peer arrived via an invite.
                 gate_on = bool(getattr(self.config, "require_message_promotion", False))
-                initial_state = "pending" if gate_on else "trusted"
+                if invite_token is not None:
+                    initial_state = "pending"
+                    pinned_via = "invite"
+                else:
+                    initial_state = "pending" if gate_on else "trusted"
+                    pinned_via = None
                 trust.pin_peer(peer_id, identity_public_b64,
-                               trust_state=initial_state)
-                logger.info("TOFU: Pinned new peer %s (state=%s)",
-                            peer_id, initial_state)
+                               trust_state=initial_state,
+                               pinned_via=pinned_via)
+                logger.info("TOFU: Pinned new peer %s (state=%s, via=%s)",
+                            peer_id, initial_state, pinned_via or "tofu")
+                # Consume the single-use invite ONLY after a successful
+                # pin, so a failure between validation and pin does not
+                # burn the token.
+                if invite_token is not None:
+                    self._invite_ledger.mark_spent(invite_token)
+                    if self._audit:
+                        self._audit.log(EVENT_INVITE_ACCEPTED, {
+                            "peer_id": peer_id,
+                            "nonce": invite_token.nonce,
+                            "trust_state": initial_state,
+                        })
                 if self._audit:
                     self._audit.log(EVENT_TOFU_NEW, {
                         "peer_id": peer_id,
@@ -727,3 +770,69 @@ class TrustOpsMixin:
                 peer_id, e,
             )
             raise ConnectionError(f"TOFU check failed for peer {peer_id}: {e}")
+
+    def _get_invite_ledger(self):
+        """Lazily build the single-use invite ledger. Co-located with the
+        trust store (see ``BridgeDaemon.__init__``)."""
+        if self._invite_ledger is None:
+            from ironmesh.invite import InviteLedger
+            self._invite_ledger = InviteLedger(self._invite_ledger_path)
+        return self._invite_ledger
+
+    def _validate_incoming_invite(self, peer_id: str,
+                                  invite_token_str: Optional[str]):
+        """Inviter-side invite validation. Returns the parsed token to be
+        consumed after a successful pin, or None on the ordinary path.
+
+        Fails the handshake closed (``ConnectionError``) on any token that
+        is malformed, not issued by THIS node, expired, or already spent.
+        """
+        if not invite_token_str:
+            return None
+
+        from ironmesh import invite as ew_invite
+
+        try:
+            token = ew_invite.parse_invite(invite_token_str)
+        except ew_invite.InviteError as exc:
+            self._audit_invite_reject(peer_id, None, "malformed", str(exc))
+            raise ConnectionError(f"invalid invite from peer {peer_id}: {exc}")
+
+        # The token MUST have been signed by THIS node's identity — an
+        # inviter only honours invites it issued. This also verifies the
+        # signature under SIG_CTX_INVITE (domain-separated).
+        our_key_b64 = self._keypair.get_public_key_base64() if self._keypair else None
+        if not our_key_b64 or token.inviter_key != our_key_b64:
+            self._audit_invite_reject(peer_id, token.nonce, "not_our_invite",
+                                      "invite not issued by this node")
+            raise ConnectionError(
+                f"invite from peer {peer_id} was not issued by this node"
+            )
+        try:
+            token.verify_signature()
+        except ew_invite.InviteError as exc:
+            self._audit_invite_reject(peer_id, token.nonce, "bad_signature", str(exc))
+            raise ConnectionError(f"invite signature invalid from peer {peer_id}: {exc}")
+
+        if token.is_expired():
+            self._audit_invite_reject(peer_id, token.nonce, "expired",
+                                      "invite expired")
+            raise ConnectionError(f"invite from peer {peer_id} is expired")
+
+        ledger = self._get_invite_ledger()
+        try:
+            ledger.check_and_reject_if_spent(token)
+        except ew_invite.InviteSpent as exc:
+            self._audit_invite_reject(peer_id, token.nonce, "spent", str(exc))
+            raise ConnectionError(f"invite from peer {peer_id} already consumed")
+
+        return token
+
+    def _audit_invite_reject(self, peer_id, nonce, reason, detail):
+        if self._audit:
+            self._audit.log(EVENT_INVITE_REJECTED, {
+                "peer_id": peer_id,
+                "nonce": nonce,
+                "reason": reason,
+                "detail": detail,
+            })

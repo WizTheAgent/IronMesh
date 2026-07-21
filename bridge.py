@@ -510,6 +510,13 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
         self.port = port
         self.bind_address = bind_address
         self.gui_bind = gui_bind
+        # Joiner-side bootstrap invite. When this node connects OUT to an
+        # inviter's endpoint to bootstrap from a token, the parsed
+        # InviteToken is stashed here so the client handshake can (a) send
+        # the token string in its HELLO and (b) do verified-first-use:
+        # reject the connection unless the server's presented identity key
+        # equals the token's pinned inviter key. None on the ordinary path.
+        self._pending_invite = None  # type: ignore[assignment]
         if not passphrase:
             raise ValueError(
                 "Passphrase is required. Set --passphrase or IRONMESH_PASSPHRASE env var. "
@@ -574,6 +581,18 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
         # hosts don't collide.
         from ironmesh.trust import DEFAULT_TRUST_PATH as _DEFAULT_TRUST_PATH
         self.trust_path: str = trust_path or _DEFAULT_TRUST_PATH
+
+        # Single-use invite ledger — the inviting node is authoritative for
+        # bootstrap-token consumption. Co-located with the trust store so a
+        # custom --trust-path (multi-daemon hosts, tests) keeps the ledger
+        # in the same directory. Lazily constructed on first use so the
+        # common no-invite path costs nothing.
+        import os as _os
+        self._invite_ledger_path: str = _os.path.join(
+            _os.path.dirname(_os.path.expanduser(self.trust_path)) or ".",
+            "invite_ledger.json",
+        )
+        self._invite_ledger = None  # type: ignore[assignment]
 
         # Rate limiting — per-peer and per-IP
         self._peer_rate_limiters: Dict[str, ew_protocol.TokenBucket] = {}
@@ -1538,8 +1557,12 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
             outgoing_hello.update(self._hello_x25519_advertisement())
             await websocket.send(json.dumps(outgoing_hello))
 
-            # TOFU check BEFORE adding peer to dicts.
-            await self._check_tofu(peer_id, peer_identity_b64)
+            # TOFU check BEFORE adding peer to dicts. A joiner bootstrapping
+            # from an invite presents the full token here; this node (the
+            # inviter) is authoritative for single-use consumption and pins
+            # the joiner "pending" — see TrustOpsMixin._check_tofu.
+            invite_token_str = msg.get("invite_token")
+            await self._check_tofu(peer_id, peer_identity_b64, invite_token_str)
 
             # Peer presented a valid TOFU-pinned (or fresh-pin) identity —
             # clear any auth-failure block for this source IP. The block
