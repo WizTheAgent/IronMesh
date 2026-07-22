@@ -669,7 +669,7 @@ class TrustOpsMixin:
         invite_token = self._validate_incoming_invite(peer_id, invite_token_str)
 
         try:
-            from ironmesh.trust import TrustStore
+            from ironmesh.trust import TrustStore, TrustStoreError
             # TrustStore requires an agent_key; assertion enforces
             # daemon bootstrap order (keys must load first).
             if not self._keypair:
@@ -697,25 +697,44 @@ class TrustOpsMixin:
                 if invite_token is not None:
                     initial_state = "pending"
                     pinned_via = "invite"
+                    # MARK-FIRST single-use: reserve (consume) the token's
+                    # nonce BEFORE the pin. A process crash after this point
+                    # leaves the token spent, so it cannot be replayed through
+                    # a crash window — "spent means spent" holds even across a
+                    # crash. Cost: a pin failure burns an otherwise-valid token
+                    # (the operator reissues) — a visible, recoverable
+                    # annoyance we accept over a silent crash-replay window on
+                    # a single-use security primitive.
+                    self._invite_ledger.mark_spent(invite_token)
                 else:
                     initial_state = "pending" if gate_on else "trusted"
                     pinned_via = None
-                trust.pin_peer(peer_id, identity_public_b64,
-                               trust_state=initial_state,
-                               pinned_via=pinned_via)
-                logger.info("TOFU: Pinned new peer %s (state=%s, via=%s)",
-                            peer_id, initial_state, pinned_via or "tofu")
-                # Consume the single-use invite ONLY after a successful
-                # pin, so a failure between validation and pin does not
-                # burn the token.
-                if invite_token is not None:
-                    self._invite_ledger.mark_spent(invite_token)
-                    if self._audit:
-                        self._audit.log(EVENT_INVITE_ACCEPTED, {
+                try:
+                    trust.pin_peer(peer_id, identity_public_b64,
+                                   trust_state=initial_state,
+                                   pinned_via=pinned_via)
+                except TrustStoreError as exc:
+                    # The pin did not persist — fail the handshake CLOSED.
+                    # pin_peer rolled its in-memory record back, so there is no
+                    # half-state. With mark-first the invite token is already
+                    # burned; the invited node must request a fresh invite.
+                    logger.warning("Pin did not persist for %s: %s — refusing connection",
+                                   peer_id, exc)
+                    if invite_token is not None and self._audit:
+                        self._audit.log(EVENT_INVITE_REJECTED, {
                             "peer_id": peer_id,
                             "nonce": invite_token.nonce,
-                            "trust_state": initial_state,
+                            "reason": "pin-not-persisted",
                         })
+                    raise ConnectionError(f"pin did not persist for peer {peer_id}")
+                logger.info("TOFU: Pinned new peer %s (state=%s, via=%s)",
+                            peer_id, initial_state, pinned_via or "tofu")
+                if invite_token is not None and self._audit:
+                    self._audit.log(EVENT_INVITE_ACCEPTED, {
+                        "peer_id": peer_id,
+                        "nonce": invite_token.nonce,
+                        "trust_state": initial_state,
+                    })
                 if self._audit:
                     self._audit.log(EVENT_TOFU_NEW, {
                         "peer_id": peer_id,
