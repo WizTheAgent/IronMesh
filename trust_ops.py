@@ -705,6 +705,11 @@ class TrustOpsMixin:
                     # (the operator reissues) — a visible, recoverable
                     # annoyance we accept over a silent crash-replay window on
                     # a single-use security primitive.
+                    # NB: unlike TrustStore._save (returns bool), the ledger's
+                    # _save RAISES on I/O failure — an OSError here propagates
+                    # and aborts the handshake before any pin, which is
+                    # fail-closed: the nonce is already spent in memory and no
+                    # peer record was written.
                     self._invite_ledger.mark_spent(invite_token)
                 else:
                     initial_state = "pending" if gate_on else "trusted"

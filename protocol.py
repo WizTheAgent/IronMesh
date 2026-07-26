@@ -1045,6 +1045,11 @@ class Frame:
         """
         if self.source_signature is None:
             return False
+        # The scheme tag rides OUTSIDE the signed bytes, so a relay can
+        # rewrite it. Deliberate and fail-closed: a v2 signature fails v1
+        # verification (and vice versa), so a flipped tag can only turn a
+        # valid frame into a dropped one — never an invalid one into valid.
+        # Do not add logic that trusts the tag without verifying.
         scheme = self.source_sig_scheme or self.SOURCE_SIG_SCHEME_V1
         try:
             if scheme == self.SOURCE_SIG_SCHEME_V1:

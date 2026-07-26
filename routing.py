@@ -944,15 +944,29 @@ class RoutingMixin:
     def _lookup_source_verify_key(self, node_id: str):
         """Return the originator's Ed25519 ``VerifyKey``, or None.
 
-        Resolves the claimed source's identity via the live peer registry
-        then the TOFU-pinned table (reusing ``_lookup_dest_identity``). A
-        None return means the originator's identity is unknown to us — a
-        relayed frame from such a source cannot be authenticated and is
-        dropped (fail-closed). Consequence: relayed delivery requires the
-        destination to know the originator's identity (direct contact or an
-        existing TOFU pin).
+        Resolves the claimed source's identity via the live peer registry,
+        the TOFU-pinned table (reusing ``_lookup_dest_identity``), then the
+        persistent trust store. A None return means the originator's
+        identity is unknown to us — a relayed frame from such a source
+        cannot be authenticated and is dropped (fail-closed). Consequence:
+        relayed delivery requires the destination to know the originator's
+        identity (direct contact or an existing TOFU pin).
         """
         pub = self._lookup_dest_identity(node_id)
+        if not pub:
+            # The live registry only knows peers that handshook this
+            # process run, and _pinned_peers records carry no identity
+            # key — without the persistent store a disk-pinned source
+            # (including pinned_via="invite") stops resolving after a
+            # restart, and a relay that never met the originator drops
+            # its frames mid-chain. Same resolution order as signed
+            # CAPABILITY_ANNOUNCE verification.
+            b64 = self._get_peer_identity_key(node_id)
+            if b64:
+                try:
+                    pub = base64.b64decode(b64)
+                except (TypeError, ValueError):
+                    pub = None
         if not pub:
             return None
         try:

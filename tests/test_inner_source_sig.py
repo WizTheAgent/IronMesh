@@ -22,6 +22,7 @@ The bound v2 scheme additionally binds source/destination/msg_id — see
 ``TestV2BoundScheme``.
 """
 
+import base64
 import threading
 from types import SimpleNamespace
 
@@ -42,12 +43,16 @@ RELAY_ID = "bb" * 16
 UNKNOWN_ID = "cc" * 16
 
 
-def _build_daemon(*, known_sources, min_protocol="ironmesh/0.3"):
+def _build_daemon(*, known_sources, min_protocol="ironmesh/0.3",
+                  store_sources=None):
     """A BridgeDaemon stub with just enough state for _verify_inner_source.
 
     ``known_sources`` maps node_id -> AgentKeys whose Ed25519 public is
     exposed via the live peer registry (so _lookup_source_verify_key resolves
-    them). Anything not in the map is an unknown source.
+    them). ``store_sources`` maps node_id -> AgentKeys resolvable ONLY via
+    the persistent trust store (the restart / mid-chain-relay case, where
+    the source never handshook this process run). Anything in neither map
+    is an unknown source.
     """
     daemon = SimpleNamespace(
         peers={
@@ -61,8 +66,17 @@ def _build_daemon(*, known_sources, min_protocol="ironmesh/0.3"):
         node_id="self" + "0" * 28,
         _counter_lock=threading.Lock(),
     )
+    store = None
+    if store_sources is not None:
+        pinned = {
+            nid: {"pubkey": base64.b64encode(keys.ed25519_public).decode("ascii")}
+            for nid, keys in store_sources.items()
+        }
+        store = SimpleNamespace(get_peer=pinned.get)
+    daemon._open_trust_store = lambda: store
     for name in ("_verify_inner_source", "_lookup_source_verify_key",
-                 "_lookup_dest_identity", "_inner_source_allow_v1",
+                 "_lookup_dest_identity", "_get_peer_identity_key",
+                 "_inner_source_allow_v1",
                  "_audit_inner_source_drop", "_SOURCE_SIG_REQUIRED_TYPES"):
         attr = getattr(RoutingMixin, name)
         if callable(attr):
@@ -296,3 +310,44 @@ class TestV2BoundScheme:
         f2 = Frame.deserialize_and_decrypt(wire, shared, verify_source_key=lookup)
         assert f2.source_sig_scheme == Frame.SOURCE_SIG_SCHEME_V2
         assert f2.payload == f.payload
+
+
+class TestStorePinnedSourceResolution:
+    """The originator's key must resolve from the persistent trust store,
+    not only the live peer registry — the live registry is empty for any
+    source that has not handshaken THIS process run (daemon restart, or an
+    intermediate relay that never met the originator). Regression tests for
+    the documented "live peer or existing TOFU pin" contract."""
+
+    def test_relayed_from_store_pinned_source_authenticates(self):
+        src = generate_keypair("src")
+        d = _build_daemon(known_sources={}, store_sources={SRC_ID: src})
+        f = _sign_v2(src, _frame(source=SRC_ID))
+        assert d._verify_inner_source(RELAY_ID, f) is True
+        assert f.source_authenticated is True
+
+    def test_live_registry_still_wins_when_present(self):
+        src = generate_keypair("src")
+        d = _build_daemon(known_sources={SRC_ID: src},
+                          store_sources={SRC_ID: src})
+        f = _sign_v2(src, _frame(source=SRC_ID))
+        assert d._verify_inner_source(RELAY_ID, f) is True
+
+    def test_store_miss_still_drops_relayed(self):
+        src = generate_keypair("src")
+        d = _build_daemon(known_sources={}, store_sources={})  # empty store
+        f = _sign_v2(src, _frame(source=SRC_ID))
+        assert d._verify_inner_source(RELAY_ID, f) is False
+        assert d.metrics.inner_source_sig_drops == 1
+
+    def test_store_open_failure_fails_closed(self):
+        src = generate_keypair("src")
+        d = _build_daemon(known_sources={})
+
+        def _boom():
+            raise OSError("trust store unreadable")
+
+        d._open_trust_store = _boom
+        f = _sign_v2(src, _frame(source=SRC_ID))
+        assert d._verify_inner_source(RELAY_ID, f) is False
+        assert d.metrics.inner_source_sig_drops == 1
