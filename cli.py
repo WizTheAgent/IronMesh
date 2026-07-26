@@ -2971,7 +2971,6 @@ def _passphrase_file_perm_warning(resolved_path: str):
     if os.name != "posix":
         return None
     try:
-        import stat as _stat
         st = os.stat(resolved_path)
     except OSError:
         return None
@@ -3036,7 +3035,7 @@ def _doctor_fix_missing_keys(keys_path: str, args):
         except (IOError, OSError, ValueError):
             passphrase = None
     try:
-        from ironmesh.keys import generate_keypair, save_keys, load_keys
+        from ironmesh.keys import generate_keypair, load_keys, save_keys
         name = getattr(args, "name", None) or "node"
         kp = generate_keypair(name)
         os.makedirs(os.path.dirname(os.path.expanduser(keys_path)) or ".",
@@ -3063,7 +3062,7 @@ def _doctor_fix_missing_config(args) -> bool:
     """--fix: create a MISSING config file with defaults. Idempotent +
     local — never overwrites an existing config. Returns True if created.
     """
-    from ironmesh.config import IronMeshConfig, DEFAULT_CONFIG_PATH
+    from ironmesh.config import DEFAULT_CONFIG_PATH, IronMeshConfig
     cfg_path = os.path.expanduser(DEFAULT_CONFIG_PATH)
     if os.path.exists(cfg_path):
         return False  # present — leave it alone, silently
@@ -3129,8 +3128,8 @@ def _doctor_fix_firewall(args, posture) -> bool:
     if answer != "y":
         print("      FIX SKIP — not confirmed")
         return False
-    import subprocess
     import shlex
+    import subprocess
     try:
         # Split with shlex on POSIX; on Windows netsh, pass as a string.
         if os.name == "posix":
@@ -3608,9 +3607,8 @@ def cmd_invite(args):
         return 1
 
     import os
-    from ironmesh import invite as ew_invite
-    from ironmesh import protocol as ew_protocol
-    from ironmesh import qr as ew_qr
+
+    from ironmesh import invite as ew_invite, protocol as ew_protocol, qr as ew_qr
     from ironmesh.keys import load_keys
 
     endpoint = getattr(args, "endpoint", None)

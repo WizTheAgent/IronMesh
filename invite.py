@@ -51,8 +51,7 @@ from typing import Optional
 from nacl.exceptions import BadSignatureError
 from nacl.signing import VerifyKey
 
-from ironmesh import crypto as ew_crypto
-from ironmesh import protocol as ew_protocol
+from ironmesh import crypto as ew_crypto, protocol as ew_protocol
 
 logger = logging.getLogger("ironmesh.invite")
 
