@@ -61,7 +61,7 @@ The short version:
 - IronMesh protects agent-to-agent messaging on a local network or
   LoRa radio from passive eavesdropping, active MITM (TOFU-pinned),
   and replay
-- **End-to-end source authenticity through relays (v0.10.0+):** for
+- **End-to-end source authenticity through relays (v0.9.5+):** for
   multi-hop messages, the destination cryptographically verifies the
   originator's inner Ed25519 source signature. A relay can read routing
   metadata and forward, but **cannot read** end-to-end payloads

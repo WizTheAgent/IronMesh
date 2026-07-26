@@ -63,7 +63,7 @@ For preppers, homelab operators, privacy advocates, tinkerers, and anyone who th
 - **Mandatory Ed25519 signatures.** Every message is signed and verified. Unsigned messages are dropped.
 - **Channel binding.** The authentication nonce is embedded in the ECDH handshake signature, cryptographically tying the two stages together.
 - **Replay protection.** Monotonic sequence numbers (no seq=0 bypass) plus timestamp validation.
-- **End-to-end encryption over multi-hop.** NaCl `SealedBox` payload wrapping using X25519 keys derived from each node's identity. Relays cannot read message bodies. Inner Ed25519 source signatures survive per-hop re-encryption and are **verified at the destination** (v0.10.0+), binding source/destination/msg_id/payload — so a relay cannot read, forge, redirect, or re-attribute a message; relayed frames lacking a verifiable source signature are dropped.
+- **End-to-end encryption over multi-hop.** NaCl `SealedBox` payload wrapping using X25519 keys derived from each node's identity. Relays cannot read message bodies. Inner Ed25519 source signatures survive per-hop re-encryption and are **verified at the destination** (v0.9.5+), binding source/destination/msg_id/payload — so a relay cannot read, forge, redirect, or re-attribute a message; relayed frames lacking a verifiable source signature are dropped.
 
 ### Trust and storage
 - **Trust-On-First-Use.** SSH-style key pinning. If a peer's identity key changes, the connection is terminated (not just logged). mDNS fingerprint pinning blocks address spoofing of known peers.

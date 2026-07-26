@@ -386,7 +386,7 @@ When decrypted, it produces a JSON object:
 - `priority`: `"CRITICAL"`, `"HIGH"`, `"NORMAL"`, or `"LOW"`.
 - `e2e_payload`: Optional NaCl SealedBox ciphertext for end-to-end encryption through relays. Only the final destination can open it.
 - `source_signature`: Ed25519 signature produced by the original source over the inner-source canonical bytes (see below). Survives per-hop re-encryption by relays.
-- `source_sig_scheme` (v0.10.0+): `"v1"` or `"v2"`. Self-describes which canonical form `source_signature` covers. Absent ⇒ legacy `"v1"`.
+- `source_sig_scheme` (v0.9.5+): `"v1"` or `"v2"`. Self-describes which canonical form `source_signature` covers. Absent ⇒ legacy `"v1"`.
 
 ### Outer Signature (when FLAG_SIGNED is set)
 
@@ -395,7 +395,7 @@ The 64-byte Ed25519 signature at the end of the frame covers the
 per-hop authentication — each relay can verify the frame came from the
 previous hop, but cannot read the contents.
 
-### Inner Source Signature (end-to-end, v0.10.0+)
+### Inner Source Signature (end-to-end, v0.9.5+)
 
 The inner `source_signature` authenticates the **original source** of a
 frame end-to-end. It is produced once by the originator and is preserved
@@ -416,7 +416,7 @@ TOFU pin).
 Two schemes (selected by `source_sig_scheme`):
 
 - **v1 (legacy):** Ed25519 over the plaintext `payload` bytes only.
-- **v2 (bound, default for v0.10.0+ originators):** Ed25519 over
+- **v2 (bound, default for v0.9.5+ originators):** Ed25519 over
   `SIG_CTX_FRAME_INNER_SOURCE || canonical_inner_source_bytes(from,
   destination, msg_id, payload)`, where the context is the NUL-terminated
   ASCII label `ironmesh-sig-v1/frame-inner-source\x00` and the canonical
@@ -438,8 +438,8 @@ Two schemes (selected by `source_sig_scheme`):
 no handshake negotiation with a far source is required. While the
 negotiated protocol floor (`min_protocol_version`) is below `ironmesh/0.9`,
 receivers accept both v1 and v2. At floor ≥ `ironmesh/0.9` the unbound v1
-form is **refused** — every v0.10.0+ originator emits v2. (Default floor:
-`ironmesh/0.4` in v0.10.0, raised to `ironmesh/0.9` in v0.11.0.)
+form is **refused** — every v0.9.5+ originator emits v2. (Default floor:
+`ironmesh/0.4` in v0.9.5; raising it to `ironmesh/0.9` is planned for a later release.)
 
 ## 4. Message Types
 
