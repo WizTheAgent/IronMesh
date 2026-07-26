@@ -5,8 +5,10 @@
 #   1. Filename patterns (high-confidence: these names are reserved for internal
 #      content — see .gitignore for the same list)
 #   2. Content patterns (markers that should never appear in public-shipped text:
-#      milestone codes, audit hardening codes, RAZOR/Path A-B, personal IPs,
-#      personal absolute paths, personal node names, internal headers)
+#      milestone codes, audit hardening codes, decision-tree shorthand,
+#      internal headers). Environment-specific patterns (host names, private
+#      addresses, personal paths) load from an untracked local file — see
+#      section 2b.
 #
 # Modes:
 #   bash scripts/leak-scan.sh --staged
@@ -105,19 +107,36 @@ CONTENT_PATTERNS=(
     '\b(describe|it|test|def test_)[(_\s]*[\x22\x27]?[CHM][0-9]+:'
     # Internal-only header markers — see DOC_ONLY_PATTERNS below; bare
     # INTERNAL in code is allowed (e.g. enum value names)
-    # Personal absolute paths
-    'C:\\Users\\jonha'
-    '/home/jonha'
-    # Personal node names (mesh fleet) — see EXCLUDED_FROM_CONTENT_SCAN
-    # for files that legitimately use them as documentation examples
-    '\bkingpi\b'
-    '\bgatekeeper\b'
-    '\bzevault\b'
-    # Mesh-wide passphrase substring (high-severity if it ever appears)
-    'kingpi-empire'
     # Tone markers that shouldn't appear in shipped public docs
     'dev laptop'
 )
+
+# ----------------------------------------------------------------------------
+# 2b. Local patterns file (untracked)
+# ----------------------------------------------------------------------------
+# Environment-specific identifiers (host names, private addresses, personal
+# paths, credential fragments) are deliberately NOT embedded in this tracked
+# script — a public denylist of private identifiers would itself be a leak.
+# They live in an untracked file: one perl-compatible regex per line; blank
+# lines and #-comments are ignored. Default location is
+# <repo-root>/.leak-patterns.local (gitignored); override with the
+# IRONMESH_LEAK_PATTERNS environment variable. When the file is absent
+# (e.g. in CI) the scan still runs with the generic patterns above and
+# prints a note so the reduced coverage is visible.
+
+LOCAL_PATTERNS_FILE="${IRONMESH_LEAK_PATTERNS:-}"
+if [[ -z "$LOCAL_PATTERNS_FILE" ]]; then
+    REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    LOCAL_PATTERNS_FILE="${REPO_ROOT:-.}/.leak-patterns.local"
+fi
+if [[ -f "$LOCAL_PATTERNS_FILE" ]]; then
+    while IFS= read -r _pat; do
+        [[ -z "$_pat" || "$_pat" == \#* ]] && continue
+        CONTENT_PATTERNS+=("$_pat")
+    done < "$LOCAL_PATTERNS_FILE"
+else
+    echo "leak-scan: note — no local patterns file ($LOCAL_PATTERNS_FILE); scanning generic patterns only" >&2
+fi
 
 # DOC_ONLY_PATTERNS are scanned only in shipped doc files (markdown / rst /
 # txt / yml / yaml). Code legitimately uses these as identifiers, constants,
@@ -233,7 +252,7 @@ while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     if is_internal_filename "$f"; then
         echo "leak-scan: FILENAME RESERVED FOR INTERNAL CONTENT: $f"
-        echo "  → move to ~/.kingpi-secure/ironmesh/internal-docs/ and remove from the repo"
+        echo "  → move it to your internal-docs location outside the repository"
         VIOLATIONS=$((VIOLATIONS + 1))
     fi
 done <<< "$FILES"

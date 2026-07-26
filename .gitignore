@@ -49,8 +49,12 @@ keys.json
 *.key
 passphrase
 .ironmesh/
-.kingpi-secure/
 .reticulum/
+
+# Environment-specific leak-scan denylist — sourced by scripts/leak-scan.sh,
+# must never be committed (a public denylist of private identifiers would
+# itself be a leak)
+.leak-patterns.local
 
 # SQLite
 *.db
@@ -78,8 +82,8 @@ tests/harness/final_chaos*.csv
 
 # Internal / work-in-progress artifacts (audit prompts, deployment notes,
 # agent prompt fragments, internal release plans, bug investigations,
-# audit reports) — never ship in public releases. Move to a private
-# location like ~/.kingpi-secure/ironmesh/internal-docs/ instead.
+# audit reports) — never ship in public releases. Move them to a private
+# location outside the repository instead.
 .internal/
 docs/v*_PLAN.md
 docs/AUDIT_*.md
