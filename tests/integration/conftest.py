@@ -88,8 +88,11 @@ def two_node_mesh() -> Iterator[tuple[Agent, Agent]]:
     alice.run(foreground=False)
     bob.run(foreground=False)
 
-    # Wait up to 15 s for the handshake. mDNS can be slow on CI.
-    deadline = time.monotonic() + 15
+    # Wait for the handshake. mDNS registration + browse on hosted CI
+    # runners can take far longer than on a workstation; the loop exits
+    # the moment both sides see each other, so a generous deadline costs
+    # nothing on a fast network.
+    deadline = time.monotonic() + 45
     while time.monotonic() < deadline:
         if alice.peer_by_name("itest-bob") and bob.peer_by_name("itest-alice"):
             break
@@ -97,7 +100,7 @@ def two_node_mesh() -> Iterator[tuple[Agent, Agent]]:
     else:
         alice.stop()
         bob.stop()
-        pytest.fail("two_node_mesh fixture: peers did not handshake in 15 s")
+        pytest.fail("two_node_mesh fixture: peers did not handshake in 45 s")
 
     try:
         yield alice, bob
