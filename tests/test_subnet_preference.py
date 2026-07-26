@@ -45,9 +45,9 @@ class TestSelectClosestSubnetAddress:
         # Local host is on 192.168.1.0/24. Peer advertises a VPN
         # address (10.0.0.5) first, then the LAN address — we should
         # prefer the LAN one.
-        candidates = ["10.0.0.5", "192.168.1.43"]
+        candidates = ["10.0.0.5", "192.168.1.50"]
         local_prefixes = [0xC0A80100]  # 192.168.1.0/24
-        assert _select_closest_subnet_address(candidates, local_prefixes) == "192.168.1.43"
+        assert _select_closest_subnet_address(candidates, local_prefixes) == "192.168.1.50"
 
     def test_picks_first_when_no_match(self):
         # Local host is on 192.168.1.0/24. Peer's advertised
@@ -59,7 +59,7 @@ class TestSelectClosestSubnetAddress:
     def test_multiple_local_prefixes(self):
         # Multi-homed local host: both LAN and VPN. A peer on the
         # same LAN should still be picked from the LAN address.
-        candidates = ["172.16.0.7", "192.168.1.43"]
+        candidates = ["172.16.0.7", "192.168.1.50"]
         local_prefixes = [0xC0A80100, 0xAC100000]  # 192.168.1.0/24 + 172.16.0.0/24
         result = _select_closest_subnet_address(candidates, local_prefixes)
         # Contract: the first candidate to match a local prefix wins.
@@ -69,9 +69,9 @@ class TestSelectClosestSubnetAddress:
 
     def test_malformed_address_in_candidates_is_skipped(self):
         # Defensive: a malformed address shouldn't crash the picker.
-        candidates = ["not-an-ip", "192.168.1.43"]
+        candidates = ["not-an-ip", "192.168.1.50"]
         local_prefixes = [0xC0A80100]
-        assert _select_closest_subnet_address(candidates, local_prefixes) == "192.168.1.43"
+        assert _select_closest_subnet_address(candidates, local_prefixes) == "192.168.1.50"
 
     def test_empty_candidates_returns_empty(self):
         # Defensive sentinel for an unreachable call-site condition.
