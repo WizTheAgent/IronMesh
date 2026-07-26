@@ -45,7 +45,7 @@ class TestLocalIP:
                 pass
 
         with patch.object(disco_mod.socket, "socket", FakeSocket), \
-             patch.object(disco_mod.socket, "gethostname", return_value="wiz"), \
+             patch.object(disco_mod.socket, "gethostname", return_value="alice"), \
              patch.object(disco_mod.socket, "getaddrinfo",
                           return_value=[(0, 0, 0, "", ("192.168.56.1", 0))]):
             ip = _local_ip()
@@ -72,7 +72,7 @@ class TestLocalIP:
                 pass
 
         with patch.object(disco_mod.socket, "socket", DeadSocket), \
-             patch.object(disco_mod.socket, "gethostname", return_value="wiz"), \
+             patch.object(disco_mod.socket, "gethostname", return_value="alice"), \
              patch.object(disco_mod.socket, "getaddrinfo",
                           return_value=[(0, 0, 0, "", ("10.9.8.7", 0))]):
             ip = _local_ip()

@@ -124,7 +124,7 @@ one `ConnectionType` enum the rest of the bridge doesn't care about.
 ┌────────────────┐       public internet        ┌────────────────┐
 │  Peer A (NAT)  │                              │  Peer B (NAT)  │
 │                │                              │                │
-│  wiz           │ ----- STUN query ----->      │  relay-registered │
+│  alice         │ ----- STUN query ----->      │  relay-registered │
 │                │<---- mapped ip:port ----     │                │
 │                │                              │                │
 │                │ ─── simultaneous dial ──>    │                │
@@ -271,7 +271,7 @@ on a headless host); allowed with `--gui --force`.
 
 ```bash
 ironmesh run \
-    --name wiz \
+    --name alice \
     --relay relay.ironmesh.org:8765 \
     --stun stun.l.google.com:19302 \
     --passphrase-file ~/.ironmesh/passphrase
@@ -288,7 +288,7 @@ Behavior:
 ### Disable NAT traversal (today's behavior)
 
 ```bash
-ironmesh run --name wiz --no-nat ...
+ironmesh run --name alice --no-nat ...
 ```
 
 ---

@@ -6,7 +6,7 @@ them to a local Ollama instance, and sends the response back.
 
 Usage:
     python examples/llm_bridge.py \\
-        --name wiz-llm --port 8766 \\
+        --name alice-llm --port 8766 \\
         --passphrase-file ~/.ironmesh/passphrase \\
         --ollama-url http://localhost:11434 \\
         --model llama3.2:3b

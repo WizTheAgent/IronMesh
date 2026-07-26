@@ -165,16 +165,24 @@ fi
 
 # ───── 7. Public-facing leak scan ────────────────────────────────
 # False-positive carve-outs (intentional, not leaks):
-#   - .gitignore — declares the .kingpi-secure/ ignore pattern
 #   - AGENTS.md — describes the standard, including counter-examples
 #     ("don't use M0/M1 codes")
 #   - discovery.py — RFC1918 default-gateway probe constants are
 #     internet-standard private IP space, not personal addresses
 #   - clients/go/ — example IPs use TEST-NET-1 (192.0.2.0/24) per
-#     RFC 5737; 192.0.x doesn't match the 192.168.1. private-net
-#     pattern below
+#     RFC 5737
 echo "[ 7] public-facing standard"
-LEAK_PATTERNS='C:[/\\]Users[/\\][a-z]|/\.kingpi-secure|kingpi-empire|192\.168\.1\.[0-9]+|\bAudit [HCM]-[0-9]+\b|\bRAZOR #[0-9]+\b|\(M[01] (audit|fix|spike)\)|^Path [AB]\b|\bdev laptop\b|\b(kingpi|gatekeeper)\b|\bRex Ferreus\b|\brex-ferreus\b|\bRexMesh\b|\bIronGate\b|\bIronHaven\b|\bIronShield\b|\bIronMind\b|\bIron Family\b|\biron-family\b|\bfour pillars\b'
+# Generic markers only. Environment-specific identifiers (host names,
+# private addresses, project names) load from the untracked
+# .leak-patterns.local — the same file scripts/leak-scan.sh sources;
+# see its section 2b for the rationale.
+LEAK_PATTERNS='C:[/\\]Users[/\\][a-z]|\bAudit [HCM]-[0-9]+\b|\bRAZOR #[0-9]+\b|\(M[01] (audit|fix|spike)\)|^Path [AB]\b|\bdev laptop\b'
+if [ -f .leak-patterns.local ]; then
+    LOCAL_LEAK="$(grep -Ev '^(#|$)' .leak-patterns.local | paste -sd'|' -)"
+    [ -n "$LOCAL_LEAK" ] && LEAK_PATTERNS="${LEAK_PATTERNS}|${LOCAL_LEAK}"
+else
+    echo "     note: no .leak-patterns.local — scanning generic patterns only"
+fi
 LEAK_EXCLUDE='^(CHANGELOG\.md|docs/RELEASE_NOTES_v0\.|\.github/RELEASE_CHECKLIST\.md|\.gitignore|AGENTS\.md|discovery\.py|tests/|scripts/release-qc\.sh|scripts/leak-scan\.sh)'
 LEAK_HITS="$(git ls-files \
     | grep -vE "$LEAK_EXCLUDE" \

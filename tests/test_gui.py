@@ -184,9 +184,9 @@ class TestBuildFullState:
             assert key in s, f"Missing key: {key}"
 
     def test_name_and_port(self):
-        d = _make_daemon(name="wiz", port=9000)
+        d = _make_daemon(name="alice", port=9000)
         s = d._build_full_state()
-        assert s["name"] == "wiz"
+        assert s["name"] == "alice"
         assert s["port"] == 9000
 
     def test_peers_is_list(self):

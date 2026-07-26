@@ -534,7 +534,7 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
         # them next to the keys file. Removes the silent-collision foot-
         # gun where two daemons on one host share the same trust store
         # because the caller only redirected keys_path. The 3-way live-
-        # mesh test on 2026-05-17 tripped this — wiz daemon + dialogue
+        # mesh test on 2026-05-17 tripped this — a live daemon + dialogue
         # orchestrator both wrote ~/.ironmesh/known_peers.json and the
         # second one got locked read-only via MAC mismatch.
         _DEFAULT_KEYS = "~/.ironmesh/keys.json"

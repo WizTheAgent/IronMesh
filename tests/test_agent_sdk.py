@@ -119,10 +119,10 @@ class TestPeers:
         a = Agent("peers-name", port=19022, passphrase=STRONG_PASS)
         ps = PeerState(node_id="ccc", address="10.0.0.3:8765")
         ps.transition(PeerState.Status.ONLINE)
-        ps.agent_name = "wiz"
+        ps.agent_name = "alice"
         a.daemon.peers["ccc"] = ps
 
-        found = a.peer_by_name("wiz")
+        found = a.peer_by_name("alice")
         assert found is not None
         assert found["node_id"] == "ccc"
         assert a.peer_by_name("nonexistent") is None

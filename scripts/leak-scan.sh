@@ -90,8 +90,8 @@ CONTENT_PATTERNS=(
     '(?<!nosec )\bB[0-9]+ (fix|regression|patch(ed)?)\b'
     # Task-tracker shorthand ("T#74", "T#76").
     '\bT#[0-9]+\b'
-    # Razor suffixes on version strings ("v0.8.5.2-R5:", "v0.8.5.2-R4:").
-    # Matches the razor tag without catching legitimate release suffixes like
+    # Internal revision-tag suffixes on version strings ("v0.8.5.2-R5:").
+    # Matches the internal tag without catching legitimate release suffixes like
     # "-rc1" or "-beta".
     '-R[0-9]+(?=[^a-zA-Z0-9]|$)'
     # Milestone codes — only flag when in a context word ("M0:", "milestone M0",

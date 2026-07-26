@@ -28,10 +28,10 @@ Programmatically:
 from ironmesh.bridge import BridgeDaemon
 
 # GUI disabled (default)
-daemon = BridgeDaemon(name="wiz", port=8765, passphrase="secret")
+daemon = BridgeDaemon(name="alice", port=8765, passphrase="secret")
 
 # GUI enabled
-daemon = BridgeDaemon(name="wiz", port=8765, passphrase="secret", gui=True)
+daemon = BridgeDaemon(name="alice", port=8765, passphrase="secret", gui=True)
 # Access token at: daemon._gui_token
 ```
 

@@ -749,7 +749,7 @@ class TestBridgeCapBindingIntegration:
 
         passphrase = "test-passphrase-12-plus"
         daemon = BridgeDaemon(
-            name="test-wiz",
+            name="test-alice",
             port=29800,  # high port, no real bind in this test
             passphrase=passphrase,
             keys_path=str(tmp_path / "keys.json"),
@@ -780,7 +780,7 @@ class TestBridgeCapBindingIntegration:
         from ironmesh.keys import generate_keypair
 
         daemon = BridgeDaemon(
-            name="test-wiz",
+            name="test-alice",
             port=29801,
             passphrase="test-passphrase-12-plus",
             keys_path=str(tmp_path / "keys.json"),
@@ -834,7 +834,7 @@ class TestBridgeCapBindingIntegration:
         from ironmesh.keys import generate_keypair
 
         daemon = BridgeDaemon(
-            name="test-wiz",
+            name="test-alice",
             port=29803,
             passphrase="test-passphrase-12-plus",
             keys_path=str(tmp_path / "keys.json"),
@@ -900,7 +900,7 @@ class TestBridgeCapBindingIntegration:
         """_open_trust_store should be None-safe before _keypair is set."""
         from ironmesh.bridge import BridgeDaemon
         daemon = BridgeDaemon(
-            name="test-wiz",
+            name="test-alice",
             port=29802,
             passphrase="test-passphrase-12-plus",
             keys_path=str(tmp_path / "keys.json"),

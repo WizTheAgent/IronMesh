@@ -348,12 +348,12 @@ class TestAnnounceAppData:
 
     def test_encode_decode_roundtrip(self):
         raw = rt_mod.encode_app_data(
-            "wiz", "0.9.1", "abc123",
+            "alice", "0.9.1", "abc123",
             capabilities=["llm:chat", "tool:echo"],
             features=["mesh", "lxmf"],
         )
         decoded = rt_mod.decode_app_data(raw)
-        assert decoded["n"] == "wiz"
+        assert decoded["n"] == "alice"
         assert decoded["v"] == "0.9.1"
         assert decoded["i"] == "abc123"
         assert decoded["c"] == ["llm:chat", "tool:echo"]
