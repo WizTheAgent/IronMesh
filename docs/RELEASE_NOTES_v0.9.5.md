@@ -2,13 +2,17 @@
 
 ## Headline
 
-A security-hardening release on top of v0.9.4.2. v0.9.5 introduces the
-`ironmesh/0.9` protocol line — a domain-separated HELLO signature and,
-on the Reticulum transport, a mandatory RNS link binding — alongside a
-storage-KDF upgrade, transport buffering caps, a supply-chain gate, a
-first-run golden-path fix, and a documentation-accuracy pass. Every
-change on the wire is additive and version-gated with a legacy
-fallback, so v0.8.x and v0.9.x peers stay interoperable.
+A security-hardening and onboarding release on top of v0.9.4.2. v0.9.5
+introduces the `ironmesh/0.9` protocol line — a domain-separated HELLO
+signature, a mandatory RNS link binding on the Reticulum transport, and
+receive-side verification of the inner end-to-end source signature in a
+new bound (v2) form — alongside single-use invite tokens with
+verified-first-use, a guided setup wizard, `doctor` onboarding with safe
+auto-fix, canonical deployment profiles, a storage-KDF upgrade,
+transport buffering caps, a supply-chain gate, a first-run golden-path
+fix, and a documentation-accuracy pass. Every change on the wire is
+additive and version-gated with a legacy fallback, so v0.8.x and v0.9.x
+peers stay interoperable.
 
 **Wire protocol:** `ironmesh/0.9`, additive only. The binary frame
 envelope is unchanged (still v4). The new HELLO signature scheme and
@@ -69,6 +73,57 @@ daemon start. The migration only records completion once it has
 migrated at least one payload (or confirmed there were none), so a
 database first opened under the wrong passphrase still migrates
 correctly on a later correct open.
+
+**End-to-end source authentication on receive (bound v2 inner
+signature).** The inner source signature was previously produced and
+carried on the wire but never verified on the production receive paths —
+any node on a multi-hop path could attribute arbitrary content to any
+source identity. The receiver now authenticates the originator of
+user-payload frames (`MSG`/`REQ`/`RESP`/`CONV`) at a single chokepoint
+shared by the WebSocket and RNS transports: relayed frames without a
+verifiable inner signature are dropped fail-closed, direct frames remain
+covered by the outer per-hop signature, and a present-but-invalid
+signature is always dropped. The new bound v2 form signs
+`source`/`destination`/`msg_id`/`payload` under a dedicated
+domain-separation context, so a relay cannot redirect, replay-relabel,
+or re-attribute an authentically-sourced frame; the legacy payload-only
+v1 form is accepted below protocol floor `ironmesh/0.9` and refused at
+or above it. Originator identity resolves from the live session registry
+and then the persistent TOFU store, so a pinned source stays resolvable
+across daemon restarts and at intermediate relays. Dropped frames are
+audited and counted (`ironmesh_inner_source_sig_drops_total`).
+
+### Invite tokens + guided onboarding
+
+**Ephemeral single-use invite tokens (`ironmesh invite create` /
+`ironmesh setup --from-invite`).** Add a node without retyping the mesh
+passphrase and without a central coordinator: the token pins the
+inviter's current Ed25519 identity key and bootstrap endpoint, is signed
+under its own `SIG_CTX_INVITE` domain-separation context, and never
+carries the passphrase. Expiry is per-profile (tactical 5 min,
+lan/homelab 15 min, lora/offline 30 min). Single-use is enforced on the
+inviting node via a persisted spent-nonce ledger, with the nonce spent
+BEFORE the TOFU pin is attempted — a crash between the two steps leaves
+the token burned, not replayable — and a pin that fails to persist fails
+the handshake closed with an audited reason. The joiner does
+verified-first-use (it checks the handshake identity against the token,
+not blind TOFU) and still lands in the pending-trust gate — never
+auto-trust. Optional QR transport (`--qr` / `--qr-png`) via the `[qr]`
+extra.
+
+**Guided onboarding.** `ironmesh setup` gains optional profile
+selection, a strong-passphrase generator, OS-keyring storage preference,
+and printed (never auto-run) firewall/mDNS command hints. `ironmesh
+doctor` gains onboarding diagnostics — passphrase-file permissions,
+mDNS/multicast reachability, firewall posture, Reticulum config,
+Ollama reachability — plus `--onboard` walkthroughs for the common
+first-run failures and `--fix`, which auto-applies only idempotent,
+non-destructive, local fixes (firewall rules are never auto-applied and
+are refused over SSH without `--allow-remote-network-fix`). The
+`--profile` set is now canonical `lan / lora / homelab / tactical /
+custom` (profiles set defaults only; explicit flags win with a warning),
+with `secure` / `dev` / `offline` kept as distinct behavior-preserving
+aliases.
 
 ### Supply chain + CI integrity
 
@@ -181,6 +236,12 @@ The evidence, by surface:
   WebSocket path, and every pre-0.9 RNS peer) the body is byte-identical
   to the original five-key form. Pre-0.9 RNS peers keep legacy behavior
   unless the operator opts in with `--rns-require-link-binding`.
+- **Inner source signature** (`protocol.py` `source_sig_scheme`,
+  `canonical_inner_source_bytes`). Additive: the scheme tag is optional
+  on the wire (absence means legacy v1), no handshake negotiation is
+  introduced, and legacy v1 signatures stay accepted while the
+  negotiated protocol floor is below `ironmesh/0.9`. Enforcement is
+  receive-side policy, not a wire-format change.
 - **Frame envelope** (`protocol.py` `Frame.VERSION = 4`). Unchanged.
   The frame still accepts v3 and v4 frames; no header field, flag, or
   layout changed.
@@ -203,7 +264,7 @@ that breaks v0.8.x / v0.9.x interop was found.
 
 ## Verification
 
-- 1198 tests collected; full unit suite green (`pytest tests/
+- 1342 tests collected; full suite green — 1332 passed, 11 platform/env-conditioned skips, 1 xpassed (`pytest tests/
   --ignore=tests/integration`). ruff CI-scope clean. release-qc
   `FAIL: 0`; doc-sync-check PASS.
 - Wheel + sdist build clean; public modules import; CLI entry point
@@ -220,5 +281,3 @@ No keystore migration and no peer-mesh coordination required. The
 at-rest storage key re-derives and the database re-encrypts on first
 start. v0.8.x and v0.9.x daemons interoperate with v0.9.5 daemons on
 the unchanged legacy wire paths.
-</content>
-</invoke>

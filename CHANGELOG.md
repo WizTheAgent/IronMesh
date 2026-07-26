@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] — 2026-07-26 — protocol ironmesh/0.9: HELLO domain separation, RNS link binding, E2E source authentication, invites + onboarding
+
 ### Added
 
 - **Ephemeral single-use invite tokens (`ironmesh invite create`).** Issue a
@@ -57,32 +59,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a group crypto suite once the keying RFC selects one, without a schema
   migration.
 
-### Security
-
-- **Inner end-to-end source signature is now verified on receive.** The
-  signature was previously produced and carried on the wire but never
-  verified on the production receive paths, so any node on a multi-hop
-  path could attribute arbitrary content to any source identity. The
-  receiver now authenticates the originator of user-payload frames
-  (`MSG`/`REQ`/`RESP`/`CONV`) at a single chokepoint on the inbound
-  dispatch path shared by the WebSocket and RNS/Reticulum transports.
-  Relayed frames lacking a verifiable inner source signature are dropped
-  (fail-closed). Direct frames remain covered by the outer per-hop
-  signature.
-  - **Bound v2 signature.** The inner signature now binds
-    `source`/`destination`/`msg_id`/`payload` via a length-prefixed
-    canonical form under a domain-separation context, so a relay cannot
-    redirect, replay-relabel, or re-attribute an authentically-sourced
-    frame. Self-describing on the wire via the new `source_sig_scheme` tag;
-    legacy v1 (payload-only) accepted below protocol floor `ironmesh/0.9`,
-    refused at/above it. This is an **additive, backward-compatible** wire
-    change — the tag is optional (absence ⇒ v1) and no handshake
-    negotiation is required.
-  - Consequence: relayed delivery now requires the destination to know the
-    originator's identity (a live peer or an existing TOFU pin).
-
-## [0.9.5] — 2026-07-12 — HELLO domain separation + RNS link binding (protocol ironmesh/0.9)
-
 ### Changed
 
 - AutoGen adapter: new `create_mesh_tools()` returns the mesh functions as construction-time tools for the modern `autogen-agentchat` API (legacy `register_ironmesh()` unchanged); the adapter integration test now drives a real `AssistantAgent` end-to-end instead of skipping, and CI installs `autogen-agentchat` in place of the discontinued legacy `pyautogen` module.
@@ -123,6 +99,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs: accuracy pass against shipped behavior — protocol-line references brought up to `ironmesh/0.9` across README / ARCHITECTURE / WHATS_NEW / STABILITY_PROMISE / THREAT_MODEL, getting-started walkthroughs corrected to commands and SDK calls that exist (`ironmesh run --name` required, `trust set-state ... trusted`, `Agent.on_message()` signature, key-file passphrase caveat), the not-yet-wired `--nat-relay` daemon flag and the CLI-unread JSON-config / env-var family documented honestly, missing security flags added to `docs/CONFIGURATION.md`, and the stale top-level `--help` example fixed to a working command.
 
 ### Security
+
+- **Inner end-to-end source signature is now verified on receive.** The
+  signature was previously produced and carried on the wire but never
+  verified on the production receive paths, so any node on a multi-hop
+  path could attribute arbitrary content to any source identity. The
+  receiver now authenticates the originator of user-payload frames
+  (`MSG`/`REQ`/`RESP`/`CONV`) at a single chokepoint on the inbound
+  dispatch path shared by the WebSocket and RNS/Reticulum transports.
+  Relayed frames lacking a verifiable inner source signature are dropped
+  (fail-closed). Direct frames remain covered by the outer per-hop
+  signature.
+  - **Bound v2 signature.** The inner signature now binds
+    `source`/`destination`/`msg_id`/`payload` via a length-prefixed
+    canonical form under a domain-separation context, so a relay cannot
+    redirect, replay-relabel, or re-attribute an authentically-sourced
+    frame. Self-describing on the wire via the new `source_sig_scheme` tag;
+    legacy v1 (payload-only) accepted below protocol floor `ironmesh/0.9`,
+    refused at/above it. This is an **additive, backward-compatible** wire
+    change — the tag is optional (absence ⇒ v1) and no handshake
+    negotiation is required.
+  - Consequence: relayed delivery now requires the destination to know the
+    originator's identity (a live peer or an existing TOFU pin). Identity
+    resolution consults the live session registry and then the persistent
+    TOFU store, so a pinned source stays resolvable across daemon restarts
+    and at intermediate relays that never met it directly.
+
+- **Invite single-use is crash-window-proof and pin persistence is
+  fail-loud.** The token's nonce is spent (persisted) BEFORE the TOFU pin
+  is attempted, so a crash between the two steps leaves the token burned,
+  not replayable; a pin that fails to persist now fails the handshake
+  closed with an audited reason instead of continuing on in-memory state.
+  Accepted cost: a pin failure consumes an otherwise-valid token and the
+  operator reissues it.
 
 - **Identity key files are now encrypted at rest by default, matching the documented claim.** A bare `ironmesh run --name X` previously auto-generated a PLAINTEXT `keys.json` with only a log warning; auto-generated (and `--rotate-keys`-rotated) key files are now encrypted with the mesh passphrase — always present by the time keys are generated — exactly as `ironmesh setup` produces, and a plaintext key file found on disk is re-encrypted forward on the next start. Writing an unencrypted key file now requires the explicit `--plaintext-keys` opt-in (`allow_plaintext=True` from the library); with no passphrase and no opt-in, key generation fails with an actionable error. README / GETTING_STARTED / QUICKSTART / CONFIGURATION updated so claim == behavior.
 - **RNS link binding + per-peer buffering cap on the Reticulum
@@ -185,6 +194,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ironmesh doctor` check 8 pointed operators at a nonexistent `ironmesh status` command for strict-TLS / global-rate-cap runtime state; it now points at the running daemon's `/metrics` endpoint.
 - Missing-Reticulum hints now recommend the project-standard `pip install ironmesh[rns]` instead of the bare `pip install rns`.
 - The `nat_relay` module docstring no longer implies a daemon-side `--nat-relay` attach flag exists; it is documented as a possible future feature, matching `docs/NAT_TRAVERSAL.md`.
+
+### Tests
+
+- **Five-area adversarial stress harness** (`tests/test_stress_security.py`)
+  driving the invite, inner-source-signature, profile, and doctor security
+  controls with the malicious inputs they exist to reject — asserting both
+  the refusal and the absence of side effects (no trust-store, ledger, or
+  on-disk half-state), including the crash-window ordering of single-use
+  invite marking.
+- Test count: 1342 collected (was 1198 at the 2026-07-12 cut); full suite
+  1332 passed / 11 skipped / 1 xpassed.
 
 ## [0.9.4.2] — 2026-05-23 — Operator-polish sweep
 
