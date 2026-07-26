@@ -68,6 +68,7 @@ def test_ironmesh_color_never_disables(monkeypatch):
 # ---- emit primitives ----------------------------------------------
 
 def test_line_with_color(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("IRONMESH_COLOR", "always")
     buf = io.StringIO()
     out = Output(stream=buf)
@@ -137,6 +138,7 @@ def test_capture_helper_returns_color_disabled():
     (Status.MUTED, "·"),
 ])
 def test_icon_mapping(monkeypatch, status, icon):
+    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("IRONMESH_COLOR", "always")
     buf = io.StringIO()
     out = Output(stream=buf)
