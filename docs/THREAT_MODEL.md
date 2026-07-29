@@ -248,7 +248,40 @@ independent of E2E SealedBox for relay traffic.
 
 ## 7. Change Log
 
-- **Unreleased (main, protocol `ironmesh/0.9`)**: Post-v0.9.4.2 hardening.
+- **v0.9.5 (protocol `ironmesh/0.9`)**: Post-v0.9.4.2 hardening.
+    - **Inner end-to-end source signature verified on receive (bound
+      v2)** — the originator of user-payload frames (`MSG`/`REQ`/
+      `RESP`/`CONV`) is authenticated at the single inbound chokepoint
+      shared by all transports; relayed frames without a verifiable
+      inner signature are dropped fail-closed, and a present-but-invalid
+      signature is always dropped. The bound v2 form signs
+      source/destination/msg_id/payload under
+      `SIG_CTX_FRAME_INNER_SOURCE`, preventing relay-side redirection,
+      replay-relabeling, and re-attribution. Source identity resolves
+      from the live session registry, then the persistent TOFU store.
+      New audit event `INNER_SOURCE_SIG_DROP`, new metric
+      `inner_source_sig_drops_total`.
+    - **Known limitation, disclosed (hop-scoped trust gating):** the
+      pending-trust message gate (A13) keys on the trust state of the
+      *immediate delivering peer*, not the frame's originator. A
+      `blocked` or `pending` originator whose frames arrive through a
+      `trusted` relay therefore bypasses its own gate state. End-to-end
+      source authenticity is now verified (above) and the authenticated
+      originator is exposed on every delivered frame
+      (`source_authenticated`), but the gate does not yet consume that
+      signal — wiring it in is a design decision deferred to a future
+      release (legacy v1-frame semantics and metrics/operator-visibility
+      implications need settling first). Until then, gate decisions are
+      per-hop, and operators for whom originator-scoped gating matters
+      should treat relay trust as transitive.
+    - **Single-use invite tokens** — inviter-identity- and
+      endpoint-pinned bootstrap tokens signed under `SIG_CTX_INVITE`;
+      verified-first-use at the joiner; single-use enforced via a
+      persisted spent-nonce ledger with mark-before-pin ordering (a
+      crash between the two steps burns the token rather than reopening
+      a replay window); a pin that fails to persist fails the handshake
+      closed with an audited reason. Tokens never carry the passphrase
+      and joiners always land in the pending-trust gate.
     - **Domain-separated HELLO signature** — when both peers advertise
       `ironmesh/0.9+`, the HELLO carries a detached Ed25519 signature
       under the dedicated `SIG_CTX_HELLO` context label, closing the
@@ -266,7 +299,9 @@ independent of E2E SealedBox for relay traffic.
       pre-0.9 RNS peers entirely.
     - **Per-link cumulative buffering cap** on the Reticulum
       transport (64 MB per link across reassembly + unconsumed
-      messages; overrun closes the link and frees the buffers).
+      messages; overrun closes the link and frees the buffers), plus a
+      128 MB aggregate cap across all links keyed to the same remote
+      RNS identity (unidentified links share one anonymous bucket).
     - **At-rest storage key derived via Argon2id + HKDF-SHA256** with
       a per-database persisted salt (previously a single unsalted
       SHA-256 of the passphrase) — a leaked disk image no longer
