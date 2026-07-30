@@ -157,10 +157,8 @@ def create_backup(
         f.write(bytes([_VERSION]))
         f.write(salt)
         f.write(ciphertext)
-    try:
-        os.chmod(out_path, 0o600)
-    except OSError:
-        pass
+    from ironmesh.keys import restrict_file_to_owner
+    restrict_file_to_owner(out_path)
 
     logger.info("Backup written to %s (%d bytes plaintext, %d bytes on disk)",
                 out_path, len(plaintext), len(ciphertext) + 21)
@@ -247,14 +245,12 @@ def restore_backup(
             )
 
     # Write files
+    from ironmesh.keys import restrict_file_to_owner
     for dest, data in files_to_write.items():
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         with open(dest, "wb") as f:
             f.write(data)
-        try:
-            os.chmod(dest, 0o600)
-        except OSError:
-            pass
+        restrict_file_to_owner(dest)
         logger.info("Restored %s (%d bytes)", dest, len(data))
 
     return manifest

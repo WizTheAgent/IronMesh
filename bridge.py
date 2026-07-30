@@ -564,6 +564,11 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
         self.ws_clients: Dict[str, websockets.WebSocketServerProtocol] = {}
         self._server = None
         self._running = False
+        # Handles for the long-lived background loops spawned in _start, so
+        # shutdown() can cancel them before closing the DB / event loop
+        # (otherwise they can resume mid-sleep into a closed connection and
+        # leave "Task was destroyed but it is pending" noise at loop close).
+        self._background_tasks: list = []
         self._mdns_service = None
         self._mdns_listener = None
         # The key for encrypting SQLite payloads at rest is derived inside
@@ -1062,19 +1067,19 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
         if self._gui_enabled:
             await self._start_gui_server()
             self._wire_gui_hooks()
-            asyncio.ensure_future(self._gui_state_loop())
+            self._spawn_bg(self._gui_state_loop())
         else:
-            asyncio.ensure_future(self._metrics_server())
+            self._spawn_bg(self._metrics_server())
 
-        # Background tasks
-        asyncio.ensure_future(self._heartbeat_loop())
-        asyncio.ensure_future(self._cleanup_loop())
-        asyncio.ensure_future(self._audit_counter_sync_loop())
-        asyncio.ensure_future(self._reconnect_loop())
-        asyncio.ensure_future(self._queue_flush_loop())
-        asyncio.ensure_future(self._discover_loop())
-        asyncio.ensure_future(self._rekey_loop())
-        asyncio.ensure_future(self._long_drop_watchdog())
+        # Background tasks (tracked so shutdown can cancel them)
+        self._spawn_bg(self._heartbeat_loop())
+        self._spawn_bg(self._cleanup_loop())
+        self._spawn_bg(self._audit_counter_sync_loop())
+        self._spawn_bg(self._reconnect_loop())
+        self._spawn_bg(self._queue_flush_loop())
+        self._spawn_bg(self._discover_loop())
+        self._spawn_bg(self._rekey_loop())
+        self._spawn_bg(self._long_drop_watchdog())
 
         # v0.4: Mesh routing — instantiate after keypair so node_id is real
         if self.config.mesh_routing != "off":
@@ -1083,8 +1088,8 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
                 self._mesh.load_persisted_routes()
             except Exception as e:
                 logger.warning("Failed to load persisted routes: %s", e)
-            asyncio.ensure_future(self._mesh.announce_loop())
-            asyncio.ensure_future(self._mesh.cleanup_loop())
+            self._spawn_bg(self._mesh.announce_loop())
+            self._spawn_bg(self._mesh.cleanup_loop())
             logger.info("Mesh routing enabled (mode=%s, max_hops=%d)",
                         self.config.mesh_routing, self.config.max_hops)
         else:
@@ -1128,7 +1133,7 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
             logger.info("Advertising %d local capability/ies: %s",
                         len(self.config.capabilities),
                         ", ".join(self.config.capabilities))
-        asyncio.ensure_future(self._capability_announce_loop())
+        self._spawn_bg(self._capability_announce_loop())
 
         # v0.5: Reticulum transport
         if self._rns_enabled and _HAS_RNS and ReticulumTransport is not None:
@@ -2653,9 +2658,30 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
     # Shutdown
     # ------------------------------------------------------------------
 
+    def _spawn_bg(self, coro):
+        """Schedule a long-lived background loop and track its Task handle so
+        shutdown() can cancel it. Returns the Task."""
+        task = asyncio.ensure_future(coro)
+        self._background_tasks.append(task)
+        return task
+
     async def shutdown(self):
         """Graceful shutdown."""
         self._running = False
+
+        # Cancel the long-lived background loops BEFORE tearing down the DB /
+        # transports they touch, so none resumes mid-sleep into a closed
+        # resource. Setting _running above lets well-behaved loops exit on
+        # their own; cancel() covers those parked in an await.
+        tasks = [t for t in getattr(self, "_background_tasks", []) if not t.done()]
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            except Exception:
+                pass
+        self._background_tasks = []
 
         # Close GUI server and clients
         for client in list(self._gui_clients):
@@ -2794,11 +2820,21 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
         if background:
             return loop
 
+        async def _shutdown_and_stop():
+            # Run the graceful shutdown, then stop run_forever(). Without the
+            # loop.stop() the daemon would hang after handling SIGTERM
+            # (systemd `stop` would time out and escalate to SIGKILL).
+            try:
+                await self.shutdown()
+            finally:
+                loop.stop()
+
         try:
             for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(sig, lambda: asyncio.ensure_future(self.shutdown()))
+                loop.add_signal_handler(
+                    sig, lambda: asyncio.ensure_future(_shutdown_and_stop()))
         except NotImplementedError:
-            pass  # Windows
+            pass  # Windows — SIGINT surfaces as KeyboardInterrupt below
 
         try:
             loop.run_forever()

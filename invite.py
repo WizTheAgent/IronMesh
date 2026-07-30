@@ -404,12 +404,18 @@ class InviteLedger:
         )
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(payload)
+            f.flush()
+            # Durability for the single-use guarantee: without fsync, a
+            # power loss (not a mere process crash) in the writeback window
+            # could lose a just-recorded spent nonce and make its token
+            # replayable once. Best-effort — some filesystems reject fsync.
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
         os.replace(tmp, self.path)
-        try:
-            import stat
-            os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
-        except OSError:
-            pass
+        from ironmesh.keys import restrict_file_to_owner
+        restrict_file_to_owner(self.path)
 
     def is_spent(self, nonce: str) -> bool:
         with self._lock:

@@ -124,13 +124,23 @@ class MessageStore:
             if self._opened:
                 return
             self._db = await aiosqlite.connect(self.db_path)
-            await self._db.execute("PRAGMA journal_mode=WAL")
-            await self._db.execute("PRAGMA foreign_keys=ON")
-            await self._migrate()
-            if self._storage_passphrase is not None:
-                await self._derive_storage_key()
-            if self._storage_key is not None:
-                await self._upgrade_storage_format()
+            try:
+                await self._db.execute("PRAGMA journal_mode=WAL")
+                await self._db.execute("PRAGMA foreign_keys=ON")
+                await self._migrate()
+                if self._storage_passphrase is not None:
+                    await self._derive_storage_key()
+                if self._storage_key is not None:
+                    await self._upgrade_storage_format()
+            except Exception:
+                # A failed migration / bad storage passphrase must not leak the
+                # open aiosqlite connection (and its background thread) while
+                # _opened stays False. Close it before re-raising.
+                try:
+                    await self._db.close()
+                finally:
+                    self._db = None
+                raise
             self._opened = True
             logger.info("Database opened: %s (schema v%d)", self.db_path, SCHEMA_VERSION)
 

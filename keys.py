@@ -30,6 +30,40 @@ from nacl.public import PrivateKey as X25519PrivateKey
 from nacl.pwhash import argon2id
 from nacl.signing import SigningKey, VerifyKey
 
+
+def restrict_file_to_owner(path) -> None:
+    """Best-effort: restrict a sensitive file to the owning user.
+
+    POSIX: ``chmod 0600``. Windows/NTFS: ``os.chmod`` only toggles the
+    read-only bit (it does NOT produce an owner-only ACL), so additionally
+    run ``icacls`` to drop inherited ACEs and grant the current user only.
+    Best-effort throughout — the file's contents are Argon2id-encrypted at
+    rest regardless, so a failure here degrades defense-in-depth, not
+    confidentiality of the key material itself.
+    """
+    import stat as _stat
+    try:
+        os.chmod(path, _stat.S_IRUSR | _stat.S_IWUSR)  # 0600 (POSIX-effective)
+    except OSError:
+        pass
+    if os.name != "nt":
+        return
+    try:
+        import getpass
+        import subprocess
+        user = os.environ.get("USERNAME") or getpass.getuser()
+        if not user:
+            return
+        subprocess.run(
+            ["icacls", os.fspath(path), "/inheritance:r",
+             "/grant:r", f"{user}:F"],
+            check=False, capture_output=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=10,
+        )
+    except Exception:
+        pass  # icacls missing / odd username / timeout — best-effort
+
 # Audit L-05: shared constant for 128-bit fingerprints (first 32 hex
 # chars of SHA-256). Use this everywhere a fingerprint is computed.
 FINGERPRINT_HEX_CHARS = 32
@@ -371,13 +405,9 @@ def save_keys(keys: AgentKeys, path: str, passphrase: Optional[str] = None,
             os.fsync(f.fileno())
         except (OSError, AttributeError):
             pass
-    try:
-        # chmod the tmp before rename so the production file is
-        # never briefly world-readable on a file system that
-        # respects mode bits.
-        os.chmod(tmp_path, 0o600)
-    except OSError:
-        pass  # Windows doesn't support chmod the same way
+    # Restrict the tmp before rename so the production file is never briefly
+    # world-readable (owner-only ACL on Windows, 0600 on POSIX).
+    restrict_file_to_owner(tmp_path)
     os.replace(tmp_path, path)
 
 

@@ -603,8 +603,15 @@ def main() -> int:
     p.add_argument("--peer", action="append", default=None,
                    metavar="HOST:PORT",
                    help="bootstrap mesh peer hint (repeatable)")
-    p.add_argument("--allow-plaintext-ws", action="store_true", default=True,
+    # Plaintext ws:// fallback is on by default for the embedded loopback
+    # daemon; --no-plaintext-ws turns it off (the bare --allow-plaintext-ws
+    # store_true could never disable it, so this exposes a real toggle).
+    p.add_argument("--allow-plaintext-ws", dest="allow_plaintext_ws",
+                   action="store_true", default=True,
                    help="allow plaintext ws:// fallback for mesh connections (default on for embedded daemon)")
+    p.add_argument("--no-plaintext-ws", dest="allow_plaintext_ws",
+                   action="store_false",
+                   help="require TLS for mesh connections (disable the ws:// fallback)")
     p.add_argument("--max-request-bytes", type=int,
                    default=A2A_DEFAULT_RESPONSE_BYTES,
                    help=f"max inbound HTTP body (default {A2A_DEFAULT_RESPONSE_BYTES})")
