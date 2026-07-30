@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import json
-import os
 
 import pytest
 
 from ironmesh import backup
-
 
 STRONG_PP = "backup-passphrase-minimum-length"
 
@@ -156,3 +154,52 @@ class TestCorruption:
                 trust_path=str(tmp_path / "none_t.json"),
                 audit_path=str(tmp_path / "none_a.log"),
             )
+
+
+# ---------------------------------------------------------------------------
+# Non-interactive passphrase resolution + headless safety (v0.9.5 QA)
+# ---------------------------------------------------------------------------
+
+class TestCmdBackupHeadless:
+    """`ironmesh backup`/`restore` must resolve a passphrase non-interactively
+    and must ERROR (not hang) headless when none is available — the same
+    headless-safety property the release advertises for the daemon path."""
+
+    def _args(self, tmp_path, **kw):
+        import argparse
+        d = dict(out=str(tmp_path / "b.imb"), in_path=str(tmp_path / "b.imb"),
+                 keys_path=str(tmp_path / "keys.json"),
+                 trust_path=str(tmp_path / "trust.json"),
+                 audit_path=str(tmp_path / "audit.log"), force=False)
+        d.update(kw)
+        return argparse.Namespace(**d)
+
+    def test_headless_no_source_errors_not_hangs(self, tmp_path, monkeypatch, capsys):
+        from ironmesh import cli
+        monkeypatch.setattr("ironmesh.cli._stdin_is_interactive", lambda: False)
+        for v in ("IRONMESH_BACKUP_PASSPHRASE", "IRONMESH_BACKUP_PASSPHRASE_FILE"):
+            monkeypatch.delenv(v, raising=False)
+        # keys file must exist so we reach the passphrase step
+        (tmp_path / "keys.json").write_text("{}")
+        rc = cli.cmd_backup(self._args(tmp_path))
+        assert rc == 1
+        assert "no interactive terminal" in capsys.readouterr().out
+
+    def test_env_passphrase_file_used(self, tmp_path, monkeypatch):
+        from ironmesh import cli
+        pf = tmp_path / "bp.txt"
+        pf.write_text(STRONG_PP)
+        monkeypatch.setenv("IRONMESH_BACKUP_PASSPHRASE_FILE", str(pf))
+        monkeypatch.setattr("ironmesh.cli._stdin_is_interactive", lambda: False)
+        (tmp_path / "keys.json").write_text('{"identity":"x"}')
+        rc = cli.cmd_backup(self._args(tmp_path))
+        assert rc == 0
+        assert (tmp_path / "b.imb").exists()
+        # round-trip restore via the env passphrase (string form)
+        monkeypatch.delenv("IRONMESH_BACKUP_PASSPHRASE_FILE")
+        monkeypatch.setenv("IRONMESH_BACKUP_PASSPHRASE", STRONG_PP)
+        rc2 = cli.cmd_restore(self._args(tmp_path, keys_path=str(tmp_path / "r_keys.json"),
+                                         trust_path=str(tmp_path / "r_trust.json"),
+                                         audit_path=str(tmp_path / "r_audit.log"),
+                                         force=True))
+        assert rc2 == 0

@@ -568,21 +568,35 @@ def _load_keys_for_verify(keys_path: Optional[str],
     """Load the identity keypair for chain verification without ever
     blocking a headless caller.
 
-    Order: explicit ``keys_passphrase`` → ``IRONMESH_PASSPHRASE`` env →
-    passphrase-less load (plaintext key file) → interactive prompt (real
-    TTY only) → actionable error. The previous unconditional ``getpass()``
-    froze ``ironmesh doctor`` in headless runs — on Windows the prompt
-    reads the console device, so even a redirected stdin never unblocks
-    it.
+    Order: explicit ``keys_passphrase`` → ``IRONMESH_KEYS_PASSPHRASE`` /
+    ``IRONMESH_PASSPHRASE`` env → passphrase-less load (plaintext key file)
+    → interactive prompt (real console only) → actionable error. The
+    previous unconditional ``getpass()`` froze ``ironmesh doctor`` in
+    headless runs — on Windows the prompt reads the console device, so even
+    a redirected stdin never unblocks it.
+
+    A missing/corrupt/unreadable key file surfaces as its own error rather
+    than being mis-reported as "needs passphrase".
     """
     from ironmesh import keys as ew_keys
     kp = keys_path or "~/.ironmesh/keys.json"
-    kp_pass = keys_passphrase or os.environ.get("IRONMESH_PASSPHRASE")
+    # Honor both the keys-specific and legacy env var, keys-specific first —
+    # the same pair `ironmesh doctor` reads, so the two commands agree on
+    # the passphrase source in a given environment.
+    kp_pass = (keys_passphrase
+               or os.environ.get("IRONMESH_KEYS_PASSPHRASE")
+               or os.environ.get("IRONMESH_PASSPHRASE"))
     if not kp_pass:
         try:
             return ew_keys.load_keys(kp, passphrase=None)  # plaintext file
-        except Exception:
-            pass  # encrypted (or unreadable — the final load reports it)
+        except FileNotFoundError:
+            raise  # no key file — report it as itself
+        except OSError:
+            raise  # permission denied etc. — report it as itself
+        except ValueError as e:
+            if "encrypted" not in str(e).lower():
+                raise  # corrupt/invalid envelope — not a passphrase problem
+            # encrypted-but-no-passphrase → fall through to prompt/error
         from ironmesh.cli_output import stdin_is_interactive
         if stdin_is_interactive():
             import getpass
@@ -590,11 +604,10 @@ def _load_keys_for_verify(keys_path: Optional[str],
     if not kp_pass:
         raise ValueError(
             "audit chain verification requires the identity-key passphrase "
-            "and no interactive prompt is available (headless run). Pass "
-            "keys_passphrase=, set IRONMESH_PASSPHRASE, or run from an "
-            "interactive terminal. (The ironmesh CLI additionally resolves "
-            "IRONMESH_KEYS_PASSPHRASE, --keys-passphrase-file, and the "
-            "mesh passphrase.)"
+            "and no interactive prompt is available (headless run). Set "
+            "IRONMESH_KEYS_PASSPHRASE (or IRONMESH_PASSPHRASE), or run from "
+            "an interactive terminal. `ironmesh setup` encrypts the key file "
+            "with the mesh passphrase, so that value works here too."
         )
     return ew_keys.load_keys(kp, passphrase=kp_pass)
 

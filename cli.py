@@ -63,6 +63,9 @@ def parse_args():
         epilog="Example: ironmesh run --name alice --port 8765 "
                "--passphrase-file ~/.ironmesh/passphrase",
     )
+    from ironmesh import __version__ as _ver
+    parser.add_argument("--version", action="version",
+                        version=f"ironmesh {_ver}")
     sub = parser.add_subparsers(dest="command", help="Available commands")
 
     # --- run (default) ---
@@ -505,6 +508,10 @@ def parse_args():
                                  help="Passphrase to decrypt + re-encrypt the key file")
 
     # --- backup / restore ---
+    # Passphrase for both is resolved non-interactively via
+    # IRONMESH_BACKUP_PASSPHRASE_FILE (preferred) or IRONMESH_BACKUP_PASSPHRASE,
+    # else an interactive prompt; a headless run with neither set errors
+    # rather than hanging.
     backup_parser = sub.add_parser("backup", help="Create an encrypted backup of node state")
     backup_parser.add_argument("--out", required=True, help="Output backup file path")
     backup_parser.add_argument("--keys-path", default="~/.ironmesh/keys.json",
@@ -2180,13 +2187,48 @@ def cmd_keys(args):
     return 0
 
 
+def _resolve_backup_passphrase(*, confirm: bool):
+    """Resolve the backup passphrase without ever hanging a headless run.
+
+    Order: IRONMESH_BACKUP_PASSPHRASE_FILE -> IRONMESH_BACKUP_PASSPHRASE ->
+    interactive getpass (real console only, with confirmation on create).
+    Returns the passphrase string, or None with an error already printed
+    (missing non-interactive source in a headless run, or a mismatch).
+    """
+    pf = os.environ.get("IRONMESH_BACKUP_PASSPHRASE_FILE")
+    if pf:
+        try:
+            return _read_passphrase_file_safe(pf)
+        except (IOError, OSError, ValueError) as e:
+            print(f"ERROR: cannot read IRONMESH_BACKUP_PASSPHRASE_FILE: {e}")
+            return None
+    env = os.environ.get("IRONMESH_BACKUP_PASSPHRASE")
+    if env:
+        return env
+    if not _stdin_is_interactive():
+        print("ERROR: backup passphrase required and no interactive terminal "
+              "is available (headless run). Set IRONMESH_BACKUP_PASSPHRASE_FILE "
+              "(preferred) or IRONMESH_BACKUP_PASSPHRASE, or run from a "
+              "terminal.")
+        return None
+    try:
+        passphrase = getpass.getpass("Backup passphrase (min 12 chars): ")
+        if confirm:
+            again = getpass.getpass("Confirm passphrase: ")
+            if passphrase != again:
+                print("Passphrases do not match")
+                return None
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+    return passphrase
+
+
 def cmd_backup(args):
     """Create an encrypted backup archive."""
     from ironmesh import backup as backup_mod
-    passphrase = getpass.getpass("Backup passphrase (min 12 chars): ")
-    confirm = getpass.getpass("Confirm passphrase: ")
-    if passphrase != confirm:
-        print("Passphrases do not match")
+    passphrase = _resolve_backup_passphrase(confirm=True)
+    if not passphrase:
         return 1
     try:
         backup_mod.create_backup(
@@ -2206,7 +2248,9 @@ def cmd_backup(args):
 def cmd_restore(args):
     """Restore from an encrypted backup archive."""
     from ironmesh import backup as backup_mod
-    passphrase = getpass.getpass("Backup passphrase: ")
+    passphrase = _resolve_backup_passphrase(confirm=False)
+    if not passphrase:
+        return 1
     try:
         manifest = backup_mod.restore_backup(
             in_path=args.in_path,
@@ -2242,6 +2286,11 @@ def cmd_audit(args):
             # the library refuses to prompt (it would hang); surface its
             # remediation options instead of a traceback.
             print(f"ERROR: {e}")
+            return 1
+        except (FileNotFoundError, PermissionError) as e:
+            # Distinct from "needs passphrase": the key file the HMAC key is
+            # derived from is missing or unreadable. Name the real problem.
+            print(f"ERROR: cannot read the identity key for verification: {e}")
             return 1
         if ok:
             print(f"OK — verified {checked} entries")
