@@ -22,13 +22,19 @@ Wire surface:
     - Ciphertext overhead: 48 bytes (32 ephemeral pubkey + 16 Poly1305 tag)
 
 Threat model:
-    - Relay nodes cannot read e2e payloads (confidentiality from relays).
-      The send path (routing.py) carries the body SOLELY in ``e2e_payload``
-      for sealed frames — ``frame.payload`` is stripped — so a relay
-      decrypting its per-hop layer finds no readable body, only this sealed
-      field, which only the destination can unseal.
-    - Because a relay cannot read the sealed body, it cannot verify the inner
-      source signature over it; verification is deferred to the destination
+    - The sealed ``e2e_payload`` is readable ONLY by the destination. Whether a
+      relay can also read the body depends on the confidentiality mode:
+        * Default (wire-compatible): the sealed copy rides ALONGSIDE the per-hop
+          ``frame.payload``, so a relay that decrypts its per-hop layer to route
+          can read the body. Confidentiality-from-relays is NOT provided in this
+          mode — it exists so every node version can forward the frame.
+        * Opt-in (``--e2e-strict-confidentiality``, on a fully-upgraded mesh):
+          the send path strips ``frame.payload`` so the body travels SOLELY in
+          ``e2e_payload``. A relay decrypting its per-hop layer then finds no
+          readable body — only this sealed field, which only the destination
+          can unseal. This is the mode that delivers relay-confidentiality.
+    - When the body is stripped, a relay cannot verify the inner source
+      signature over it; verification is deferred to the destination
       (post-unseal). A relay simply forwards sealed frames.
     - Fallback: when the destination's key is unknown the frame is NOT sealed
       (per-hop encryption only) and a relay can read the body — routing.py

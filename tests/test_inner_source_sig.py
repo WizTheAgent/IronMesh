@@ -423,11 +423,15 @@ class TestStorePinnedSourceResolution:
 
 
 class TestE2ESealedPostUnsealVerify:
-    """v0.9.5 relay-confidentiality: an e2e-sealed frame carries the body only
-    in ``e2e_payload`` (frame.payload is stripped on the wire), so relays can
-    forward it without reading it. The inner source signature is over the
-    sealed plaintext and is verified by the DESTINATION after unseal, applying
-    the same fail-closed policy the chokepoint uses for non-e2e frames.
+    """v0.9.5 relay-confidentiality receive path. Under the opt-in
+    ``--e2e-strict-confidentiality`` mode an e2e-sealed frame carries the body
+    ONLY in ``e2e_payload`` (frame.payload is stripped on the wire — the frames
+    here are built in that stripped form to exercise the receive path), so
+    relays forward it without reading it. The inner source signature is over
+    the sealed plaintext and is verified by the DESTINATION after unseal,
+    applying the same fail-closed policy the chokepoint uses for non-e2e
+    frames. (The send-side gate that produces this wire form is covered by
+    ``TestE2EStripGating``.)
     """
 
     @staticmethod
@@ -512,3 +516,83 @@ class TestE2ESealedPostUnsealVerify:
         f = self._seal_and_sign(src, dest, b"the-body")
         with pytest.raises((CryptoError, ValueError, Exception)):
             mesh_crypto.unseal_from_source(f.e2e_payload, wrong.ed25519_secret)
+
+
+class TestE2EStripGating:
+    """The relay-confidentiality strip is OPT-IN via
+    ``config.e2e_strict_confidentiality`` (CLI ``--e2e-strict-confidentiality``).
+
+    Default OFF is wire-compatible with every node version: the sealed copy is
+    attached but the plaintext body also rides the per-hop layer, so a relay —
+    or an older node that verifies the inner source but lacks the receive-side
+    post-unseal exemption — never sees a stripped frame. ON strips the body and
+    re-signs the inner source (v2) over the sealed plaintext, which the
+    destination recovers on unseal.
+    """
+
+    @staticmethod
+    def _daemon(flag, keypair):
+        d = SimpleNamespace(
+            _keypair=keypair,
+            config=SimpleNamespace(e2e_strict_confidentiality=flag),
+        )
+        d._maybe_strip_e2e_plaintext = (
+            RoutingMixin._maybe_strip_e2e_plaintext.__get__(d, d.__class__)
+        )
+        return d
+
+    @staticmethod
+    def _sealed_frame(dest, payload=b"secret-body"):
+        from ironmesh import mesh_crypto
+        f = _frame(source=SRC_ID, payload=payload, destination="dd" * 16)
+        f.e2e_payload = mesh_crypto.seal_to_destination(
+            payload, dest.ed25519_public)
+        return f
+
+    def test_flag_off_keeps_plaintext_on_wire(self):
+        src = generate_keypair("src")
+        dest = generate_keypair("dest")
+        d = self._daemon(False, src)
+        f = self._sealed_frame(dest)
+        stripped = d._maybe_strip_e2e_plaintext(f, f.payload)
+        assert stripped is False
+        assert f.payload == b"secret-body"      # body still present (relay-readable)
+        assert f.e2e_payload is not None         # sealed copy also attached
+        assert f.source_signature is None        # not re-signed
+
+    def test_flag_off_default_config(self):
+        # A daemon-style config with no explicit setting must behave as OFF —
+        # getattr default guards the mixed-version black-hole.
+        src = generate_keypair("src")
+        dest = generate_keypair("dest")
+        d = SimpleNamespace(_keypair=src, config=SimpleNamespace())
+        d._maybe_strip_e2e_plaintext = (
+            RoutingMixin._maybe_strip_e2e_plaintext.__get__(d, d.__class__))
+        f = self._sealed_frame(dest)
+        assert d._maybe_strip_e2e_plaintext(f, f.payload) is False
+        assert f.payload == b"secret-body"
+
+    def test_flag_on_strips_and_signs_verifiable_post_unseal(self):
+        src = generate_keypair("src")
+        dest = generate_keypair("dest")
+        d = self._daemon(True, src)
+        f = self._sealed_frame(dest)
+        signed_plaintext = f.payload
+        stripped = d._maybe_strip_e2e_plaintext(f, signed_plaintext)
+        assert stripped is True
+        assert f.payload == b""                  # body gone from the wire
+        assert f.e2e_payload is not None         # sealed copy remains
+        assert f.source_sig_scheme == Frame.SOURCE_SIG_SCHEME_V2
+        # Destination recovers the plaintext on unseal; the inner source
+        # signature (over that plaintext) must then verify at the chokepoint.
+        verifier = _build_daemon(known_sources={SRC_ID: src})
+        f.payload = signed_plaintext             # simulate post-unseal recovery
+        assert verifier._verify_inner_source(RELAY_ID, f) is True
+
+    def test_flag_on_non_e2e_frame_is_noop(self):
+        src = generate_keypair("src")
+        d = self._daemon(True, src)
+        f = _frame(source=SRC_ID, payload=b"plain", destination="dd" * 16)
+        assert f.e2e_payload is None
+        assert d._maybe_strip_e2e_plaintext(f, f.payload) is False
+        assert f.payload == b"plain"             # untouched

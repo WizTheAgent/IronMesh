@@ -96,7 +96,7 @@ For cryptographic primitives and the wire-level detail, see
 | **T** — Relay modifies content | XSalsa20-Poly1305 + detached Ed25519 signature; E2E SealedBox wrapping when destination key known |
 | **R** — Peer denies sending | Inner signature proves origin |
 | **I** — Read in transit (off-path) | SecretBox per-hop encryption — a passive eavesdropper on a link sees only ciphertext |
-| **I** — Read by a forwarding relay | E2E SealedBox: when the destination key is known the body is carried solely in `e2e_payload` (sealed to the destination) and stripped from the per-hop layer, so a relay cannot read it — only the destination unseals. **Residual:** if the destination key is unknown the frame falls back to per-hop-only and a relay can read the body (logged); pin/handshake destinations before relying on relay confidentiality. |
+| **I** — Read by a forwarding relay | E2E SealedBox: when the destination key is known the body is sealed to the destination in `e2e_payload`, which only the destination can decrypt. By **default** this sealed copy rides alongside the per-hop payload (wire-compatible with every node version), so a relay decrypting its per-hop layer **can** read the plaintext. Run with **`--e2e-strict-confidentiality`** to strip the per-hop plaintext so the body travels solely in `e2e_payload` and a relay cannot read it — enable only on a fully v0.9.5+ mesh (stripping is a wire-behavior change). **Residuals:** default mode does not hide the body from relays; and if the destination key is unknown the frame falls back to per-hop-only regardless of the flag (logged). Pin/handshake destinations and enable strict mode before relying on relay confidentiality. |
 | **I** — Read at rest | SQLite payload encrypted with SecretBox; database file permissions 0600 (see the Windows caveat under A1) |
 
 ### A8 — Message metadata
@@ -262,14 +262,20 @@ independent of E2E SealedBox for relay traffic.
       from the live session registry, then the persistent TOFU store.
       New audit event `INNER_SOURCE_SIG_DROP`, new metric
       `inner_source_sig_drops_total`.
-    - **Confidentiality from forwarding relays** — for sealed frames the
-      body is carried solely in `e2e_payload` (SealedBox to the
-      destination) and stripped from the per-hop layer, so a relay cannot
-      read it; only the destination unseals. Inner-source verification for
-      sealed frames is therefore performed by the destination after unseal
-      (a relay cannot read a sealed body to verify it, so it forwards).
-      Residual: when the destination key is unknown the frame falls back to
-      per-hop-only encryption and a relay can read the body (logged).
+    - **Confidentiality from forwarding relays (opt-in)** — for sealed
+      frames the body is sealed to the destination in `e2e_payload`, which
+      only the destination can decrypt. By default this sealed copy rides
+      alongside the per-hop payload (wire-compatible with every node
+      version), so a relay can read the per-hop plaintext. The new
+      `--e2e-strict-confidentiality` flag strips the per-hop plaintext so
+      the body travels solely in `e2e_payload` and a relay cannot read it;
+      inner-source verification for such frames is then performed by the
+      destination after unseal (a relay cannot read a stripped body to
+      verify it, so it forwards). Stripping is a wire-behavior change and
+      must only be enabled on a mesh where every node runs v0.9.5+.
+      Residuals: default mode does not hide the body from relays; and when
+      the destination key is unknown the frame falls back to per-hop-only
+      encryption regardless of the flag (logged).
     - **Known limitation, disclosed (hop-scoped trust gating):** the
       pending-trust message gate (A13) keys on the trust state of the
       *immediate delivering peer*, not the frame's originator. A

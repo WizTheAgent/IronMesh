@@ -646,10 +646,14 @@ class Frame:
         # by the original source. Survives per-hop re-encryption by relays.
         self.source_signature: Optional[bytes] = None
         # e2e_payload: NaCl SealedBox ciphertext readable only by the
-        # destination, which unseals it to recover the true plaintext. For
-        # sealed frames the send path carries the body SOLELY here and strips
-        # `payload` (so a forwarding relay cannot read it); the destination
-        # verifies the inner source signature after unseal.
+        # destination, which unseals it to recover the true plaintext. By
+        # default this sealed copy rides ALONGSIDE the per-hop `payload` (so
+        # the frame stays wire-compatible with every node version). Only when
+        # the sender opts into relay-confidentiality
+        # (--e2e-strict-confidentiality) is `payload` stripped so the body
+        # travels SOLELY here; in that mode the destination verifies the inner
+        # source signature after unseal (see routing._maybe_strip_e2e_plaintext
+        # and routing._dispatch_message).
         self.e2e_payload: Optional[bytes] = None
 
         # Which inner-source-signature scheme produced ``source_signature``.

@@ -112,6 +112,8 @@ DENY=(
   'does not reuse the mesh passphrase'              # run tries the mesh passphrase automatically
   'stored unencrypted'                              # auto-generated keys are encrypted by default
   'auto-generates an unencrypted key file'          # plaintext requires --plaintext-keys opt-in
+  'the plaintext is not present in the per-hop layer'  # relay-confidentiality is opt-in (--e2e-strict-confidentiality), not the default
+  'carried solely in the destination-sealed'          # plaintext strip is opt-in, not default
 )
 scope_files="$(git ls-files '*.md' 2>/dev/null | grep -vE 'CHANGELOG\.md|docs/RELEASE_NOTES_v|REVIEW_EVIDENCE')"
 deny_hits=0

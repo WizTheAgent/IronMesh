@@ -110,6 +110,17 @@ class IronMeshConfig:
     # where every node has upgraded. No effect on WebSocket peers.
     rns_require_link_binding: bool = False
 
+    # Relay-confidentiality: when True, an end-to-end sealed frame carries the
+    # body SOLELY in e2e_payload (frame.payload is stripped) so a forwarding
+    # relay cannot read it. OPT-IN and OFF by default because it is a
+    # wire-behavior change: a node that verifies the inner source signature
+    # but predates the receive-side post-unseal exemption would drop a
+    # stripped frame. Enable ONLY on a mesh where every node runs this build
+    # (or newer). With it off, the sealed copy is still attached but the
+    # plaintext also rides in the per-hop layer (relay-readable) — fully
+    # wire-compatible with all older nodes.
+    e2e_strict_confidentiality: bool = False
+
     # v0.9.2: optional RNS Destination.GROUP for mesh-wide broadcast.
     # Every peer in the mesh derives the same symmetric group key
     # from the passphrase via HKDF, so a single packet sent to the

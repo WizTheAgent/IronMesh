@@ -70,20 +70,27 @@ The short version:
   msg_id/payload). Relayed user-payload frames lacking a verifiable inner
   source signature are dropped (fail-closed). See
   [`docs/PROTOCOL_SPEC.md`](docs/PROTOCOL_SPEC.md) §3.
-- **Confidentiality from forwarding relays (v0.9.5+):** every link is
-  encrypted per-hop (SecretBox), so a passive off-path eavesdropper sees
-  only ciphertext. In addition, when the destination's identity key is
-  known the message body is sealed to the destination with a NaCl
-  SealedBox and carried **solely** in that sealed field — the plaintext
-  is not present in the per-hop layer, so a node that relays the frame
-  (and holds a session key for its link) **cannot read the body**; only
-  the destination can unseal it. Because a relay cannot read a sealed
-  body, inner-source verification for these frames is performed by the
+- **End-to-end sealing + optional confidentiality from forwarding relays
+  (v0.9.5+):** every link is encrypted per-hop (SecretBox), so a passive
+  off-path eavesdropper sees only ciphertext. In addition, when the
+  destination's identity key is known the message body is sealed to the
+  destination with a NaCl SealedBox, so **only the destination can decrypt
+  it** — a relay never holds the key. By **default** that sealed copy is
+  carried *alongside* the per-hop payload so the frame stays
+  wire-compatible with every node version; a node that relays the frame
+  (and holds a session key for its link) can therefore still read the
+  plaintext body in this default mode. To also hide the body from relays,
+  start the daemon with **`--e2e-strict-confidentiality`**: the send path
+  then strips the plaintext so the body travels **solely** in the sealed
+  field, and a relay **cannot read it**. This is a wire-behavior change —
+  an older node that verifies the inner source signature but predates the
+  receive-side post-unseal exemption would drop a stripped frame — so
+  enable it **only on a mesh where every node runs v0.9.5+**. In strict
+  mode inner-source verification for these frames is performed by the
   destination after unseal (a relay simply forwards). Caveat: if the
   destination's key is not yet known, IronMesh falls back to per-hop
-  encryption only and logs a warning — in that fallback a relay can read
-  the body, so pin/handshake destinations before relying on relay
-  confidentiality.
+  encryption only and logs a warning — pin/handshake destinations before
+  relying on relay confidentiality.
 - It does **not** protect against a compromised operator host, a
   compromised identity key on disk (encrypt it with a passphrase!),
   or traffic analysis (frame sizes, timing, and mDNS announces are

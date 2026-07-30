@@ -236,6 +236,11 @@ class _DaemonConfig:
     # v0.8.5: pending-trust message gate
     require_message_promotion: bool = False
     pending_trust_queue_cap: int = 100
+    # v0.9.5: opt-in relay-confidentiality. When True, the send path strips
+    # the plaintext body from an e2e-sealed frame so a relay carries only the
+    # SealedBox. OFF by default — see IronMeshConfig.e2e_strict_confidentiality
+    # for the wire-compatibility rationale.
+    e2e_strict_confidentiality: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +494,9 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
                  # v0.8.5: pending-trust message gate
                  require_message_promotion: bool = False,
                  pending_trust_queue_cap: int = 100,
+                 # v0.9.5: opt-in relay-confidentiality (strip plaintext from
+                 # e2e-sealed frames). OFF by default = wire-compatible.
+                 e2e_strict_confidentiality: bool = False,
                  # v0.8.5: explicit trust store path. Defaults to
                  # DEFAULT_TRUST_PATH (~/.ironmesh/known_peers.json) for
                  # backwards compatibility, but can be overridden so
@@ -739,6 +747,7 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
             audit_log_max_bytes=audit_log_max_bytes,
             require_message_promotion=require_message_promotion,
             pending_trust_queue_cap=pending_trust_queue_cap,
+            e2e_strict_confidentiality=e2e_strict_confidentiality,
         )
         self._mesh = None  # MeshRouter, instantiated in _start() after keypair load
         self._capabilities = None  # CapabilityRegistry, instantiated in _start()

@@ -127,21 +127,25 @@ and then the persistent TOFU store, so a pinned source stays resolvable
 across daemon restarts and at intermediate relays. Dropped frames are
 audited and counted (`ironmesh_inner_source_sig_drops_total`).
 
-**End-to-end confidentiality from forwarding relays.** When the
-destination's identity key is known, the message body is sealed to the
-destination (NaCl SealedBox) and carried **solely** in `e2e_payload`; the
-plaintext is stripped from the per-hop-encrypted frame. A node relaying the
-frame decrypts only its per-hop layer and finds no readable body — just the
-opaque sealed field — so a forwarding relay **cannot read message
-contents**; only the destination unseals them. Because a relay cannot read a
-sealed body it cannot verify the inner source signature over it, so that
+**End-to-end sealing, with opt-in confidentiality from forwarding relays.**
+When the destination's identity key is known, the message body is sealed to
+the destination (NaCl SealedBox), so **only the destination can decrypt it** —
+a relay never holds the key. By **default** the sealed copy is carried
+*alongside* the per-hop payload so the frame stays wire-compatible with every
+node version; in that mode a relay that decrypts its per-hop layer to route
+can still read the plaintext. The new **`--e2e-strict-confidentiality`** flag
+makes the send path strip the plaintext so the body travels **solely** in
+`e2e_payload`; a relay then finds no readable body — just the opaque sealed
+field — and **cannot read message contents**. Because a relay cannot read a
+stripped body it cannot verify the inner source signature over it, so that
 verification runs at the destination after unseal (still fail-closed: a
-tampered, forged, or redirected sealed frame is dropped). When the
-destination key is unknown the frame falls back to per-hop-only encryption
-(a relay can then read the body) and logs a warning — pin/handshake
-destinations before relying on relay confidentiality. Wire-compatible:
-pre-0.9.5 nodes never verified the inner signature, so they forward/deliver
-stripped frames unchanged.
+tampered, forged, or redirected sealed frame is dropped). Stripping is a
+**wire-behavior change** — a node that verifies the inner source signature but
+predates the receive-side post-unseal exemption would drop a stripped frame —
+so the flag is **off by default** and must be enabled only on a mesh where
+every node runs v0.9.5+. When the destination key is unknown the frame falls
+back to per-hop-only encryption (a relay can then read the body) and logs a
+warning — pin/handshake destinations before relying on relay confidentiality.
 
 ### Invite tokens + guided onboarding
 

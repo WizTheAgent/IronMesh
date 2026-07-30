@@ -213,6 +213,18 @@ def parse_args():
                                 "the same group destination and can receive "
                                 "single-packet broadcasts. Advertised as the "
                                 "`group` feature. Default: off.")
+    run_parser.add_argument("--e2e-strict-confidentiality", action="store_true",
+                           help="Strip the plaintext body from end-to-end sealed "
+                                "frames so a forwarding relay carries only the "
+                                "SealedBox (relay cannot read the payload). This "
+                                "is a WIRE-BEHAVIOR CHANGE: only enable it on a "
+                                "mesh where every node runs v0.9.5+ — an older "
+                                "node that verifies the inner-source signature but "
+                                "lacks the post-unseal exemption would drop a "
+                                "stripped frame. Default: off (sealed copy still "
+                                "attached, but plaintext also rides the per-hop "
+                                "layer, so relays can read it — fully "
+                                "wire-compatible with all node versions).")
     # v0.9.1: LXMF interop (Sideband / Nomadnet)
     run_parser.add_argument("--lxmf", action="store_true",
                            help="Enable the LXMF delivery identity listener "
@@ -1404,6 +1416,7 @@ def cmd_run(args):
         rns_skip_handshake=getattr(args, "rns_skip_handshake", False),
         rns_require_link_binding=getattr(args, "rns_require_link_binding", False),
         rns_group_broadcast=getattr(args, "rns_group_broadcast", False),
+        e2e_strict_confidentiality=getattr(args, "e2e_strict_confidentiality", False),
         # v0.9.1: LXMF
         lxmf_enabled=getattr(args, "lxmf", False),
         lxmf_storage=getattr(args, "lxmf_storage", "~/.ironmesh/lxmf"),

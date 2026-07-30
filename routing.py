@@ -788,6 +788,50 @@ class RoutingMixin:
                 to_node, msg_type, payload, priority, _sp,
             )
 
+    def _maybe_strip_e2e_plaintext(self, frame, e2e_signed_plaintext):
+        """OPT-IN relay-confidentiality (``--e2e-strict-confidentiality``).
+
+        When enabled AND the frame is end-to-end sealed, the body travels
+        ONLY in ``frame.e2e_payload`` (a SealedBox to the destination): sign
+        the inner source signature over the sealed plaintext, then strip the
+        body from ``frame.payload`` so a forwarding relay — which decrypts its
+        per-hop layer to route — never sees it. The destination unseals
+        ``e2e_payload`` and verifies the signature over the recovered
+        plaintext (see ``_dispatch_message``).
+
+        This is a WIRE-BEHAVIOR change: a node that verifies the inner source
+        signature but predates the receive-side post-unseal exemption would
+        drop a stripped frame. It is therefore OFF by default and must only be
+        enabled on a fully-upgraded mesh. With it off, the sealed copy is still
+        attached but the plaintext also rides the per-hop layer
+        (relay-readable) — fully wire-compatible with every node version.
+
+        Returns True if the body was stripped, else False. No-op unless the
+        frame is e2e-sealed and the flag is set.
+        """
+        if not (frame.e2e_payload is not None
+                and getattr(self.config, "e2e_strict_confidentiality", False)):
+            return False
+        if self._keypair is not None:
+            from ironmesh.crypto import (
+                SIG_CTX_FRAME_INNER_SOURCE,
+                sign_detached_with_context,
+            )
+            canon = ew_protocol.canonical_inner_source_bytes(
+                frame.source, frame.destination, frame.msg_id,
+                e2e_signed_plaintext,
+            )
+            frame.source_signature = sign_detached_with_context(
+                self._keypair.get_signing_key(),
+                SIG_CTX_FRAME_INNER_SOURCE, canon,
+            )
+            frame.source_sig_scheme = frame.SOURCE_SIG_SCHEME_V2
+        frame.payload = b""
+        # The body in e2e_payload is uncompressed-sealed; there is no per-hop
+        # payload to decompress.
+        frame.routing.pop("compressed", None)
+        return True
+
     async def _send_message_inner(self, to_node, msg_type, payload, priority,
                                   _otel_sp=None):
         msg_id = str(uuid.uuid4())
@@ -880,34 +924,7 @@ class RoutingMixin:
         if compressed:
             frame.routing["compressed"] = True
 
-        if e2e_payload is not None:
-            # Relay-confidentiality: the body travels ONLY in e2e_payload
-            # (a SealedBox to the destination). Sign the inner source
-            # signature over the sealed plaintext now, then strip the body
-            # from frame.payload so a forwarding relay — which decrypts its
-            # per-hop layer to route — never sees it. The destination unseals
-            # e2e_payload and verifies the signature over the recovered
-            # plaintext (see _dispatch_message). Relays cannot verify a sealed
-            # body, so inner-source verification for e2e frames is deferred to
-            # the destination rather than run at every hop.
-            if self._keypair is not None:
-                from ironmesh.crypto import (
-                    SIG_CTX_FRAME_INNER_SOURCE,
-                    sign_detached_with_context,
-                )
-                canon = ew_protocol.canonical_inner_source_bytes(
-                    frame.source, frame.destination, frame.msg_id,
-                    e2e_signed_plaintext,
-                )
-                frame.source_signature = sign_detached_with_context(
-                    self._keypair.get_signing_key(),
-                    SIG_CTX_FRAME_INNER_SOURCE, canon,
-                )
-                frame.source_sig_scheme = frame.SOURCE_SIG_SCHEME_V2
-            frame.payload = b""
-            # The body in e2e_payload is uncompressed-sealed; there is no
-            # per-hop payload to decompress.
-            frame.routing.pop("compressed", None)
+        self._maybe_strip_e2e_plaintext(frame, e2e_signed_plaintext)
 
         # 1. Direct WebSocket
         if ws and peer_state and peer_state.session_key:

@@ -14,12 +14,16 @@ multi-hop mesh.
 - Each hop re-encrypts with its outbound session key (off-path
   eavesdroppers see only ciphertext).
 - When the destination's key is known, the body is sealed to the
-  destination with NaCl `SealedBox` and carried **solely** in
-  `e2e_payload` — the plaintext is stripped from the per-hop layer, so a
-  forwarding relay cannot read it (only the destination can unseal). See
-  the Trust model below.
+  destination with NaCl `SealedBox`, so only the destination can decrypt
+  it. By default the sealed copy rides *alongside* the per-hop payload
+  (wire-compatible with every node version), so a forwarding relay can
+  still read the plaintext. With **`--e2e-strict-confidentiality`** the
+  plaintext is stripped so the body travels **solely** in `e2e_payload`
+  and a forwarding relay cannot read it — enable it only on a fully
+  v0.9.5+ mesh. See the Trust model below.
 - Inner Ed25519 signature over the plaintext provides end-to-end source
-  authenticity, verified by the destination after unseal.
+  authenticity; in strict mode it is verified by the destination after
+  unseal.
 - v0.3 peers remain interoperable as direct-only nodes; mesh forwarding is
   refused for them.
 
@@ -74,27 +78,35 @@ ironmesh run --mesh-routing=relay --max-hops=5
 
 When your node is a relay, you are forwarding messages on behalf of other
 agents. You decrypt each frame's per-hop layer to route it and can see the
-routing metadata below — but when the message is end-to-end sealed (the
-destination's key is known) the body is carried **only** in the sealed
-`e2e_payload`, so you **cannot read it**; only the destination can unseal it.
-(If the destination's key is not yet known, IronMesh falls back to per-hop
-encryption only, and a relay can read the body — pin/handshake destinations
+routing metadata below. For an end-to-end sealed message the body is *also*
+sealed to the destination in `e2e_payload`, which only the destination can
+unseal. By **default** that sealed copy rides alongside the per-hop payload
+(wire-compatible with every node version), so a relay **can** still read the
+plaintext body it decrypts. To hide the body from relays as well, the mesh
+must run with **`--e2e-strict-confidentiality`**, which strips the plaintext
+so the body travels **only** in `e2e_payload` — then a relay **cannot read
+it**. (If the destination's key is not yet known, IronMesh falls back to
+per-hop encryption only regardless of the flag — pin/handshake destinations
 first. See
 [SECURITY.md](https://github.com/WizTheAgent/IronMesh/blob/main/SECURITY.md),
 "Confidentiality from forwarding relays".)
 
 | What relays can see | What relays cannot do |
 |---|---|
-| `frame.source` (the originator's node id) | Read a sealed message body (carried only in `e2e_payload`, opaque to relays) |
+| `frame.source` (the originator's node id) | Decrypt a sealed message body (`e2e_payload` is opaque to relays; in strict-confidentiality mode it is the only copy) |
 | `frame.destination` (the final recipient) | Forge a message as another source (inner Ed25519 sig fails at the destination) |
 | `frame.msg_id` and timestamp | Redirect, replay-relabel, or re-attribute an authentically-sourced frame (v2 signature binds source/destination/msg_id/payload) |
 | The wire `MessageType` (e.g. `MSG`, `CONTROL`) | Undetectably tamper with the sealed `e2e_payload` |
+| The per-hop plaintext body (unless `--e2e-strict-confidentiality` strips it) | |
 | The `e2e_payload` SealedBox ciphertext (opaque) | |
 
 **Threats this mitigates:**
 
-- A relay cannot read the body of an end-to-end sealed message — it is
-  carried solely in the destination-sealed `e2e_payload`.
+- A relay cannot *decrypt* the destination-sealed `e2e_payload`. With
+  `--e2e-strict-confidentiality` the plaintext is stripped from the per-hop
+  layer too, so a relay cannot read the body at all; without it, the sealed
+  copy still protects the body end-to-end but a relay can read the per-hop
+  plaintext.
 - A relay cannot forge messages from another node — the inner Ed25519
   signature would fail at the destination.
 - An off-path (non-relay) eavesdropper on any single link sees only
@@ -131,13 +143,18 @@ keyed to the destination's X25519 public key (derived from its Ed25519
 identity key via libsodium's blessed `crypto_sign_ed25519_pk_to_curve25519`
 helper).
 
-The sealed ciphertext is carried in `Frame.e2e_payload`, and it is the
-**only** copy of the body on the wire — the send path strips `Frame.payload`
-for sealed frames. Only the destination, which holds the matching secret
-key, can unseal it; a relay decrypts its per-hop layer and finds no readable
-body, only the opaque sealed field. Because a relay cannot read the sealed
-body, it cannot verify the inner source signature either, so verification is
-performed by the destination after unseal (the relay simply forwards).
+The sealed ciphertext is carried in `Frame.e2e_payload`. Only the
+destination, which holds the matching secret key, can unseal it. By default
+this sealed copy rides *alongside* the per-hop `Frame.payload` so the frame
+stays wire-compatible with every node version — a relay decrypting its
+per-hop layer can still read that plaintext. When the daemon runs with
+**`--e2e-strict-confidentiality`**, the send path strips `Frame.payload` so
+the sealed ciphertext becomes the **only** copy of the body on the wire; a
+relay then finds no readable body, only the opaque sealed field. In that mode
+the relay cannot read the sealed body and therefore cannot verify the inner
+source signature either, so verification is performed by the destination
+after unseal (the relay simply forwards). Stripping is a wire-behavior change
+and must only be enabled on a mesh where every node runs v0.9.5+.
 
 **Forward secrecy.** `SealedBox` generates a fresh ephemeral X25519 keypair
 for every call, so even if the destination's long-term identity key were
