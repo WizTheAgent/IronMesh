@@ -140,7 +140,7 @@ All from **PyNaCl** (libsodium bindings). No custom crypto.
 |---------|-----------|-----|
 | Key exchange | X25519 ECDH | Industry standard for key agreement. Used by WireGuard, Signal. |
 | Message encryption (per-hop) | XSalsa20-Poly1305 (SecretBox) | Authenticated encryption. Fast, misuse-resistant, well-audited. |
-| Message encryption (e2e, v0.4) | NaCl SealedBox (ephemeral X25519 + XSalsa20-Poly1305) | Forward-secret per-message ephemeral keys. Relays cannot read forwarded bodies. |
+| Message encryption (e2e, v0.4) | NaCl SealedBox (ephemeral X25519 + XSalsa20-Poly1305) | Sealed to the destination (only it can decrypt). The per-message ephemeral is the sender's — sender anonymity, **not** forward secrecy vs destination-key compromise. Relays read the per-hop plaintext by default; `--e2e-strict-confidentiality` hides it. |
 | Identity/signing | Ed25519 | Fast, secure, compact signatures. |
 | Inner source signature (v0.4) | Ed25519 detached over plaintext | Survives per-hop re-encryption. Provides end-to-end source authenticity. |
 | Ed25519 → X25519 conversion (v0.4) | libsodium `crypto_sign_ed25519_*_to_curve25519` | Lets us reuse the existing identity key for sealing. The blessed conversion path. |
