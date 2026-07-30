@@ -154,8 +154,17 @@ class _MDNSHandle:
         self._svc = svc
 
     def close(self):
+        # Only call close(): it already unregisters every registered service
+        # (Zeroconf.close -> unregister_all_services, sending the goodbye
+        # packets), so an explicit unregister_service() beforehand is
+        # redundant. Worse, that explicit call schedules
+        # async_unregister_service on zeroconf's internal loop thread; during
+        # a racy asyncio teardown (e.g. `ironmesh demo`) that loop may already
+        # be stopping, so run_coroutine_threadsafe abandons the coroutine and
+        # CPython emits a benign but noisy "coroutine 'async_unregister_service'
+        # was never awaited" RuntimeWarning at GC — right after the demo's
+        # success line. close() alone unregisters cleanly without that leak.
         try:
-            self._zc.unregister_service(self._svc)
             self._zc.close()
         except Exception:
             pass

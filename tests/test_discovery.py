@@ -1,8 +1,7 @@
 """Tests for ironmesh.discovery — mDNS agent discovery."""
 
-import threading
-import pytest
 from unittest.mock import MagicMock, patch
+
 from zeroconf import ServiceStateChange
 
 from ironmesh.discovery import AgentListener, _local_ip
@@ -23,7 +22,6 @@ class TestLocalIP:
         # Mock a socket that pretends 192.168.1.1 is reachable and returns
         # 192.168.1.42 as the source IP. Also mock gethostname to return
         # the "bad" 192.168.56.1 to prove we didn't fall back to that path.
-        import socket as real_socket
         import ironmesh.discovery as disco_mod
 
         call_log = []
@@ -147,6 +145,37 @@ class TestRegisterService:
             disco_mod.register_service(agent_name="test", port=8765,
                                         bind_address="0.0.0.0")
         assert captured.get("interfaces") is None
+
+    def test_close_uses_close_not_explicit_unregister(self):
+        """_MDNSHandle.close() must call only Zeroconf.close() and NOT
+        unregister_service(): close() already unregisters every service
+        (goodbye packets), while the explicit call schedules
+        async_unregister_service on zeroconf's loop thread and leaks a
+        'coroutine was never awaited' RuntimeWarning during a racy teardown
+        (e.g. `ironmesh demo`)."""
+        import ironmesh.discovery as disco_mod
+
+        calls = []
+
+        class FakeZC:
+            def __init__(self, interfaces=None):
+                pass
+
+            def register_service(self, svc):
+                pass
+
+            def unregister_service(self, svc):
+                calls.append("unregister_service")
+
+            def close(self):
+                calls.append("close")
+
+        with patch.object(disco_mod, "Zeroconf", FakeZC):
+            handle = disco_mod.register_service(agent_name="t", port=8765)
+            handle.close()
+        assert calls == ["close"], (
+            "close() must not call unregister_service explicitly; "
+            f"observed {calls}")
 
 
 class TestAgentListener:
