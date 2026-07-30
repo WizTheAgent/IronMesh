@@ -360,7 +360,7 @@ class TestResolveKeysPassphrase:
 
     def test_mesh_mismatch_falls_through_to_prompt(
             self, separately_encrypted_keys_file, monkeypatch):
-        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(cli, "_stdin_is_interactive", lambda: True)
         with patch.object(cli.getpass, "getpass",
                           return_value=OTHER_KEYS_PASSPHRASE) as gp:
             pp = cli._resolve_keys_passphrase(
@@ -373,7 +373,7 @@ class TestResolveKeysPassphrase:
 
     def test_interactive_prompt_wrong_passphrase_is_actionable(
             self, separately_encrypted_keys_file, monkeypatch):
-        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(cli, "_stdin_is_interactive", lambda: True)
         with patch.object(cli.getpass, "getpass",
                           return_value="not-the-passphrase"):
             with pytest.raises(ValueError) as exc:
@@ -385,7 +385,7 @@ class TestResolveKeysPassphrase:
 
     def test_non_tty_nothing_supplied_hard_error_lists_options(
             self, encrypted_keys_file, monkeypatch):
-        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr(cli, "_stdin_is_interactive", lambda: False)
         with pytest.raises(ValueError) as exc:
             cli._resolve_keys_passphrase(encrypted_keys_file)
         msg = str(exc.value)
@@ -395,7 +395,7 @@ class TestResolveKeysPassphrase:
 
     def test_non_tty_mesh_mismatch_error_mentions_mesh_try(
             self, separately_encrypted_keys_file, monkeypatch):
-        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr(cli, "_stdin_is_interactive", lambda: False)
         with pytest.raises(ValueError) as exc:
             cli._resolve_keys_passphrase(
                 separately_encrypted_keys_file,
@@ -411,7 +411,7 @@ class TestResolveKeysPassphrase:
         from ironmesh.keys import generate_keypair, save_keys
         path = tmp_path / "plain.json"
         save_keys(generate_keypair("p"), str(path), allow_plaintext=True)
-        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(cli, "_stdin_is_interactive", lambda: True)
         with patch.object(cli.getpass, "getpass") as gp:
             assert cli._resolve_keys_passphrase(
                 str(path), mesh_passphrase=MESH_PASSPHRASE) == MESH_PASSPHRASE
@@ -422,7 +422,7 @@ class TestResolveKeysPassphrase:
 
     def test_missing_key_file_resolves_without_prompt(self, tmp_path,
                                                       monkeypatch):
-        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(cli, "_stdin_is_interactive", lambda: True)
         with patch.object(cli.getpass, "getpass") as gp:
             cli._resolve_keys_passphrase(str(tmp_path / "nope.json"),
                                          mesh_passphrase=MESH_PASSPHRASE)
@@ -512,7 +512,7 @@ class TestGoldenPathRunWiring:
         self._setup_node(tmp_path)
         save_keys(generate_keypair("other"), str(tmp_path / "keys.json"),
                   passphrase=OTHER_KEYS_PASSPHRASE)
-        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr(cli, "_stdin_is_interactive", lambda: False)
         rc, captured = self._invoke_run(self._run_daemon_argv(tmp_path))
         assert rc == 1
         assert not captured  # daemon never constructed
@@ -856,7 +856,7 @@ class TestDoctorFirewallFixSafety:
         """No TTY → cannot confirm → never applies (and never prompts)."""
         for v in ("SSH_CONNECTION", "SSH_TTY", "SSH_CLIENT"):
             monkeypatch.delenv(v, raising=False)
-        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr(cli, "_stdin_is_interactive", lambda: False)
         # If this tried to run subprocess, the test would error — assert it
         # never gets there.
         with patch("subprocess.call") as sub:
@@ -869,7 +869,7 @@ class TestDoctorFirewallFixSafety:
     def test_declined_confirmation_does_not_apply(self, monkeypatch, capsys):
         for v in ("SSH_CONNECTION", "SSH_TTY", "SSH_CLIENT"):
             monkeypatch.delenv(v, raising=False)
-        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(cli, "_stdin_is_interactive", lambda: True)
         monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
         with patch("subprocess.call") as sub:
             args = SimpleNamespace(fix=True, allow_remote_network_fix=False)
@@ -882,7 +882,7 @@ class TestDoctorFirewallFixSafety:
         """Even with --allow-remote-network-fix over SSH, a 'n' answer must
         not apply the rule (the confirmation gate is independent)."""
         monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 5 6.7.8.9 22")
-        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(cli, "_stdin_is_interactive", lambda: True)
         monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
         with patch("subprocess.call") as sub:
             args = SimpleNamespace(fix=True, allow_remote_network_fix=True)
