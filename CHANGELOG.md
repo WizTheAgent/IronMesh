@@ -212,8 +212,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   running `ironmesh doctor` as a real headless subprocess against a
   populated `~/.ironmesh` (encrypted keys + live audit chain) — the
   on-disk-state blind spot that hid both of this cycle's field bugs.
-- Test count: 1350 collected (was 1198 at the 2026-07-12 cut); full suite
-  1340 passed / 11 skipped / 1 xpassed.
+- Test count: 1356 collected (was 1198 at the 2026-07-12 cut); full suite
+  1346 passed / 11 skipped / 1 xpassed.
 
 ## [0.9.4.2] — 2026-05-23 — Operator-polish sweep
 
