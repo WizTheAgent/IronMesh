@@ -61,17 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Documentation now accurately scopes relay confidentiality.** SECURITY.md,
-  README, `docs/MESH.md`, `docs/THREAT_MODEL.md`, and `mesh_crypto.py`
-  previously stated that a relay "cannot read" end-to-end payloads. In the
-  current implementation the plaintext body also travels in the per-hop layer
-  a relay decrypts to forward, so a forwarding relay *can* read message
-  bodies; the docs now say so and describe the SealedBox layer as the
-  primitive that makes true relay-confidentiality possible once the body is
-  carried solely in `e2e_payload` (a tracked follow-up). End-to-end
-  *authenticity* through relays is unaffected and delivered. Also disclosed:
-  `os.chmod(0o600)` on key/passphrase/invite files is a no-op on Windows/NTFS
-  (the at-rest Argon2id encryption still protects key contents).
+- Sensitive files (identity keys, backups, invite ledger) are now restricted
+  to the owning user on **Windows** too, via an `icacls` owner-only ACL
+  (inheritance removed) — `os.chmod(0o600)` alone only toggles the read-only
+  bit on NTFS. POSIX behaviour (0600) is unchanged. Best-effort on top of the
+  at-rest Argon2id encryption.
 
 - AutoGen adapter: new `create_mesh_tools()` returns the mesh functions as construction-time tools for the modern `autogen-agentchat` API (legacy `register_ironmesh()` unchanged); the adapter integration test now drives a real `AssistantAgent` end-to-end instead of skipping, and CI installs `autogen-agentchat` in place of the discontinued legacy `pyautogen` module.
 
@@ -111,6 +105,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs: accuracy pass against shipped behavior — protocol-line references brought up to `ironmesh/0.9` across README / ARCHITECTURE / WHATS_NEW / STABILITY_PROMISE / THREAT_MODEL, getting-started walkthroughs corrected to commands and SDK calls that exist (`ironmesh run --name` required, `trust set-state ... trusted`, `Agent.on_message()` signature, key-file passphrase caveat), the not-yet-wired `--nat-relay` daemon flag and the CLI-unread JSON-config / env-var family documented honestly, missing security flags added to `docs/CONFIGURATION.md`, and the stale top-level `--help` example fixed to a working command.
 
 ### Security
+
+- **End-to-end confidentiality from forwarding relays.** When the
+  destination's identity key is known, the message body is sealed to the
+  destination (NaCl SealedBox) and carried **solely** in `e2e_payload`; the
+  plaintext is stripped from the per-hop-encrypted frame. A node that relays
+  the frame decrypts only its per-hop layer and finds no readable body — just
+  the opaque sealed field — so it **cannot read message contents**; only the
+  destination unseals them. Because a relay cannot read a sealed body it
+  cannot verify the inner source signature over it, so that verification runs
+  at the destination after unseal (the same fail-closed policy: a
+  tampered/forged/redirected sealed frame is dropped). When the destination
+  key is unknown the frame falls back to per-hop-only encryption (a relay can
+  read the body) and logs a warning. This is wire-compatible: pre-0.9.5 nodes
+  never verified the inner signature, so they forward/deliver stripped frames
+  unchanged.
 
 - **Inner end-to-end source signature is now verified on receive.** The
   signature was previously produced and carried on the wire but never
@@ -226,8 +235,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   running `ironmesh doctor` as a real headless subprocess against a
   populated `~/.ironmesh` (encrypted keys + live audit chain) — the
   on-disk-state blind spot that hid both of this cycle's field bugs.
-- Test count: 1363 collected (was 1198 at the 2026-07-12 cut); full suite
-  1353 passed / 11 skipped / 1 xpassed.
+- Test count: 1369 collected (was 1198 at the 2026-07-12 cut); full suite
+  1359 passed / 11 skipped / 1 xpassed.
 
 ## [0.9.4.2] — 2026-05-23 — Operator-polish sweep
 

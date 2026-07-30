@@ -13,12 +13,13 @@ multi-hop mesh.
 - Default mode: `--mesh-routing=relay` — every node forwards.
 - Each hop re-encrypts with its outbound session key (off-path
   eavesdroppers see only ciphertext).
-- Message bodies are also wrapped in NaCl `SealedBox` for the destination
-  (`e2e_payload`). **Current caveat:** the plaintext body still rides in the
-  per-hop layer too, so a forwarding relay can read it — making the body
-  opaque to relays is a tracked follow-up. See the Trust model below.
+- When the destination's key is known, the body is sealed to the
+  destination with NaCl `SealedBox` and carried **solely** in
+  `e2e_payload` — the plaintext is stripped from the per-hop layer, so a
+  forwarding relay cannot read it (only the destination can unseal). See
+  the Trust model below.
 - Inner Ed25519 signature over the plaintext provides end-to-end source
-  authenticity even after per-hop re-encryption.
+  authenticity, verified by the destination after unseal.
 - v0.3 peers remain interoperable as direct-only nodes; mesh forwarding is
   refused for them.
 
@@ -72,25 +73,28 @@ ironmesh run --mesh-routing=relay --max-hops=5
 **Read this before deploying a relay-by-default mesh.**
 
 When your node is a relay, you are forwarding messages on behalf of other
-agents. You decrypt each frame's per-hop layer to route it, so today you can
-see the metadata below **and the plaintext message body**. An end-to-end
-`SealedBox` layer (`e2e_payload`) is also present, addressed only to the
-destination, but the body currently rides in the per-hop layer as well — so
-making it opaque to forwarding relays is a tracked follow-up (see
-[SECURITY.md](https://github.com/WizTheAgent/IronMesh/blob/main/SECURITY.md), "Confidentiality from forwarding relays").
-Route through relays you trust with message contents.
+agents. You decrypt each frame's per-hop layer to route it and can see the
+routing metadata below — but when the message is end-to-end sealed (the
+destination's key is known) the body is carried **only** in the sealed
+`e2e_payload`, so you **cannot read it**; only the destination can unseal it.
+(If the destination's key is not yet known, IronMesh falls back to per-hop
+encryption only, and a relay can read the body — pin/handshake destinations
+first. See
+[SECURITY.md](https://github.com/WizTheAgent/IronMesh/blob/main/SECURITY.md),
+"Confidentiality from forwarding relays".)
 
 | What relays can see | What relays cannot do |
 |---|---|
-| `frame.source` (the originator's node id) | Forge a message as another source (inner Ed25519 sig fails at the destination) |
-| `frame.destination` (the final recipient) | Redirect, replay-relabel, or re-attribute an authentically-sourced frame (v2 signature binds source/destination/msg_id/payload) |
-| `frame.msg_id` and timestamp | Undetectably tamper with the sealed `e2e_payload` |
-| The wire `MessageType` (e.g. `MSG`, `CONTROL`) | |
-| **The plaintext payload** (per-hop decrypted to forward) | |
-| The additional `e2e_payload` SealedBox ciphertext | |
+| `frame.source` (the originator's node id) | Read a sealed message body (carried only in `e2e_payload`, opaque to relays) |
+| `frame.destination` (the final recipient) | Forge a message as another source (inner Ed25519 sig fails at the destination) |
+| `frame.msg_id` and timestamp | Redirect, replay-relabel, or re-attribute an authentically-sourced frame (v2 signature binds source/destination/msg_id/payload) |
+| The wire `MessageType` (e.g. `MSG`, `CONTROL`) | Undetectably tamper with the sealed `e2e_payload` |
+| The `e2e_payload` SealedBox ciphertext (opaque) | |
 
 **Threats this mitigates:**
 
+- A relay cannot read the body of an end-to-end sealed message — it is
+  carried solely in the destination-sealed `e2e_payload`.
 - A relay cannot forge messages from another node — the inner Ed25519
   signature would fail at the destination.
 - An off-path (non-relay) eavesdropper on any single link sees only
@@ -127,14 +131,13 @@ keyed to the destination's X25519 public key (derived from its Ed25519
 identity key via libsodium's blessed `crypto_sign_ed25519_pk_to_curve25519`
 helper).
 
-The sealed ciphertext is carried in `Frame.e2e_payload`; only the
-destination — which holds the matching secret key — can decrypt *that
-field*. **However**, the send path currently also carries the plaintext body
-in `Frame.payload`, which each relay decrypts as part of its per-hop layer to
-forward — so today a forwarding relay reads the body despite this sealed
-copy. Delivering true relay-opacity requires carrying the body solely in
-`e2e_payload` and moving inner-source verification to the destination
-(tracked follow-up).
+The sealed ciphertext is carried in `Frame.e2e_payload`, and it is the
+**only** copy of the body on the wire — the send path strips `Frame.payload`
+for sealed frames. Only the destination, which holds the matching secret
+key, can unseal it; a relay decrypts its per-hop layer and finds no readable
+body, only the opaque sealed field. Because a relay cannot read the sealed
+body, it cannot verify the inner source signature either, so verification is
+performed by the destination after unseal (the relay simply forwards).
 
 **Forward secrecy.** `SealedBox` generates a fresh ephemeral X25519 keypair
 for every call, so even if the destination's long-term identity key were
@@ -187,10 +190,10 @@ ironmesh run \
 Within `2 × route_announce_interval` (default 60 s) seconds, `node-a` will
 have learned a route to `node-c` via `node-b`. From `node-a`'s GUI you can
 send a message to `node-c`'s fingerprint and it will arrive — `node-b`'s
-audit log will contain an `EVENT_MESSAGE_RELAYED` entry. On the wire between
-hops the frame is per-hop encrypted (opaque to an off-path observer), though
-`node-b` itself, as the relay, decrypts that layer to forward and currently
-sees the plaintext body (see the Trust model caveat above).
+audit log will contain an `EVENT_MESSAGE_RELAYED` entry, and the relayed
+frame on `node-b` is opaque: the body is sealed to `node-c` in `e2e_payload`,
+so `node-b`, despite decrypting its per-hop layer to route the frame, cannot
+read the message content.
 
 ---
 

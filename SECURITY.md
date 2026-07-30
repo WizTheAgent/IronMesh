@@ -70,19 +70,20 @@ The short version:
   msg_id/payload). Relayed user-payload frames lacking a verifiable inner
   source signature are dropped (fail-closed). See
   [`docs/PROTOCOL_SPEC.md`](docs/PROTOCOL_SPEC.md) §3.
-- **Confidentiality from forwarding relays is NOT yet guaranteed.**
-  Every link is encrypted per-hop (SecretBox), so a passive off-path
-  eavesdropper on any single link sees only ciphertext. An additional
-  end-to-end SealedBox layer is applied to the payload when the
-  destination's identity key is known. **However, in the current
-  implementation the plaintext body also travels inside the per-hop
-  layer, so a node that legitimately relays a multi-hop frame — and
-  therefore holds a session key for its link — can read the message
-  body.** Route only through relays you trust with message contents.
-  Making the body opaque to forwarding relays (carrying it solely in the
-  SealedBox and moving source verification to the destination) is
-  tracked for a follow-up release. Off-path attackers and non-relay
-  nodes never see plaintext.
+- **Confidentiality from forwarding relays (v0.9.5+):** every link is
+  encrypted per-hop (SecretBox), so a passive off-path eavesdropper sees
+  only ciphertext. In addition, when the destination's identity key is
+  known the message body is sealed to the destination with a NaCl
+  SealedBox and carried **solely** in that sealed field — the plaintext
+  is not present in the per-hop layer, so a node that relays the frame
+  (and holds a session key for its link) **cannot read the body**; only
+  the destination can unseal it. Because a relay cannot read a sealed
+  body, inner-source verification for these frames is performed by the
+  destination after unseal (a relay simply forwards). Caveat: if the
+  destination's key is not yet known, IronMesh falls back to per-hop
+  encryption only and logs a warning — in that fallback a relay can read
+  the body, so pin/handshake destinations before relying on relay
+  confidentiality.
 - It does **not** protect against a compromised operator host, a
   compromised identity key on disk (encrypt it with a passphrase!),
   or traffic analysis (frame sizes, timing, and mDNS announces are

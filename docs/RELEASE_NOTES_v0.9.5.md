@@ -127,6 +127,22 @@ and then the persistent TOFU store, so a pinned source stays resolvable
 across daemon restarts and at intermediate relays. Dropped frames are
 audited and counted (`ironmesh_inner_source_sig_drops_total`).
 
+**End-to-end confidentiality from forwarding relays.** When the
+destination's identity key is known, the message body is sealed to the
+destination (NaCl SealedBox) and carried **solely** in `e2e_payload`; the
+plaintext is stripped from the per-hop-encrypted frame. A node relaying the
+frame decrypts only its per-hop layer and finds no readable body — just the
+opaque sealed field — so a forwarding relay **cannot read message
+contents**; only the destination unseals them. Because a relay cannot read a
+sealed body it cannot verify the inner source signature over it, so that
+verification runs at the destination after unseal (still fail-closed: a
+tampered, forged, or redirected sealed frame is dropped). When the
+destination key is unknown the frame falls back to per-hop-only encryption
+(a relay can then read the body) and logs a warning — pin/handshake
+destinations before relying on relay confidentiality. Wire-compatible:
+pre-0.9.5 nodes never verified the inner signature, so they forward/deliver
+stripped frames unchanged.
+
 ### Invite tokens + guided onboarding
 
 **Ephemeral single-use invite tokens (`ironmesh invite create` /
@@ -305,7 +321,7 @@ that breaks v0.8.x / v0.9.x interop was found.
 
 ## Verification
 
-- 1363 tests collected; full suite green — 1353 passed, 11 platform/env-conditioned skips, 1 xpassed (`pytest tests/
+- 1369 tests collected; full suite green — 1359 passed, 11 platform/env-conditioned skips, 1 xpassed (`pytest tests/
   --ignore=tests/integration`). ruff CI-scope clean. release-qc
   `FAIL: 0`; doc-sync-check PASS.
 - Wheel + sdist build clean; public modules import; CLI entry point
