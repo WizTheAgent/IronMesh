@@ -69,23 +69,29 @@ ironmesh run --mesh-routing=relay --max-hops=5
 **Read this before deploying a relay-by-default mesh.**
 
 When your node is a relay, you are forwarding messages on behalf of other
-agents. The end-to-end encryption (NaCl `SealedBox`) means **you cannot read
-the message bodies**, but there is still metadata you can see and metadata
-that other nodes can see about you:
+agents. You decrypt each frame's per-hop layer to route it, so today you can
+see the metadata below **and the plaintext message body**. An end-to-end
+`SealedBox` layer (`e2e_payload`) is also present, addressed only to the
+destination, but the body currently rides in the per-hop layer as well — so
+making it opaque to forwarding relays is a tracked follow-up (see
+[SECURITY.md](../SECURITY.md), "Confidentiality from forwarding relays").
+Route through relays you trust with message contents.
 
-| What relays can see | What relays cannot see |
+| What relays can see | What relays cannot do |
 |---|---|
-| `frame.source` (the originator's node id) | The plaintext payload |
-| `frame.destination` (the final recipient) | The inner Ed25519 source signature contents |
-| `frame.msg_id` and timestamp | The original `MessageType` payload schema (only the wire MessageType is visible — the body is opaque) |
+| `frame.source` (the originator's node id) | Forge a message as another source (inner Ed25519 sig fails at the destination) |
+| `frame.destination` (the final recipient) | Redirect, replay-relabel, or re-attribute an authentically-sourced frame (v2 signature binds source/destination/msg_id/payload) |
+| `frame.msg_id` and timestamp | Undetectably tamper with the sealed `e2e_payload` |
 | The wire `MessageType` (e.g. `MSG`, `CONTROL`) | |
-| The encrypted `e2e_payload` ciphertext | |
+| **The plaintext payload** (per-hop decrypted to forward) | |
+| The additional `e2e_payload` SealedBox ciphertext | |
 
 **Threats this mitigates:**
 
-- A compromised or malicious relay cannot read message bodies.
 - A relay cannot forge messages from another node — the inner Ed25519
   signature would fail at the destination.
+- An off-path (non-relay) eavesdropper on any single link sees only
+  per-hop ciphertext.
 - A flooding attacker cannot bloat your dedup cache: it is sharded per
   source with a hard cap.
 - A route announcement attacker cannot poison your table forever:

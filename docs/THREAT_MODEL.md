@@ -37,7 +37,7 @@ For cryptographic primitives and the wire-level detail, see
 
 | Threat | Mitigation |
 |--------|-----------|
-| **S** — Spoofing via theft of key file | Argon2id KDF + SecretBox at rest; minimum 12-char passphrase; OS file permissions (0600) |
+| **S** — Spoofing via theft of key file | Argon2id KDF + SecretBox at rest; minimum 12-char passphrase; OS file permissions (0600 — **effective on POSIX only**: `os.chmod(0o600)` is a no-op on Windows/NTFS, so on Windows the encrypted key file, passphrase file, and invite store rely on NTFS inheritance rather than an owner-only ACL. The at-rest Argon2id encryption still protects the key contents; an ACL fallback is a tracked follow-up.) |
 | **T** — Tampering with key file | SecretBox is AEAD — tampered ciphertext fails decryption |
 | **R** — Operator denies generating/using a key | Audit log records `STARTUP` with node_id; cross-file HMAC chain |
 | **I** — Passive disclosure | Keys never transmitted; never broadcast via mDNS; only fingerprint/public-key exchanged during authenticated handshake |
@@ -95,8 +95,9 @@ For cryptographic primitives and the wire-level detail, see
 | **S** — Send-as-another-peer | Inner Ed25519 source signature (v0.4+) survives per-hop re-encryption |
 | **T** — Relay modifies content | XSalsa20-Poly1305 + detached Ed25519 signature; E2E SealedBox wrapping when destination key known |
 | **R** — Peer denies sending | Inner signature proves origin |
-| **I** — Read in transit | SecretBox per-hop encryption; SealedBox for E2E over relays |
-| **I** — Read at rest | SQLite payload encrypted with SecretBox; database file permissions 0600 |
+| **I** — Read in transit (off-path) | SecretBox per-hop encryption — a passive eavesdropper on a link sees only ciphertext |
+| **I** — Read by a forwarding relay | **Not currently mitigated.** An E2E SealedBox `e2e_payload` is attached for the destination, but the plaintext body also rides in the per-hop layer a relay decrypts to forward — so a relay reads the body. See "Known limitation" in the change log below and SECURITY.md. Route only through trusted relays. |
+| **I** — Read at rest | SQLite payload encrypted with SecretBox; database file permissions 0600 (see the Windows caveat under A1) |
 
 ### A8 — Message metadata
 
@@ -261,6 +262,17 @@ independent of E2E SealedBox for relay traffic.
       from the live session registry, then the persistent TOFU store.
       New audit event `INNER_SOURCE_SIG_DROP`, new metric
       `inner_source_sig_drops_total`.
+    - **Known limitation, disclosed (relay reads payload):** end-to-end
+      *authenticity* through relays is delivered, but end-to-end
+      *confidentiality* from a forwarding relay is not. The send path
+      attaches the SealedBox `e2e_payload` for the destination yet also
+      carries the plaintext in the per-hop-encrypted frame, so a node
+      relaying a multi-hop message reads the body. Off-path eavesdroppers
+      see only per-hop ciphertext. Making the body opaque to relays
+      requires carrying it solely in `e2e_payload` and moving inner-source
+      verification to run after unseal at the destination (a design
+      change, since relays then can no longer verify source authenticity
+      over a payload they cannot read) — tracked for a follow-up release.
     - **Known limitation, disclosed (hop-scoped trust gating):** the
       pending-trust message gate (A13) keys on the trust state of the
       *immediate delivering peer*, not the frame's originator. A

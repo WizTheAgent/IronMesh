@@ -64,13 +64,25 @@ The short version:
 - **End-to-end source authenticity through relays (v0.9.5+):** for
   multi-hop messages, the destination cryptographically verifies the
   originator's inner Ed25519 source signature. A relay can read routing
-  metadata and forward, but **cannot read** end-to-end payloads
-  (SealedBox), **cannot forge** a message as another source, and
-  **cannot redirect, replay-relabel, or re-attribute** an
+  metadata and forward, but **cannot forge** a message as another
+  source, and **cannot redirect, replay-relabel, or re-attribute** an
   authentically-sourced frame (the v2 signature binds source/destination/
   msg_id/payload). Relayed user-payload frames lacking a verifiable inner
   source signature are dropped (fail-closed). See
   [`docs/PROTOCOL_SPEC.md`](docs/PROTOCOL_SPEC.md) §3.
+- **Confidentiality from forwarding relays is NOT yet guaranteed.**
+  Every link is encrypted per-hop (SecretBox), so a passive off-path
+  eavesdropper on any single link sees only ciphertext. An additional
+  end-to-end SealedBox layer is applied to the payload when the
+  destination's identity key is known. **However, in the current
+  implementation the plaintext body also travels inside the per-hop
+  layer, so a node that legitimately relays a multi-hop frame — and
+  therefore holds a session key for its link — can read the message
+  body.** Route only through relays you trust with message contents.
+  Making the body opaque to forwarding relays (carrying it solely in the
+  SealedBox and moving source verification to the destination) is
+  tracked for a follow-up release. Off-path attackers and non-relay
+  nodes never see plaintext.
 - It does **not** protect against a compromised operator host, a
   compromised identity key on disk (encrypt it with a passphrase!),
   or traffic analysis (frame sizes, timing, and mDNS announces are
