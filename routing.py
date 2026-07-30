@@ -38,6 +38,32 @@ from ironmesh.telemetry import span as _otel_span
 
 logger = logging.getLogger("ironmesh.bridge")
 
+# v0.9.5: hard ceiling on decompressed LoRa-QoS payloads. The compressed
+# input is already bounded by MAX_FRAME_BYTES, but gzip reaches ~1000:1, so an
+# authenticated peer could turn a ~1 MiB frame into ~1 GiB and OOM a
+# constrained node. Legitimate LoRa messages compress a small body (they must
+# fit the LoRa cap once compressed), so their decompressed size is far under
+# this bound; anything larger is rejected as a decompression bomb.
+_MAX_DECOMPRESSED_BYTES = ew_protocol.MAX_FRAME_BYTES
+
+
+def _bounded_gunzip(data: bytes, max_out: int) -> bytes:
+    """Gunzip ``data`` with a hard output cap (anti-decompression-bomb).
+
+    Streams the inflate and raises ``ValueError`` the moment the output would
+    exceed ``max_out``, so a malicious high-ratio payload can never allocate
+    more than ~``max_out`` bytes.
+    """
+    import zlib
+    dec = zlib.decompressobj(16 + zlib.MAX_WBITS)  # 16 = gzip header/trailer
+    out = dec.decompress(data, max_out + 1)
+    if len(out) > max_out or dec.unconsumed_tail:
+        raise ValueError("decompressed payload exceeds cap")
+    out += dec.flush()
+    if len(out) > max_out:
+        raise ValueError("decompressed payload exceeds cap")
+    return out
+
 
 class RoutingMixin:
     """Inbound dispatch + outbound delivery pipeline for ``BridgeDaemon``."""
@@ -144,18 +170,28 @@ class RoutingMixin:
             return
         from nacl.signing import VerifyKey
         verify_key = VerifyKey(peer_state.identity_public)
+        # Lazily retire an expired rekey transition. We deliberately do NOT
+        # retire on the first new-key frame: on an unordered transport (e.g.
+        # RNS splits large payloads onto an independent Resource stream) or
+        # under a WS send race, an old-key frame can legitimately arrive AFTER
+        # a new-key one, so the retiring key must stay usable until the
+        # monotonic grace deadline actually elapses.
+        if (peer_state.prev_session_key is not None
+                and time.monotonic() >= peer_state.rekey_transition_until):
+            self._end_rekey_transition(peer_state)
+
         used_prev = False
         try:
             frame = ew_protocol.Frame.deserialize_and_decrypt(
                 raw, peer_state.session_key, verify_key=verify_key
             )
         except Exception as e_new:
-            # Rekey dual-key transition: a frame the initiator sent under the
+            # Rekey dual-key transition: a frame the peer sent under the
             # retiring key can still be in flight after we installed the new
             # one. Retry with the retained previous key during the grace
             # window before dropping.
             prev = peer_state.prev_session_key
-            if prev is not None and time.time() < peer_state.rekey_transition_until:
+            if prev is not None and time.monotonic() < peer_state.rekey_transition_until:
                 try:
                     frame = ew_protocol.Frame.deserialize_and_decrypt(
                         raw, prev, verify_key=verify_key)
@@ -185,17 +221,43 @@ class RoutingMixin:
             logger.warning("Replay detected from %s: %s", peer_id, rejection)
             return
 
-        # The first successful NEW-key frame ends the transition: the
-        # initiator has switched, so the retiring key is no longer needed.
-        if not used_prev and peer_state.prev_session_key is not None:
-            self._end_rekey_transition(peer_state)
+        # NOTE: the transition is retired by the monotonic-deadline check at
+        # the top of this method, NOT here — retiring on the first new-key
+        # frame would drop old-key frames still in flight on an unordered
+        # transport (see the lazy-retire comment above).
 
         # Dispatch to common handler
         await self._dispatch_message(peer_id, peer_state, frame, transport=transport)
 
+    def _begin_rekey_transition(self, peer_id, peer_state):
+        """Open a dual-key grace window before switching to a new session key.
+
+        Retains the CURRENT session key as ``prev_session_key`` and snapshots
+        the current epoch's replay high-water, so a frame the peer already sent
+        under the retiring key still decrypts (and is replay-checked in its own
+        epoch) after we install the new key. Symmetric across the initiator
+        (``_handle_rekey_response``) and responder (``_handle_rekey_request``)
+        — the earlier asymmetry silently dropped the initiator's in-flight
+        old-key frames on reordering transports. Idempotently retires any
+        still-open prior transition first so a rapid double-rekey cannot orphan
+        the previous epoch's replay snapshot.
+
+        Must be called BEFORE ``peer_state.session_key`` is reassigned.
+        """
+        old_key = peer_state.session_key
+        if old_key is None:
+            return
+        if peer_state.prev_session_key is not None:
+            self._end_rekey_transition(peer_state)
+        epoch_key = f"{peer_id}#rekey{peer_state.session_rekey_count}"
+        self._replay_guard.snapshot_peer(peer_id, epoch_key)
+        peer_state.prev_session_key = old_key
+        peer_state.prev_epoch_key = epoch_key
+        peer_state.rekey_transition_until = time.monotonic() + 30.0
+
     def _end_rekey_transition(self, peer_state):
         """Retire the previous session key + its replay snapshot once the
-        new key is confirmed working (or the grace window has passed)."""
+        grace window has passed (or a rapid re-rekey supersedes it)."""
         if peer_state.prev_epoch_key:
             self._replay_guard.reset_peer(peer_state.prev_epoch_key)
         peer_state.prev_session_key = None
@@ -292,15 +354,28 @@ class RoutingMixin:
             if not self._verify_inner_source(peer_id, frame):
                 return
 
-        # v0.5.2: decompress LoRa-compressed payloads
-        if getattr(frame, 'routing', {}).get("compressed"):
-            import gzip
+        # v0.5.2: decompress LoRa-compressed payloads — TERMINAL DELIVERY ONLY.
+        #
+        # v0.9.5: a relay must NOT decompress a frame it is about to forward.
+        # The inner source signature binds the on-wire (compressed) payload;
+        # decompressing in place would leave the next hop verifying the
+        # uncompressed body against a signature over the compressed bytes and
+        # silently dropping it. So decompress only when THIS node consumes the
+        # frame (destination is us, or a broadcast/control frame), mirroring
+        # the relay decision below. Output is hard-capped (anti-bomb) and a
+        # frame we cannot decompress is dropped (fail-closed) rather than
+        # delivered as raw compressed bytes.
+        _will_relay = (frame.destination
+                       and frame.destination not in (self.node_id, "*", "")
+                       and self._mesh is not None)
+        if not _will_relay and getattr(frame, 'routing', {}).get("compressed"):
             try:
-                payload = gzip.decompress(payload)
+                payload = _bounded_gunzip(payload, _MAX_DECOMPRESSED_BYTES)
                 frame.payload = payload
             except Exception as e:
                 logger.warning("Failed to decompress LoRa payload from %s: %s",
                                peer_id, e)
+                return
 
         # v0.4: ROUTE_ANNOUNCE is control-plane; handle and return without
         # bus-publishing or storing in history.
@@ -888,9 +963,21 @@ class RoutingMixin:
                              to_node, e)
                 e2e_payload = None
 
-        # v0.5.2: LoRa QoS — compress large payloads for RNS peers
+        # v0.5.2: LoRa QoS — compress large payloads for RNS peers.
+        #
+        # v0.9.5: NEVER compress an e2e-sealed frame. The inner source
+        # signature for an e2e frame is verified by the destination AFTER it
+        # unseals e2e_payload — i.e. over the UNCOMPRESSED plaintext. If we
+        # compressed frame.payload here, the signature (computed over the
+        # on-wire, compressed frame.payload) would be verified against the
+        # uncompressed unsealed bytes and every such frame would be silently
+        # dropped. Compressing is also pointless for e2e frames: the
+        # authoritative copy is the uncompressed SealedBox in e2e_payload,
+        # which already exceeds the LoRa cap, so shrinking the redundant
+        # per-hop copy saves nothing. Non-e2e frames still compress normally.
         compressed = False
-        if (peer_state and peer_state.transport_type == "rns"
+        if (e2e_payload is None
+                and peer_state and peer_state.transport_type == "rns"
                 and self._lora_max_payload > 0
                 and len(payload) > self._lora_max_payload):
             self.metrics.lora_oversized_messages += 1

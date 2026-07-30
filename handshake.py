@@ -161,18 +161,10 @@ class HandshakeMixin:
             },
         )
         # Dual-key transition: retain the retiring key for DECRYPTING frames
-        # the initiator already sent under it (in flight during the ~1-RTT
-        # rekey window) until the first new-key frame arrives (or the grace
-        # elapses). Snapshot the old epoch's replay high-water so those
-        # in-flight frames keep their own monotonic sequence check,
-        # independent of the fresh state started for the new key.
-        old_key = peer_state.session_key
-        epoch_key = f"{peer_id}#rekey{peer_state.session_rekey_count}"
-        if old_key is not None:
-            self._replay_guard.snapshot_peer(peer_id, epoch_key)
-            peer_state.prev_session_key = old_key
-            peer_state.prev_epoch_key = epoch_key
-            peer_state.rekey_transition_until = time.time() + 30.0
+        # the peer already sent under it (in flight during the ~1-RTT rekey
+        # window) until the grace deadline elapses. Symmetric with the
+        # initiator (_handle_rekey_response).
+        self._begin_rekey_transition(peer_id, peer_state)
         peer_state.session_key = new_key
         peer_state.session_rekey_count += 1
         peer_state.last_rekey_at = time.time()
@@ -203,6 +195,13 @@ class HandshakeMixin:
         ew_crypto.secure_wipe(peer_state._pending_rekey_private)
         peer_state._pending_rekey_private = None
         peer_state._pending_rekey_id = None
+        # Dual-key transition (SYMMETRIC with the responder). Without this the
+        # initiator switched to the new key with no fallback, so any data
+        # frame the peer sent under the old key that arrives after this
+        # REKEY_RESPONSE — routine on RNS, where large frames travel an
+        # independent, unordered Resource stream — was silently dropped,
+        # re-introducing the exact rekey message-loss this fix targets.
+        self._begin_rekey_transition(peer_id, peer_state)
         peer_state.session_key = new_key
         peer_state.session_rekey_count += 1
         peer_state.last_rekey_at = time.time()
