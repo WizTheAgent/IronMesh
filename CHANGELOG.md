@@ -192,6 +192,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ironmesh demo` now tears down cleanly and prints an unmistakable final `[ok]   Demo complete -- mesh handshake + encrypted ping verified.` line. Previously the mDNS close could deadlock the daemon's event loop during shutdown (hanging the process), and pending background tasks were destroyed noisily at interpreter exit; `Agent.stop()` now cancels remaining tasks and closes its event loop, and daemon shutdown bounds its server/mDNS close waits and always releases the message store.
 - Client-side handshake auth rejection now logs an actionable message (likely mesh passphrase mismatch with that peer, which sources to check, and the `ironmesh doctor --peer` dry-run) instead of a bare `Auth rejected by <addr>`.
 - `ironmesh doctor` check 8 pointed operators at a nonexistent `ironmesh status` command for strict-TLS / global-rate-cap runtime state; it now points at the running daemon's `/metrics` endpoint.
+- **`ironmesh doctor` no longer freezes headless runs on a hidden passphrase prompt when an audit log exists.** The audit chain-verify helpers prompted unconditionally when no passphrase was supplied, and every tty-gated prompt shared a Windows hole (the NUL device reports as a character device, so redirected stdin still claimed a terminal and `getpass` then read the console). Interactive prompts now gate on a strict console check (`GetConsoleMode`-backed on Windows); headless runs error out actionably instead; doctor's chain check reuses the passphrase its key check already resolved; and `ironmesh audit verify` prints the resolution options instead of a traceback.
 - Missing-Reticulum hints now recommend the project-standard `pip install ironmesh[rns]` instead of the bare `pip install rns`.
 - The `nat_relay` module docstring no longer implies a daemon-side `--nat-relay` attach flag exists; it is documented as a possible future feature, matching `docs/NAT_TRAVERSAL.md`.
 
@@ -203,8 +204,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the refusal and the absence of side effects (no trust-store, ledger, or
   on-disk half-state), including the crash-window ordering of single-use
   invite marking.
-- Test count: 1342 collected (was 1198 at the 2026-07-12 cut); full suite
-  1332 passed / 11 skipped / 1 xpassed.
+- **Existing-state regression tests** (`tests/test_doctor_existing_state.py`)
+  running `ironmesh doctor` as a real headless subprocess against a
+  populated `~/.ironmesh` (encrypted keys + live audit chain) — the
+  on-disk-state blind spot that hid both of this cycle's field bugs.
+- Test count: 1350 collected (was 1198 at the 2026-07-12 cut); full suite
+  1340 passed / 11 skipped / 1 xpassed.
 
 ## [0.9.4.2] — 2026-05-23 — Operator-polish sweep
 

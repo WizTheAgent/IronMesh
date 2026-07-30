@@ -177,6 +177,13 @@ unchanged.
 - `ironmesh doctor` check 8 points strict-TLS / global-rate-cap
   remediation at the running daemon's `/metrics` endpoint instead of a
   nonexistent `ironmesh status` command.
+- `ironmesh doctor` (and `ironmesh audit verify`) no longer freeze a
+  headless run on a hidden passphrase prompt when an audit log exists:
+  interactive prompts gate on a strict console check (on Windows the
+  NUL device masquerades as a terminal, so bare `isatty()` was not
+  enough), headless runs error out with the resolution options, and the
+  audit-chain check reuses the passphrase the key check already
+  resolved.
 - Missing-Reticulum hints recommend `pip install ironmesh[rns]` instead
   of the bare `pip install rns`.
 - The `nat_relay` module docstring no longer implies a daemon-side
@@ -264,7 +271,7 @@ that breaks v0.8.x / v0.9.x interop was found.
 
 ## Verification
 
-- 1342 tests collected; full suite green — 1332 passed, 11 platform/env-conditioned skips, 1 xpassed (`pytest tests/
+- 1350 tests collected; full suite green — 1340 passed, 11 platform/env-conditioned skips, 1 xpassed (`pytest tests/
   --ignore=tests/integration`). ruff CI-scope clean. release-qc
   `FAIL: 0`; doc-sync-check PASS.
 - Wheel + sdist build clean; public modules import; CLI entry point
