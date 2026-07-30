@@ -20,6 +20,7 @@ import base64
 import hashlib
 import hmac as _hmac
 import json
+import logging
 import os
 from dataclasses import dataclass
 from typing import Optional
@@ -29,6 +30,8 @@ import nacl.signing
 from nacl.public import PrivateKey as X25519PrivateKey
 from nacl.pwhash import argon2id
 from nacl.signing import SigningKey, VerifyKey
+
+logger = logging.getLogger("ironmesh.keys")
 
 
 def restrict_file_to_owner(path) -> None:
@@ -54,15 +57,26 @@ def restrict_file_to_owner(path) -> None:
         user = os.environ.get("USERNAME") or getpass.getuser()
         if not user:
             return
-        subprocess.run(
+        result = subprocess.run(
             ["icacls", os.fspath(path), "/inheritance:r",
              "/grant:r", f"{user}:F"],
             check=False, capture_output=True,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             timeout=10,
         )
-    except Exception:
-        pass  # icacls missing / odd username / timeout — best-effort
+        if result.returncode != 0:
+            # Best-effort by design (contents are Argon2id-encrypted at rest),
+            # but surface the failure so an operator relying on owner-only ACLs
+            # — especially with --plaintext-keys — is not misled into thinking
+            # the file is locked down when it is not (FAT/exFAT volume,
+            # unresolvable account, icacls off PATH, etc.).
+            logger.warning(
+                "Could not restrict %s to owner-only via icacls (exit %d): %s",
+                path, result.returncode,
+                (result.stderr or b"").decode("utf-8", "replace").strip(),
+            )
+    except Exception as e:
+        logger.warning("Owner-only ACL restriction of %s skipped: %s", path, e)
 
 # Audit L-05: shared constant for 128-bit fingerprints (first 32 hex
 # chars of SHA-256). Use this everywhere a fingerprint is computed.
@@ -330,7 +344,9 @@ def save_keys(keys: AgentKeys, path: str, passphrase: Optional[str] = None,
         )
 
     path = os.path.expanduser(path)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _parent = os.path.dirname(path)
+    if _parent:
+        os.makedirs(_parent, exist_ok=True)
 
     use_master_seed = keys.is_master_seed_format()
     data = {

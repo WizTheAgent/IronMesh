@@ -33,7 +33,7 @@ IronMesh is designed for **networks you control** — home LANs, lab networks, o
 | **Passphrase exposure** | `--passphrase` removed from CLI (visible in `ps aux`). Passphrase via file, env var, or interactive getpass only. |
 | **Information leaks** | Version banner only shows protocol version; identity keys never broadcast via mDNS — exchanged only during authenticated handshake |
 | **Wire sniffing** | Binary wire format (not JSON) after handshake. Client tries wss:// before ws://. Plaintext fallback requires explicit flag. |
-| **Relay reading message bodies** (v0.4) | Multi-hop messages are wrapped in a NaCl `SealedBox` keyed to the destination's X25519 public key. Relays cannot decrypt the body. |
+| **Relay reading message bodies** (v0.4 / v0.9.5) | Multi-hop messages are wrapped in a NaCl `SealedBox` keyed to the destination's X25519 public key, so **only the destination can decrypt** `e2e_payload`. **By default** the sealed copy rides alongside the per-hop plaintext for wire compatibility, so a forwarding relay can still read the per-hop body. Run with **`--e2e-strict-confidentiality`** (v0.9.5, fully-upgraded meshes only) to strip the plaintext so the body travels solely in the sealed field and relays cannot read it. |
 | **Relay forging messages** (v0.4) | Inner Ed25519 signature over the plaintext (computed by the source's identity key, carried inside the encrypted body) survives every per-hop re-encryption and is verified at the destination. |
 | **Routing loops** (v0.4) | TTL counter (default 5 hops) plus explicit hop-list inspection drops any frame that re-enters a relay it has already visited. |
 | **Dedup cache exhaustion** (v0.4) | Per-source-sharded cache: 128 sources × 1024 entries × 5min TTL. A flooding source cannot displace other sources' state. |
@@ -50,9 +50,9 @@ IronMesh is designed for **networks you control** — home LANs, lab networks, o
 | **Volumetric DDoS** | Rate limiting helps but can't prevent a determined flood. Use firewall rules. |
 | **Traffic analysis** | Message sizes and timing are visible. We don't pad or obfuscate. |
 | **Active MITM on first connection** | TOFU trusts the first key it sees. If an attacker intercepts the very first connection, they can pin their key. Verify fingerprints out-of-band for high-security setups. |
-| **Mesh metadata analysis** (v0.4) | A relay can see source, destination, msg_id, timestamp, and message type. It cannot read bodies, but it can profile traffic patterns. If anonymity is required, run `--mesh-routing=off` and form trusted cliques with `--allowed-peers`. |
+| **Mesh metadata analysis** (v0.4) | A relay can see source, destination, msg_id, timestamp, and message type — and, by default, the message body (see "Relay reading message bodies"; `--e2e-strict-confidentiality` hides it). It can profile traffic patterns regardless. If anonymity is required, run `--mesh-routing=off` and form trusted cliques with `--allowed-peers`. |
 | **Adversarial relay drop** (v0.4) | A malicious relay can simply drop your messages. The circuit breaker tracks failed deliveries and `EVENT_CIRCUIT_BREAKER_TRIPPED` audit events surface chronic offenders, but IronMesh cannot route around an adversarial relay without an alternate topology. |
-| **Compromised destination key** (v0.4) | End-to-end confidentiality fails if the destination's long-term Ed25519 secret is exfiltrated. Forward secrecy of `SealedBox` (per-message ephemeral X25519) only protects past messages if those ephemerals were also discarded — they are never persisted in IronMesh. |
+| **Compromised destination key** (v0.4) | End-to-end confidentiality fails if the destination's long-term Ed25519 secret is exfiltrated: `SealedBox`'s per-message ephemeral is the **sender's** key, and the destination decrypts with its long-term X25519 secret — so it provides sender-side anonymity, **not** forward secrecy against destination-key compromise. An attacker who obtains the destination's identity secret can decrypt every captured `e2e_payload`, past and future. Rotate keys on suspected compromise. |
 
 ## v0.4 Mesh Trust Model
 
@@ -63,13 +63,18 @@ IronMesh is designed for **networks you control** — home LANs, lab networks, o
 
 ### What relays can and cannot see
 
+By default a relay **can** read the per-hop plaintext body; the sealed
+`e2e_payload` copy is decryptable only by the destination. Enable
+`--e2e-strict-confidentiality` (v0.9.5, fully-upgraded meshes only) to strip
+the per-hop plaintext so the body is hidden from relays too.
+
 | Visible to a relay | Hidden from a relay |
 |---|---|
-| `frame.source` (originator's node id) | The decrypted message body |
-| `frame.destination` (final recipient) | The inner Ed25519 source signature contents |
-| `frame.msg_id` and timestamp | The original `MessageType` semantic payload |
+| `frame.source` (originator's node id) | The **sealed** `e2e_payload` (decryptable only by the destination) |
+| `frame.destination` (final recipient) | The per-hop plaintext body — **only** under `--e2e-strict-confidentiality` (otherwise relay-visible) |
+| `frame.msg_id` and timestamp | |
 | The wire `MessageType` (e.g. `MSG`, `CONTROL`) | |
-| The encrypted `e2e_payload` ciphertext | |
+| The `e2e_payload` ciphertext (opaque) and, by default, the per-hop plaintext body | |
 
 ### How end-to-end confidentiality works
 
@@ -80,10 +85,18 @@ IronMesh:
 2. Derives the destination's X25519 public key via libsodium's blessed
    `crypto_sign_ed25519_pk_to_curve25519`.
 3. Wraps the plaintext in a NaCl `SealedBox` (one fresh ephemeral X25519
-   keypair per message — forward secrecy).
-4. Stores the sealed ciphertext in `Frame.e2e_payload`.
+   keypair per message — this anonymizes the *sender*; it is **not**
+   forward secrecy against destination-key compromise, since the
+   destination decrypts with its long-term X25519 secret).
+4. Stores the sealed ciphertext in `Frame.e2e_payload`. **By default** the
+   plaintext also rides in the per-hop `Frame.payload` (relay-readable) so
+   the frame stays wire-compatible with every node version. With
+   **`--e2e-strict-confidentiality`** the per-hop plaintext is stripped so
+   the body travels solely in `e2e_payload`.
 5. Computes an Ed25519 detached signature over the **plaintext** using
    the source's identity key, and stores it in `Frame.source_signature`.
+   For e2e frames this is verified by the destination *after* it unseals
+   `e2e_payload`.
 6. Hands the frame to `MeshRouter.relay_message()` (or sends directly if
    the destination is a neighbor).
 

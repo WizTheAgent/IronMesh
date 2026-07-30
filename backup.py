@@ -247,7 +247,9 @@ def restore_backup(
     # Write files
     from ironmesh.keys import restrict_file_to_owner
     for dest, data in files_to_write.items():
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        _parent = os.path.dirname(dest)
+        if _parent:
+            os.makedirs(_parent, exist_ok=True)
         with open(dest, "wb") as f:
             f.write(data)
         restrict_file_to_owner(dest)

@@ -156,10 +156,13 @@ source signature either, so verification is performed by the destination
 after unseal (the relay simply forwards). Stripping is a wire-behavior change
 and must only be enabled on a mesh where every node runs v0.9.5+.
 
-**Forward secrecy.** `SealedBox` generates a fresh ephemeral X25519 keypair
-for every call, so even if the destination's long-term identity key were
-later compromised, past sealed messages remain unrecoverable (as long as the
-ephemeral keys, which are never persisted, were also discarded).
+**Sender anonymity (NOT forward secrecy).** `SealedBox` generates a fresh
+ephemeral X25519 keypair for every call and discards the private side, so no
+*sender* key is transmitted or needed to decrypt. It does **not** provide
+forward secrecy against destination-key compromise: the destination decrypts
+with its **long-term** X25519 secret (derived from its Ed25519 identity), so
+anyone who later obtains that secret can decrypt every captured `e2e_payload`,
+past and future. Rotate identity keys on suspected compromise.
 
 **Inner source signature.** Because each relay re-encrypts the outer wrap
 with the next-hop session key, the existing per-hop Ed25519 signature

@@ -114,6 +114,8 @@ DENY=(
   'auto-generates an unencrypted key file'          # plaintext requires --plaintext-keys opt-in
   'the plaintext is not present in the per-hop layer'  # relay-confidentiality is opt-in (--e2e-strict-confidentiality), not the default
   'carried solely in the destination-sealed'          # plaintext strip is opt-in, not default
+  'Relays cannot decrypt the body'                    # relays read the per-hop plaintext by default (docs/SECURITY.md stale-twin regression)
+  'Relays cannot read forwarded bodies'               # ditto — only true under --e2e-strict-confidentiality
 )
 scope_files="$(git ls-files '*.md' 2>/dev/null | grep -vE 'CHANGELOG\.md|docs/RELEASE_NOTES_v|REVIEW_EVIDENCE')"
 deny_hits=0

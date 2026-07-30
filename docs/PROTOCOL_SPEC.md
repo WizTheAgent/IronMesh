@@ -393,7 +393,12 @@ When decrypted, it produces a JSON object:
 The 64-byte Ed25519 signature at the end of the frame covers the
 **encrypted payload bytes** (not the header, not the plaintext). This is
 per-hop authentication — each relay can verify the frame came from the
-previous hop, but cannot read the contents.
+previous hop. Note this is the *outer* signature over the per-hop-encrypted
+bytes: a forwarding relay holds the per-hop session key and therefore
+decrypts and can read the body by default. Per-hop encryption protects
+against off-path eavesdroppers, not against the relay itself; to hide the
+body from relays, use end-to-end sealing with `--e2e-strict-confidentiality`
+(see SECURITY.md, "Relay reading message bodies").
 
 ### Inner Source Signature (end-to-end, v0.9.5+)
 

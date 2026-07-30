@@ -2675,7 +2675,16 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
         return task
 
     async def shutdown(self):
-        """Graceful shutdown."""
+        """Graceful shutdown. Idempotent — a second concurrent call (e.g.
+        SIGINT then SIGTERM, or a double SIGTERM from systemd) returns
+        immediately so the first shutdown is not raced to completion. Without
+        this guard a second invocation's ``loop.stop()`` (in
+        ``_shutdown_and_stop``) can fire while the first is still awaiting
+        ``self._db.close()``, leaving the non-daemon aiosqlite worker thread
+        un-joined and the process hanging on exit."""
+        if getattr(self, "_shutting_down", False):
+            return
+        self._shutting_down = True
         self._running = False
 
         # Cancel the long-lived background loops BEFORE tearing down the DB /

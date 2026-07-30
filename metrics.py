@@ -866,10 +866,17 @@ class MetricsMixin:
                 writer.close()
 
             metrics_port = self.port + 1
-            # Server is kept alive by the asyncio task that handles it; we
-            # don't need to hold a reference for lifecycle purposes (shutdown
-            # is handled by cancelling the enclosing loop).
-            await asyncio.start_server(handle_metrics, "127.0.0.1", metrics_port)
+            server = await asyncio.start_server(
+                handle_metrics, "127.0.0.1", metrics_port)
             logger.info("Metrics endpoint at http://127.0.0.1:%d/metrics", metrics_port)
+            # Keep the coroutine (and thus the task) alive holding the Server,
+            # so cancelling this task on shutdown actually CLOSES the listening
+            # socket and frees port+1. Previously the coroutine returned right
+            # after start_server, dropping the Server reference — the socket
+            # then leaked until loop.close() and a re-_start() hit EADDRINUSE.
+            async with server:
+                await server.serve_forever()
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.debug("Metrics server failed to start: %s", e)

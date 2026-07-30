@@ -270,8 +270,20 @@ class RoutingMixin:
 
         ``transport`` (v0.8.5.6) propagates to the dedup cache.
         """
-        # Parse the incoming message
-        msg = json.loads(raw)
+        # Parse the incoming message. Use the depth-guarded parser (a raw
+        # json.loads lets a malicious peer trigger RecursionError with deeply
+        # nested JSON) and reject non-object top-level values before any
+        # ``.get`` call (which would otherwise raise AttributeError). Both
+        # already fail closed via the message loop, but this drops cleanly
+        # without a per-frame traceback (log-spam amplifier).
+        try:
+            msg = ew_protocol.safe_json_loads(raw)
+        except Exception as e:
+            logger.warning("Malformed JSON message from %s: %s", peer_id, e)
+            return
+        if not isinstance(msg, dict):
+            logger.warning("Rejected non-object JSON message from %s", peer_id)
+            return
         msg_id = msg.get("msg_id", str(uuid.uuid4()))
 
         # Decrypt payload — plaintext is NEVER accepted after handshake

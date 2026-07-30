@@ -98,11 +98,16 @@ def stdin_is_interactive() -> bool:
     import msvcrt
     try:
         handle = msvcrt.get_osfhandle(stdin.fileno())
-    except (AttributeError, OSError, ValueError):
+        GetConsoleMode = ctypes.windll.kernel32.GetConsoleMode
+        GetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        GetConsoleMode.restype = ctypes.c_int
+        mode = ctypes.c_uint32()
+        return bool(GetConsoleMode(handle, ctypes.byref(mode)))
+    except (AttributeError, OSError, ValueError, OverflowError, ctypes.ArgumentError):
+        # Any failure resolving the handle or calling the console API means we
+        # cannot prove an interactive console — fail safe as non-interactive
+        # (never hang a headless run on a credential prompt).
         return False
-    mode = ctypes.c_uint32()
-    return bool(ctypes.windll.kernel32.GetConsoleMode(
-        handle, ctypes.byref(mode)))
 
 
 def _color_enabled(stream: IO) -> bool:

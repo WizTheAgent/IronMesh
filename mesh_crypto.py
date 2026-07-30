@@ -11,8 +11,12 @@ Design:
       already wrapped in ``ironmesh.keys``.
     - The sender uses NaCl ``SealedBox`` to encrypt to the destination's
       derived X25519 public key. SealedBox generates a fresh ephemeral X25519
-      keypair per message and discards the private side, providing
-      forward secrecy *for each individual message*.
+      keypair per message and discards the private side. This anonymizes the
+      SENDER (no sender key is transmitted or needed to decrypt); it does NOT
+      provide forward secrecy against destination-key compromise — the
+      destination decrypts with its LONG-TERM X25519 secret, so anyone who
+      later obtains that secret can decrypt every captured message, past and
+      future. Rotate identity keys on suspected compromise.
     - Only the destination — holder of the matching X25519 secret derived from
       its Ed25519 secret — can decrypt.
 
