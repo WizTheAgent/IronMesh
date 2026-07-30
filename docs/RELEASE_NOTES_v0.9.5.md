@@ -305,7 +305,7 @@ that breaks v0.8.x / v0.9.x interop was found.
 
 ## Verification
 
-- 1356 tests collected; full suite green — 1346 passed, 11 platform/env-conditioned skips, 1 xpassed (`pytest tests/
+- 1357 tests collected; full suite green — 1347 passed, 11 platform/env-conditioned skips, 1 xpassed (`pytest tests/
   --ignore=tests/integration`). ruff CI-scope clean. release-qc
   `FAIL: 0`; doc-sync-check PASS.
 - Wheel + sdist build clean; public modules import; CLI entry point
