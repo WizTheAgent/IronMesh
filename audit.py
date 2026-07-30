@@ -563,22 +563,54 @@ def _derive_audit_key(ed25519_secret: bytes) -> bytes:
     return hashlib.sha256(ed25519_secret + b"ironmesh-audit-v1").digest()
 
 
-def verify_chain(audit_path: str, keys_path: Optional[str] = None,
-                 keys_passphrase: Optional[str] = None) -> tuple:
-    """Verify an audit log file. Derives the HMAC key from the identity key.
+def _load_keys_for_verify(keys_path: Optional[str],
+                          keys_passphrase: Optional[str]):
+    """Load the identity keypair for chain verification without ever
+    blocking a headless caller.
 
-    If keys_path is omitted, looks up the default location.
-
-    Returns:
-        (ok, entries_checked, first_invalid_line)
+    Order: explicit ``keys_passphrase`` → ``IRONMESH_PASSPHRASE`` env →
+    passphrase-less load (plaintext key file) → interactive prompt (real
+    TTY only) → actionable error. The previous unconditional ``getpass()``
+    froze ``ironmesh doctor`` in headless runs — on Windows the prompt
+    reads the console device, so even a redirected stdin never unblocks
+    it.
     """
     from ironmesh import keys as ew_keys
     kp = keys_path or "~/.ironmesh/keys.json"
     kp_pass = keys_passphrase or os.environ.get("IRONMESH_PASSPHRASE")
     if not kp_pass:
-        import getpass
-        kp_pass = getpass.getpass("Identity key passphrase: ")
-    keypair = ew_keys.load_keys(kp, passphrase=kp_pass)
+        try:
+            return ew_keys.load_keys(kp, passphrase=None)  # plaintext file
+        except Exception:
+            pass  # encrypted (or unreadable — the final load reports it)
+        from ironmesh.cli_output import stdin_is_interactive
+        if stdin_is_interactive():
+            import getpass
+            kp_pass = getpass.getpass("Identity key passphrase: ")
+    if not kp_pass:
+        raise ValueError(
+            "audit chain verification requires the identity-key passphrase "
+            "and no interactive prompt is available (headless run). Pass "
+            "keys_passphrase=, set IRONMESH_PASSPHRASE, or run from an "
+            "interactive terminal. (The ironmesh CLI additionally resolves "
+            "IRONMESH_KEYS_PASSPHRASE, --keys-passphrase-file, and the "
+            "mesh passphrase.)"
+        )
+    return ew_keys.load_keys(kp, passphrase=kp_pass)
+
+
+def verify_chain(audit_path: str, keys_path: Optional[str] = None,
+                 keys_passphrase: Optional[str] = None) -> tuple:
+    """Verify an audit log file. Derives the HMAC key from the identity key.
+
+    If keys_path is omitted, looks up the default location. Never blocks
+    on a hidden prompt: raises ValueError when the passphrase cannot be
+    resolved headlessly — see ``_load_keys_for_verify``.
+
+    Returns:
+        (ok, entries_checked, first_invalid_line)
+    """
+    keypair = _load_keys_for_verify(keys_path, keys_passphrase)
     hmac_key = _derive_audit_key(keypair.ed25519_secret)
     log = AuditLog(path=audit_path, hmac_key=hmac_key)
     return log.verify()
@@ -586,14 +618,9 @@ def verify_chain(audit_path: str, keys_path: Optional[str] = None,
 
 def verify_archived_chain(audit_path: str, keys_path: Optional[str] = None,
                           keys_passphrase: Optional[str] = None) -> tuple:
-    """Verify audit log across rotated archives."""
-    from ironmesh import keys as ew_keys
-    kp = keys_path or "~/.ironmesh/keys.json"
-    kp_pass = keys_passphrase or os.environ.get("IRONMESH_PASSPHRASE")
-    if not kp_pass:
-        import getpass
-        kp_pass = getpass.getpass("Identity key passphrase: ")
-    keypair = ew_keys.load_keys(kp, passphrase=kp_pass)
+    """Verify audit log across rotated archives. Same headless-safe
+    passphrase resolution as ``verify_chain``."""
+    keypair = _load_keys_for_verify(keys_path, keys_passphrase)
     hmac_key = _derive_audit_key(keypair.ed25519_secret)
     log = AuditLog(path=audit_path, hmac_key=hmac_key)
     return log.verify_chain_across_archives()

@@ -73,6 +73,38 @@ _COLOR = {
 
 # ---- TTY detection -------------------------------------------------
 
+def stdin_is_interactive() -> bool:
+    """True only when stdin is a real interactive console.
+
+    ``sys.stdin.isatty()`` is not enough on Windows: the NUL device
+    reports as a character device, so a headless run with stdin
+    redirected to NUL still claims to be a tty — and a getpass() gated
+    on it then reads the *console*, blocking forever. GetConsoleMode
+    succeeds only on a genuine console handle, so it is the
+    authoritative check. Every interactive credential prompt must gate
+    on this, never on bare isatty().
+    """
+    stdin = sys.stdin
+    if stdin is None:
+        return False
+    try:
+        if not stdin.isatty():
+            return False
+    except (AttributeError, ValueError, OSError):
+        return False
+    if os.name != "nt":
+        return True
+    import ctypes
+    import msvcrt
+    try:
+        handle = msvcrt.get_osfhandle(stdin.fileno())
+    except (AttributeError, OSError, ValueError):
+        return False
+    mode = ctypes.c_uint32()
+    return bool(ctypes.windll.kernel32.GetConsoleMode(
+        handle, ctypes.byref(mode)))
+
+
 def _color_enabled(stream: IO) -> bool:
     """Decide whether to emit ANSI codes for `stream`.
 

@@ -111,7 +111,7 @@ secrets like the passphrase in JSON config.
 | `ironmesh restore --in <file>` | Restore from a backup. |
 | `ironmesh audit verify \| export \| verify-export \| tail \| stats` | Audit-log integrity + triage tools. |
 | `ironmesh session rotate` | Force session-key rotation with a peer. |
-| `ironmesh doctor [--peer HOST:PORT] [--onboard] [--fix]` | One-shot diagnostic — keys, trust store, schema, ports, audit chain, passphrase-file perms, mDNS/multicast, firewall posture, Reticulum config, Ollama. `--peer` adds a dry-run reachability check. `--onboard` walks first-run failure modes; `--fix` auto-applies safe local fixes only (see [Doctor onboarding & auto-fix](#doctor-onboarding--auto-fix)). |
+| `ironmesh doctor [--peer HOST:PORT] [--onboard] [--fix]` | One-shot diagnostic — keys, trust store, schema, ports, audit chain, passphrase-file perms, mDNS/multicast, firewall posture, Reticulum config, Ollama. `--peer` adds a dry-run reachability check. `--onboard` walks first-run failure modes; `--fix` auto-applies safe local fixes only (see [Doctor onboarding & auto-fix](#doctor-onboarding-auto-fix)). |
 
 Run any subcommand with `--help` for the full list of options.
 
@@ -226,7 +226,7 @@ flags and warnings it did before.
 
 > **Reserved:** `tactical` will gain a pinned group crypto suite via the
 > reserved (currently unset) `group_crypto_suite` config field once
-> [`rfcs/RFC-key-hierarchy-group-messaging-v0.1-skeleton.md`](../rfcs/RFC-key-hierarchy-group-messaging-v0.1-skeleton.md)
+> [`rfcs/RFC-key-hierarchy-group-messaging-v0.1-skeleton.md`](https://github.com/WizTheAgent/IronMesh/blob/main/rfcs/RFC-key-hierarchy-group-messaging-v0.1-skeleton.md)
 > selects one. The field is omitted from the saved config until then, so
 > no schema migration is required when it lands.
 

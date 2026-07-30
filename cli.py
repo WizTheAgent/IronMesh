@@ -14,6 +14,8 @@ import sys
 import time
 from typing import Optional
 
+from ironmesh.cli_output import stdin_is_interactive as _stdin_is_interactive
+
 
 def _normalize_fingerprint(raw: str) -> str:
     """Strip whitespace and ``:`` separators; lower-case the result.
@@ -915,7 +917,7 @@ def get_passphrase(node_name: Optional[str] = None):
         print("         Environment variables may be visible via /proc. Prefer IRONMESH_PASSPHRASE_FILE.\n")
         return env
     # 4. Interactive prompt via getpass (hidden input, not in process list)
-    if sys.stdin.isatty():
+    if _stdin_is_interactive():
         try:
             passphrase = getpass.getpass("Enter IronMesh passphrase: ")
             if passphrase:
@@ -1019,7 +1021,7 @@ def _resolve_keys_passphrase(keys_path: str,
         except ValueError:
             pass  # key file uses a different passphrase — fall through
 
-    if allow_prompt and sys.stdin.isatty():
+    if allow_prompt and _stdin_is_interactive():
         try:
             prompted = getpass.getpass(
                 f"Passphrase for encrypted key file {keys_path}: ")
@@ -2023,7 +2025,7 @@ def cmd_keys(args):
         keypair = generate_keypair()
         key_passphrase = args.passphrase
         # Force key encryption — prompt if no passphrase given
-        if not key_passphrase and sys.stdin.isatty():
+        if not key_passphrase and _stdin_is_interactive():
             key_passphrase = getpass.getpass("Enter passphrase to encrypt key file: ")
             if key_passphrase:
                 confirm = getpass.getpass("Confirm passphrase: ")
@@ -2230,10 +2232,17 @@ def cmd_audit(args):
 
     if sub == "verify":
         path = os.path.expanduser(args.path)
-        if args.archives:
-            ok, checked, first_bad = audit_mod.verify_archived_chain(path)
-        else:
-            ok, checked, first_bad = audit_mod.verify_chain(path)
+        try:
+            if args.archives:
+                ok, checked, first_bad = audit_mod.verify_archived_chain(path)
+            else:
+                ok, checked, first_bad = audit_mod.verify_chain(path)
+        except ValueError as e:
+            # Headless run with no resolvable identity-key passphrase —
+            # the library refuses to prompt (it would hang); surface its
+            # remediation options instead of a traceback.
+            print(f"ERROR: {e}")
+            return 1
         if ok:
             print(f"OK — verified {checked} entries")
             return 0
@@ -2596,6 +2605,9 @@ def cmd_doctor(args):
 
     # 1. Identity key file readable + decryptable.
     print(f"{step()} Identity key file: {keys_path}")
+    # The passphrase that successfully opened the key file — reused by
+    # check 7 so the audit-chain verify never re-resolves (or re-prompts).
+    resolved_keys_pp = None
     if not os.path.exists(keys_path):
         print("      FAIL — file does not exist (run 'ironmesh keys generate')")
         failures += 1
@@ -2644,13 +2656,18 @@ def cmd_doctor(args):
                 seen.add(pp_try)
                 try:
                     keypair = load_keys(keys_path, passphrase=pp_try)
+                    # Remember what worked — check 7 (audit chain) derives
+                    # its HMAC key from this same key file and must not
+                    # re-resolve (or re-prompt) on its own.
+                    resolved_keys_pp = pp_try
                     break
                 except Exception as e:
                     attempt_errors.append(str(e))
-            if keypair is None and sys.stdin.isatty():
+            if keypair is None and _stdin_is_interactive():
                 try:
                     prompt_pp = getpass.getpass("      Identity key passphrase: ")
                     keypair = load_keys(keys_path, passphrase=prompt_pp)
+                    resolved_keys_pp = prompt_pp
                 except Exception as e:
                     attempt_errors.append(str(e))
             if keypair is not None:
@@ -2775,14 +2792,23 @@ def cmd_doctor(args):
     print(f"{step()} Audit log: {audit_path}")
     if not os.path.exists(audit_path):
         print("      OK — audit log does not exist yet (will be created on daemon start)")
+    elif keypair is None:
+        # Chain verification derives its HMAC key from the identity key,
+        # which check 1 could not load. Re-resolving here would either
+        # hang a headless run on a hidden prompt or badger an
+        # interactive operator twice for the same passphrase.
+        print("      SKIP — cannot verify the chain without the identity "
+              "key (fix check 1 first, then re-run doctor)")
     else:
         try:
             from ironmesh.audit import verify_chain
+            # Reuse the passphrase that opened the key file in check 1 —
+            # verify_chain itself is headless-safe and errors out
+            # actionably rather than prompting when it cannot resolve.
             ok, entries, first_bad = verify_chain(
                 audit_path,
                 keys_path=keys_path,
-                keys_passphrase=args.keys_passphrase
-                or os.environ.get("IRONMESH_PASSPHRASE"),
+                keys_passphrase=resolved_keys_pp,
             )
             if ok:
                 print(f"      OK — chain verifies clean ({entries} entries)")
@@ -3105,7 +3131,7 @@ def _doctor_fix_firewall(args, posture) -> bool:
               "risk, or apply the printed command yourself.")
         return False
 
-    if not sys.stdin.isatty():
+    if not _stdin_is_interactive():
         print("      FIX SKIP — firewall rule needs interactive "
               "confirmation (no TTY); apply the printed command yourself.")
         return False
