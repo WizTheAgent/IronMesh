@@ -32,7 +32,6 @@ from ironmesh.keys import generate_keypair
 from ironmesh.protocol import Frame, MessageType
 from ironmesh.routing import RoutingMixin
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -101,7 +100,8 @@ def _sign_v1(keys, payload):
 def _sign_v2(keys, frame):
     """Attach a bound v2 inner signature to ``frame`` (the production form)."""
     from ironmesh.crypto import (
-        SIG_CTX_FRAME_INNER_SOURCE, sign_detached_with_context,
+        SIG_CTX_FRAME_INNER_SOURCE,
+        sign_detached_with_context,
     )
     from ironmesh.protocol import canonical_inner_source_bytes
     canon = canonical_inner_source_bytes(
@@ -310,6 +310,62 @@ class TestV2BoundScheme:
         f2 = Frame.deserialize_and_decrypt(wire, shared, verify_source_key=lookup)
         assert f2.source_sig_scheme == Frame.SOURCE_SIG_SCHEME_V2
         assert f2.payload == f.payload
+
+
+class TestLegacyRelayTagStrip:
+    """A pre-0.9 relay re-serializes frames through a Frame model that has no
+    ``source_sig_scheme`` field: it preserves the v2 signature bytes but drops
+    the scheme tag. Correctness must NOT depend on the tag surviving transit —
+    an absent tag must still be verifiable as v2, or every v2 frame relayed
+    through a legacy hop is silently black-holed in a mixed-version mesh.
+    """
+
+    @staticmethod
+    def _strip_tag(f):
+        # Reproduce exactly what a legacy relay does: round-trip the dict
+        # through a model with no source_sig_scheme key.
+        d = f.to_dict()
+        d.pop("source_sig_scheme", None)
+        return Frame.from_dict(d)
+
+    def test_v2_survives_tag_strip_default_floor(self):
+        src = generate_keypair("src")
+        daemon = _build_daemon(known_sources={SRC_ID: src})  # floor < 0.9
+        f = self._strip_tag(_sign_v2(src, _frame(source=SRC_ID)))
+        assert f.source_sig_scheme is None  # relay stripped it
+        assert daemon._verify_inner_source(RELAY_ID, f) is True
+        assert f.source_authenticated is True
+
+    def test_v2_survives_tag_strip_floor_09(self):
+        # Even with v1 refused (floor >= 0.9) the tag-stripped v2 verifies:
+        # the fallback tries the strong scheme first, independent of allow_v1.
+        src = generate_keypair("src")
+        daemon = _build_daemon(known_sources={SRC_ID: src},
+                               min_protocol="ironmesh/0.9")
+        f = self._strip_tag(_sign_v2(src, _frame(source=SRC_ID)))
+        assert daemon._verify_inner_source(RELAY_ID, f) is True
+
+    def test_tag_strip_does_not_weaken_forgery_check(self):
+        # A signature forged under an attacker key, tag stripped, must NOT
+        # verify against the claimed source's key.
+        src = generate_keypair("src")
+        attacker = generate_keypair("attacker")
+        daemon = _build_daemon(known_sources={SRC_ID: src})
+        forged = _sign_v2(attacker, _frame(source=SRC_ID))
+        f = self._strip_tag(forged)
+        assert daemon._verify_inner_source(RELAY_ID, f) is False
+
+    def test_tag_strip_does_not_weaken_redirect_check(self):
+        # v2 binds the destination; a relay that redirects AND strips the tag
+        # still fails verification (no v1 downgrade escape).
+        src = generate_keypair("src")
+        daemon = _build_daemon(known_sources={SRC_ID: src})
+        f = _sign_v2(src, _frame(source=SRC_ID, destination="dst-A"))
+        d = f.to_dict()
+        d.pop("source_sig_scheme", None)
+        d["destination"] = "dst-B"  # relay redirects
+        redirected = Frame.from_dict(d)
+        assert daemon._verify_inner_source(RELAY_ID, redirected) is False
 
 
 class TestStorePinnedSourceResolution:

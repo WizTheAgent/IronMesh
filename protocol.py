@@ -1045,33 +1045,59 @@ class Frame:
         """
         if self.source_signature is None:
             return False
-        # The scheme tag rides OUTSIDE the signed bytes, so a relay can
-        # rewrite it. Deliberate and fail-closed: a v2 signature fails v1
-        # verification (and vice versa), so a flipped tag can only turn a
-        # valid frame into a dropped one — never an invalid one into valid.
-        # Do not add logic that trusts the tag without verifying.
-        scheme = self.source_sig_scheme or self.SOURCE_SIG_SCHEME_V1
-        try:
-            if scheme == self.SOURCE_SIG_SCHEME_V1:
-                if not allow_v1:
-                    return False
-                verify_key.verify(self.payload, self.source_signature)
-                return True
-            if scheme == self.SOURCE_SIG_SCHEME_V2:
-                from ironmesh.crypto import (
-                    SIG_CTX_FRAME_INNER_SOURCE,
-                    verify_detached_with_context,
-                )
-                canon = canonical_inner_source_bytes(
-                    self.source, self.destination, self.msg_id, self.payload,
-                )
-                return verify_detached_with_context(
+
+        # Both helpers return bool and swallow BadSignatureError internally,
+        # so the branching below can try one scheme and fall through to the
+        # other without an exception short-circuiting the fallback.
+        def _verify_v2() -> bool:
+            from ironmesh.crypto import (
+                SIG_CTX_FRAME_INNER_SOURCE,
+                verify_detached_with_context,
+            )
+            canon = canonical_inner_source_bytes(
+                self.source, self.destination, self.msg_id, self.payload,
+            )
+            try:
+                return bool(verify_detached_with_context(
                     verify_key, SIG_CTX_FRAME_INNER_SOURCE, canon,
                     self.source_signature,
-                )
-            return False  # unknown scheme — fail closed
-        except nacl_exceptions.BadSignatureError:
-            return False
+                ))
+            except nacl_exceptions.BadSignatureError:
+                return False
+
+        def _verify_v1() -> bool:
+            try:
+                verify_key.verify(self.payload, self.source_signature)
+                return True
+            except nacl_exceptions.BadSignatureError:
+                return False
+
+        # The scheme tag rides OUTSIDE the signed bytes. It is a hint, not a
+        # security boundary: every branch below is a cryptographic check that
+        # fails closed, so a rewritten/stripped tag can only cause a drop,
+        # never a false accept. Do NOT add logic that trusts the tag.
+        #
+        # Crucially, correctness must not DEPEND on the tag surviving transit:
+        # a pre-0.9 relay re-serializes the frame through a Frame model that
+        # has no ``source_sig_scheme`` field, silently dropping the tag while
+        # preserving the v2 signature bytes. If an absent tag were treated as
+        # v1-only, every v2 frame relayed through a legacy hop would be dropped
+        # (a deterministic black-hole in a mixed-version mesh). So:
+        #   - explicit tag  -> verify strictly under that scheme
+        #   - absent tag    -> try v2 (bound, strong) first, then v1 if allowed
+        scheme = self.source_sig_scheme
+        if scheme == self.SOURCE_SIG_SCHEME_V2:
+            return _verify_v2()
+        if scheme == self.SOURCE_SIG_SCHEME_V1:
+            return _verify_v1() if allow_v1 else False
+        if scheme is None:
+            # Tag absent — a genuine legacy v1 originator OR a v2 frame whose
+            # tag a legacy relay stripped. Try the strong scheme first; fall
+            # back to v1 only when the floor permits.
+            if _verify_v2():
+                return True
+            return _verify_v1() if allow_v1 else False
+        return False  # unknown scheme string — fail closed
 
     def serialize_plaintext(self) -> bytes:
         """Serialize to binary wire format WITHOUT encryption.
