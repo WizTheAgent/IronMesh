@@ -142,30 +142,65 @@ class RoutingMixin:
         if not peer_state.identity_public:
             logger.warning("Cannot verify binary frame from %s — no identity key", peer_id)
             return
+        from nacl.signing import VerifyKey
+        verify_key = VerifyKey(peer_state.identity_public)
+        used_prev = False
         try:
-            from nacl.signing import VerifyKey
-            verify_key = VerifyKey(peer_state.identity_public)
             frame = ew_protocol.Frame.deserialize_and_decrypt(
                 raw, peer_state.session_key, verify_key=verify_key
             )
-        except Exception as e:
-            logger.warning("Binary frame rejected from %s: %s", peer_id, e)
-            return
+        except Exception as e_new:
+            # Rekey dual-key transition: a frame the initiator sent under the
+            # retiring key can still be in flight after we installed the new
+            # one. Retry with the retained previous key during the grace
+            # window before dropping.
+            prev = peer_state.prev_session_key
+            if prev is not None and time.time() < peer_state.rekey_transition_until:
+                try:
+                    frame = ew_protocol.Frame.deserialize_and_decrypt(
+                        raw, prev, verify_key=verify_key)
+                    used_prev = True
+                except Exception:
+                    logger.warning("Binary frame rejected from %s: %s",
+                                   peer_id, e_new)
+                    return
+            else:
+                logger.warning("Binary frame rejected from %s: %s",
+                               peer_id, e_new)
+                return
 
         sequence = frame.sequence
         timestamp = frame.timestamp
 
-        # Replay protection
+        # Replay protection — check against the epoch the frame belongs to.
+        # New-key frames use the peer's (reset) state; frames decrypted under
+        # the retiring key use the snapshot of the old epoch's high-water so
+        # the two sequence spaces never collide during the transition.
         if sequence <= 0:
             logger.warning("Rejected binary frame from %s with seq=%d", peer_id, sequence)
             return
-        rejection = self._replay_guard.check(peer_id, sequence, timestamp)
+        replay_key = peer_state.prev_epoch_key if used_prev else peer_id
+        rejection = self._replay_guard.check(replay_key, sequence, timestamp)
         if rejection:
             logger.warning("Replay detected from %s: %s", peer_id, rejection)
             return
 
+        # The first successful NEW-key frame ends the transition: the
+        # initiator has switched, so the retiring key is no longer needed.
+        if not used_prev and peer_state.prev_session_key is not None:
+            self._end_rekey_transition(peer_state)
+
         # Dispatch to common handler
         await self._dispatch_message(peer_id, peer_state, frame, transport=transport)
+
+    def _end_rekey_transition(self, peer_state):
+        """Retire the previous session key + its replay snapshot once the
+        new key is confirmed working (or the grace window has passed)."""
+        if peer_state.prev_epoch_key:
+            self._replay_guard.reset_peer(peer_state.prev_epoch_key)
+        peer_state.prev_session_key = None
+        peer_state.prev_epoch_key = None
+        peer_state.rekey_transition_until = 0.0
 
     async def _handle_json_message(self, peer_id: str, raw: str, peer_state,
                                     transport: str = "ws"):
@@ -247,8 +282,15 @@ class RoutingMixin:
         # over the exact decrypted bytes the originator signed (i.e.
         # pre-decompression). Relayed frames lacking a verifiable source
         # signature are dropped (fail-closed).
-        if not self._verify_inner_source(peer_id, frame):
-            return
+        #
+        # E2E-sealed frames are the exception: their body is in e2e_payload
+        # (opaque to a relay) and the signature is over the sealed plaintext,
+        # which cannot be checked until the destination unseals it. Those are
+        # verified post-unseal below with the SAME policy — a relay simply
+        # forwards them (it cannot read a sealed body to verify it).
+        if frame.e2e_payload is None:
+            if not self._verify_inner_source(peer_id, frame):
+                return
 
         # v0.5.2: decompress LoRa-compressed payloads
         if getattr(frame, 'routing', {}).get("compressed"):
@@ -573,6 +615,12 @@ class RoutingMixin:
                 )
                 frame.payload = plaintext
                 payload = plaintext
+                # Deferred inner-source verification: now that the body is
+                # recovered, run the same fail-closed policy the chokepoint
+                # applies to non-e2e frames (control types are exempt; a
+                # present-but-invalid or unresolved-source signature drops).
+                if not self._verify_inner_source(peer_id, frame):
+                    return
             except Exception as e:
                 logger.warning("E2E unseal failed from source %s: %s",
                                frame.source, e)
@@ -599,6 +647,19 @@ class RoutingMixin:
             peer_state.last_seen = time.time()
             return
         # action == "deliver" → fall through to normal handling
+
+        # Terminal-delivery dedup: a message can reach its destination more
+        # than once — via redundant routes, or a relay/peer re-sending a valid
+        # frame with a fresh per-hop sequence the replay guard cannot catch.
+        # Deliver each (source, msg_id) exactly once so bus handlers do not
+        # re-fire on a duplicate. (Relayed frames are deduped separately on the
+        # forward path; mesh-off nodes rely on the per-peer sequence guard.)
+        if (self._mesh is not None
+                and self._mesh.dedup.check_and_add(frame.source, msg_id)):
+            logger.debug("Dropping duplicate terminal delivery %s from %s",
+                         msg_id, frame.source)
+            peer_state.last_seen = time.time()
+            return
 
         # Store in history
         await self._db.store_message(
@@ -755,6 +816,7 @@ class RoutingMixin:
         # destination's identity public key, e2e-seal the payload so relays
         # cannot read it.
         e2e_payload = None
+        e2e_signed_plaintext = None
         dest_pubkey = self._lookup_dest_identity(to_node)
         if dest_pubkey is not None and to_node != self.node_id:
             try:
@@ -772,6 +834,11 @@ class RoutingMixin:
                 e2e_payload = mesh_crypto.seal_to_destination(
                     payload, dest_pubkey, dest_x25519_pub=dest_x25519,
                 )
+                # Remember the exact bytes sealed — the inner source signature
+                # for an e2e frame is computed over THIS plaintext (what the
+                # destination recovers on unseal), and the body is then
+                # stripped from frame.payload so relays never see it.
+                e2e_signed_plaintext = payload
             except Exception as e:
                 logger.debug("E2E seal failed for %s: %s — falling back to per-hop only",
                              to_node, e)
@@ -812,6 +879,35 @@ class RoutingMixin:
         frame.hops = []
         if compressed:
             frame.routing["compressed"] = True
+
+        if e2e_payload is not None:
+            # Relay-confidentiality: the body travels ONLY in e2e_payload
+            # (a SealedBox to the destination). Sign the inner source
+            # signature over the sealed plaintext now, then strip the body
+            # from frame.payload so a forwarding relay — which decrypts its
+            # per-hop layer to route — never sees it. The destination unseals
+            # e2e_payload and verifies the signature over the recovered
+            # plaintext (see _dispatch_message). Relays cannot verify a sealed
+            # body, so inner-source verification for e2e frames is deferred to
+            # the destination rather than run at every hop.
+            if self._keypair is not None:
+                from ironmesh.crypto import (
+                    SIG_CTX_FRAME_INNER_SOURCE,
+                    sign_detached_with_context,
+                )
+                canon = ew_protocol.canonical_inner_source_bytes(
+                    frame.source, frame.destination, frame.msg_id,
+                    e2e_signed_plaintext,
+                )
+                frame.source_signature = sign_detached_with_context(
+                    self._keypair.get_signing_key(),
+                    SIG_CTX_FRAME_INNER_SOURCE, canon,
+                )
+                frame.source_sig_scheme = frame.SOURCE_SIG_SCHEME_V2
+            frame.payload = b""
+            # The body in e2e_payload is uncompressed-sealed; there is no
+            # per-hop payload to decompress.
+            frame.routing.pop("compressed", None)
 
         # 1. Direct WebSocket
         if ws and peer_state and peer_state.session_key:

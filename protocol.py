@@ -646,11 +646,10 @@ class Frame:
         # by the original source. Survives per-hop re-encryption by relays.
         self.source_signature: Optional[bytes] = None
         # e2e_payload: NaCl SealedBox ciphertext readable only by the
-        # destination, which unseals it to recover the true plaintext.
-        # NOTE: the send path currently ALSO carries the plaintext in
-        # `payload`, so this sealed copy does not yet hide the body from a
-        # forwarding relay (which decrypts its per-hop layer to route). See
-        # SECURITY.md "Confidentiality from forwarding relays".
+        # destination, which unseals it to recover the true plaintext. For
+        # sealed frames the send path carries the body SOLELY here and strips
+        # `payload` (so a forwarding relay cannot read it); the destination
+        # verifies the inner source signature after unseal.
         self.e2e_payload: Optional[bytes] = None
 
         # Which inner-source-signature scheme produced ``source_signature``.
@@ -1221,6 +1220,18 @@ class ReplayGuard:
         """Reset replay state for a peer (e.g., on reconnect with new session)."""
         self._peers.pop(peer_id, None)
 
+    def snapshot_peer(self, peer_id: str, snapshot_id: str):
+        """Copy ``peer_id``'s replay state under ``snapshot_id``.
+
+        Used during a rekey epoch transition: the receiver keeps the old
+        epoch's high-water mark so in-flight frames still encrypted under the
+        retiring key are replay-checked against their own sequence space,
+        independent of the fresh state started for the new key.
+        """
+        import copy
+        self._ensure_peer(peer_id)
+        self._peers[snapshot_id] = copy.deepcopy(self._peers[peer_id])
+
 
 # ---------------------------------------------------------------------------
 # MessageBus
@@ -1297,6 +1308,17 @@ class PeerState:
         self.session_key: Optional[bytes] = None  # Derived ECDH shared secret
         self.ephemeral_public: Optional[bytes] = None  # Peer's X25519 public key
         self.verified: bool = False  # True after successful handshake
+
+        # Rekey dual-key transition (responder side). After answering a
+        # REKEY_REQUEST the receiver keeps the retiring key valid for
+        # DECRYPTING frames the initiator already sent under it, until the
+        # first frame under the new key arrives (or ``rekey_transition_until``
+        # elapses). Without this, in-flight frames during the ~1-RTT rekey
+        # window would fail to decrypt under the freshly-installed key and be
+        # silently dropped.
+        self.prev_session_key: Optional[bytes] = None
+        self.prev_epoch_key: Optional[str] = None  # ReplayGuard snapshot key
+        self.rekey_transition_until: float = 0.0
 
         # v0.9.4 Phase 2: peer's advertised X25519 identity public key.
         # Populated from the HELLO ``x25519_public_b64`` advertisement

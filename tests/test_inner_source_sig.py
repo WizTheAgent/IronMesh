@@ -420,3 +420,95 @@ class TestStorePinnedSourceResolution:
         f = _sign_v2(src, _frame(source=SRC_ID))
         assert d._verify_inner_source(RELAY_ID, f) is False
         assert d.metrics.inner_source_sig_drops == 1
+
+
+class TestE2ESealedPostUnsealVerify:
+    """v0.9.5 relay-confidentiality: an e2e-sealed frame carries the body only
+    in ``e2e_payload`` (frame.payload is stripped on the wire), so relays can
+    forward it without reading it. The inner source signature is over the
+    sealed plaintext and is verified by the DESTINATION after unseal, applying
+    the same fail-closed policy the chokepoint uses for non-e2e frames.
+    """
+
+    @staticmethod
+    def _seal_and_sign(src, dest_kp, payload, destination="dd" * 16,
+                       msg_id="e1"):
+        from ironmesh import mesh_crypto
+        from ironmesh.crypto import (
+            SIG_CTX_FRAME_INNER_SOURCE, sign_detached_with_context,
+        )
+        from ironmesh.protocol import canonical_inner_source_bytes
+        f = _frame(source=SRC_ID, payload=b"", msg_id=msg_id,
+                   destination=destination)  # body stripped, as on the wire
+        f.e2e_payload = mesh_crypto.seal_to_destination(
+            payload, dest_kp.ed25519_public)
+        canon = canonical_inner_source_bytes(
+            f.source, f.destination, f.msg_id, payload)  # over the plaintext
+        f.source_signature = sign_detached_with_context(
+            src.get_signing_key(), SIG_CTX_FRAME_INNER_SOURCE, canon)
+        f.source_sig_scheme = Frame.SOURCE_SIG_SCHEME_V2
+        return f
+
+    @staticmethod
+    def _unseal(f, dest_kp):
+        from ironmesh import mesh_crypto
+        f.payload = mesh_crypto.unseal_from_source(
+            f.e2e_payload, dest_kp.ed25519_secret)
+        return f
+
+    def test_wire_frame_carries_no_plaintext(self):
+        src = generate_keypair("src")
+        dest = generate_keypair("dest")
+        f = self._seal_and_sign(src, dest, b"top-secret-body")
+        assert f.payload == b""  # stripped
+        assert f.e2e_payload is not None
+        assert b"top-secret" not in f.to_dict().get("payload", "").encode()
+
+    def test_valid_e2e_delivers_after_unseal(self):
+        src = generate_keypair("src")
+        dest = generate_keypair("dest")
+        daemon = _build_daemon(known_sources={SRC_ID: src})
+        f = self._seal_and_sign(src, dest, b"the-body")
+        self._unseal(f, dest)
+        assert f.payload == b"the-body"
+        assert daemon._verify_inner_source(RELAY_ID, f) is True
+        assert f.source_authenticated is True
+
+    def test_tampered_sealed_body_dropped_post_unseal(self):
+        # An attacker reseals a DIFFERENT body but reuses the original
+        # signature; on unseal the recovered plaintext no longer matches the
+        # signed plaintext, so verification fails.
+        from ironmesh import mesh_crypto
+        src = generate_keypair("src")
+        dest = generate_keypair("dest")
+        daemon = _build_daemon(known_sources={SRC_ID: src})
+        f = self._seal_and_sign(src, dest, b"original-body")
+        f.e2e_payload = mesh_crypto.seal_to_destination(
+            b"attacker-swapped-body", dest.ed25519_public)  # different body
+        self._unseal(f, dest)
+        assert f.payload == b"attacker-swapped-body"
+        assert daemon._verify_inner_source(RELAY_ID, f) is False
+
+    def test_forged_signature_dropped_post_unseal(self):
+        src = generate_keypair("src")
+        attacker = generate_keypair("attacker")
+        dest = generate_keypair("dest")
+        daemon = _build_daemon(known_sources={SRC_ID: src})
+        # Attacker signs the (correct) body under their own key.
+        f = self._seal_and_sign(attacker, dest, b"the-body")
+        self._unseal(f, dest)
+        assert daemon._verify_inner_source(RELAY_ID, f) is False
+
+    def test_redirect_rejected_wrong_destination_cannot_unseal(self):
+        # SealedBox is to the original destination's key; a relay that
+        # redirects the frame to a different node — which then tries to
+        # unseal with its own key — fails at unseal (raises), never
+        # delivering. Confirms confidentiality + integrity of the redirect.
+        from ironmesh import mesh_crypto
+        from nacl.exceptions import CryptoError
+        src = generate_keypair("src")
+        dest = generate_keypair("dest")
+        wrong = generate_keypair("wrong-dest")
+        f = self._seal_and_sign(src, dest, b"the-body")
+        with pytest.raises((CryptoError, ValueError, Exception)):
+            mesh_crypto.unseal_from_source(f.e2e_payload, wrong.ed25519_secret)

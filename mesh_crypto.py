@@ -22,15 +22,17 @@ Wire surface:
     - Ciphertext overhead: 48 bytes (32 ephemeral pubkey + 16 Poly1305 tag)
 
 Threat model:
-    - This SealedBox is the primitive that MAKES relay-confidentiality
-      possible: only the destination can decrypt ``e2e_payload``.
-    - IMPORTANT current limitation: the send path (routing.py) attaches this
-      sealed payload ALONGSIDE the plaintext in ``frame.payload``, and the
-      per-hop layer a relay decrypts to forward carries that plaintext. So
-      today a forwarding relay CAN read the body despite this layer — see the
-      "Confidentiality from forwarding relays" note in SECURITY.md. Delivering
-      true relay-confidentiality requires carrying the body solely here and
-      moving inner-source verification to run after unseal at the destination.
+    - Relay nodes cannot read e2e payloads (confidentiality from relays).
+      The send path (routing.py) carries the body SOLELY in ``e2e_payload``
+      for sealed frames — ``frame.payload`` is stripped — so a relay
+      decrypting its per-hop layer finds no readable body, only this sealed
+      field, which only the destination can unseal.
+    - Because a relay cannot read the sealed body, it cannot verify the inner
+      source signature over it; verification is deferred to the destination
+      (post-unseal). A relay simply forwards sealed frames.
+    - Fallback: when the destination's key is unknown the frame is NOT sealed
+      (per-hop encryption only) and a relay can read the body — routing.py
+      logs a warning in that case.
     - Relay nodes CAN see source, destination, msg_id, timestamp, message type
       (header metadata is required for routing).
     - Inner Ed25519 source signature provides authenticity end-to-end.

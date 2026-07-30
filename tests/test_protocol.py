@@ -132,6 +132,28 @@ class TestReplayGuard:
         assert guard.check("peer1", 1, time.time()) is None
         assert guard.check("peer1", 2, time.time()) is None
 
+    def test_snapshot_peer_separates_rekey_epochs(self):
+        # Rekey dual-key transition: the old epoch's high-water is snapshotted
+        # under a separate key, so in-flight old-key frames (continuing their
+        # sequence) and fresh new-key frames (restarting at 1) never collide.
+        guard = ReplayGuard()
+        now = time.time()
+        # pre-rekey traffic on the peer reaches seq 50
+        assert guard.check("peer1", 49, now) is None
+        assert guard.check("peer1", 50, now) is None
+        # rekey: snapshot the old epoch, then reset the peer for the new key
+        guard.snapshot_peer("peer1", "peer1#rekey0")
+        guard.reset_peer("peer1")
+        # an in-flight OLD-key frame (seq 51) is checked against the snapshot
+        # and accepted (51 > 50) without touching the new epoch
+        assert guard.check("peer1#rekey0", 51, now) is None
+        # a NEW-key frame restarts at seq 1 and is accepted on the fresh peer
+        # state — it is NOT rejected as a replay despite being < 51
+        assert guard.check("peer1", 1, now) is None
+        assert guard.check("peer1", 2, now) is None
+        # the old snapshot still rejects a replay of its own sequence
+        assert guard.check("peer1#rekey0", 51, now) is not None
+
     def test_reject_old_sequence(self):
         guard = ReplayGuard()
         assert guard.check("peer1", 5, time.time()) is None

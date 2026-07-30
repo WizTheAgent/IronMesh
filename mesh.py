@@ -763,7 +763,11 @@ class MeshRouter:
                            peer_id, len(payload))
             return
         try:
-            data = json.loads(payload)
+            # Depth-guarded parse — this is an attacker-controllable
+            # peer-sent control payload, so apply the same MAX_JSON_DEPTH
+            # bound the frame envelope uses (defeats deeply-nested JSON).
+            from ironmesh.protocol import safe_json_loads
+            data = safe_json_loads(payload)
         except Exception as e:
             logger.warning("Bad ROUTE_ANNOUNCE from %s: %s", peer_id, e)
             return

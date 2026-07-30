@@ -153,13 +153,26 @@ class HandshakeMixin:
         my_private, my_public = ew_keys.generate_ephemeral()
         new_key = ew_crypto.ecdh_exchange(my_private, peer_pub)
         ew_crypto.secure_wipe(my_private)
-        # Respond with OLD key (still active), then switch
+        # Respond with OLD key (still active), then switch.
         await self._send_encrypted_control(
             peer_id, ew_protocol.MessageType.REKEY_RESPONSE, {
                 "new_ephemeral_public": base64.b64encode(bytes(my_public)).decode(),
                 "rekey_id": rekey_id,
             },
         )
+        # Dual-key transition: retain the retiring key for DECRYPTING frames
+        # the initiator already sent under it (in flight during the ~1-RTT
+        # rekey window) until the first new-key frame arrives (or the grace
+        # elapses). Snapshot the old epoch's replay high-water so those
+        # in-flight frames keep their own monotonic sequence check,
+        # independent of the fresh state started for the new key.
+        old_key = peer_state.session_key
+        epoch_key = f"{peer_id}#rekey{peer_state.session_rekey_count}"
+        if old_key is not None:
+            self._replay_guard.snapshot_peer(peer_id, epoch_key)
+            peer_state.prev_session_key = old_key
+            peer_state.prev_epoch_key = epoch_key
+            peer_state.rekey_transition_until = time.time() + 30.0
         peer_state.session_key = new_key
         peer_state.session_rekey_count += 1
         peer_state.last_rekey_at = time.time()
