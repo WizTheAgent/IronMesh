@@ -645,9 +645,12 @@ class Frame:
         # source_signature: Ed25519 signature over the *plaintext* payload bytes
         # by the original source. Survives per-hop re-encryption by relays.
         self.source_signature: Optional[bytes] = None
-        # e2e_payload: NaCl SealedBox ciphertext readable only by the destination.
-        # When present, plaintext `payload` is opaque to relays; the dest unseals
-        # this field to recover the true plaintext.
+        # e2e_payload: NaCl SealedBox ciphertext readable only by the
+        # destination, which unseals it to recover the true plaintext.
+        # NOTE: the send path currently ALSO carries the plaintext in
+        # `payload`, so this sealed copy does not yet hide the body from a
+        # forwarding relay (which decrypts its per-hop layer to route). See
+        # SECURITY.md "Confidentiality from forwarding relays".
         self.e2e_payload: Optional[bytes] = None
 
         # Which inner-source-signature scheme produced ``source_signature``.

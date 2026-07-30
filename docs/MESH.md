@@ -11,9 +11,12 @@ multi-hop mesh.
 
 - Distance-vector routing with split horizon + poisoned reverse.
 - Default mode: `--mesh-routing=relay` — every node forwards.
-- Each hop re-encrypts with its outbound session key.
-- Message bodies are also wrapped in NaCl `SealedBox` end-to-end so relays
-  cannot read them.
+- Each hop re-encrypts with its outbound session key (off-path
+  eavesdroppers see only ciphertext).
+- Message bodies are also wrapped in NaCl `SealedBox` for the destination
+  (`e2e_payload`). **Current caveat:** the plaintext body still rides in the
+  per-hop layer too, so a forwarding relay can read it — making the body
+  opaque to relays is a tracked follow-up. See the Trust model below.
 - Inner Ed25519 signature over the plaintext provides end-to-end source
   authenticity even after per-hop re-encryption.
 - v0.3 peers remain interoperable as direct-only nodes; mesh forwarding is
@@ -74,7 +77,7 @@ see the metadata below **and the plaintext message body**. An end-to-end
 `SealedBox` layer (`e2e_payload`) is also present, addressed only to the
 destination, but the body currently rides in the per-hop layer as well — so
 making it opaque to forwarding relays is a tracked follow-up (see
-[SECURITY.md](../SECURITY.md), "Confidentiality from forwarding relays").
+[SECURITY.md](https://github.com/WizTheAgent/IronMesh/blob/main/SECURITY.md), "Confidentiality from forwarding relays").
 Route through relays you trust with message contents.
 
 | What relays can see | What relays cannot do |
@@ -124,9 +127,14 @@ keyed to the destination's X25519 public key (derived from its Ed25519
 identity key via libsodium's blessed `crypto_sign_ed25519_pk_to_curve25519`
 helper).
 
-The sealed ciphertext is carried in `Frame.e2e_payload` and is opaque to
-every relay along the path. Only the destination — which holds the matching
-secret key — can decrypt it.
+The sealed ciphertext is carried in `Frame.e2e_payload`; only the
+destination — which holds the matching secret key — can decrypt *that
+field*. **However**, the send path currently also carries the plaintext body
+in `Frame.payload`, which each relay decrypts as part of its per-hop layer to
+forward — so today a forwarding relay reads the body despite this sealed
+copy. Delivering true relay-opacity requires carrying the body solely in
+`e2e_payload` and moving inner-source verification to the destination
+(tracked follow-up).
 
 **Forward secrecy.** `SealedBox` generates a fresh ephemeral X25519 keypair
 for every call, so even if the destination's long-term identity key were
@@ -179,8 +187,10 @@ ironmesh run \
 Within `2 × route_announce_interval` (default 60 s) seconds, `node-a` will
 have learned a route to `node-c` via `node-b`. From `node-a`'s GUI you can
 send a message to `node-c`'s fingerprint and it will arrive — `node-b`'s
-audit log will contain an `EVENT_MESSAGE_RELAYED` entry, and the relayed
-ciphertext on `node-b` will be opaque.
+audit log will contain an `EVENT_MESSAGE_RELAYED` entry. On the wire between
+hops the frame is per-hop encrypted (opaque to an off-path observer), though
+`node-b` itself, as the relay, decrypts that layer to forward and currently
+sees the plaintext body (see the Trust model caveat above).
 
 ---
 
