@@ -678,10 +678,16 @@ footer.ops .legal{color:var(--text-faint);font-size:10px;letter-spacing:.5px}
   const ts = t.toLocaleTimeString([], { hour12:false });
   const arrow = r.dir==='out' ? '↑' : (r.dir==='sys' ? '·' : '↓');
   const peerLabel = peerName(r.peer);
-  return '<div class="feed-row sev-'+r.sev+'">'+
+  // r.sev/r.dir are daemon-set enums, not peer input, but interpolate into
+  // class attributes — constrain to [a-z] so an unexpected value can never
+  // break out of the attribute (defense-in-depth, matches the esc discipline
+  // applied to every remote field below).
+  const sev = (r.sev||'').replace(/[^a-z]/g,'');
+  const dir = (r.dir||'').replace(/[^a-z]/g,'');
+  return '<div class="feed-row sev-'+sev+'">'+
    '<span class="gutter"></span>'+
    '<span class="time">'+ts+'</span>'+
-   '<span class="dir '+r.dir+'">'+arrow+'</span>'+
+   '<span class="dir '+dir+'">'+arrow+'</span>'+
    '<span class="type">'+escHtml(r.type)+'</span>'+
    '<span class="peer">'+escHtml(peerLabel)+'</span>'+
    '<span class="payload">'+escHtml((r.payload||'').slice(0,500))+'</span>'+

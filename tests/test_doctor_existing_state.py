@@ -127,6 +127,24 @@ class TestVerifyChainHeadless:
         assert ok is True
         assert entries == 5
 
+    @pytest.mark.parametrize("content", ["{}", "[]", "5", '{"encrypted": 1}',
+                                         "not json at all"])
+    def test_malformed_key_file_raises_clean_valueerror(self, tmp_path,
+                                                        monkeypatch, content):
+        # A valid-JSON-but-structurally-malformed key file (or non-JSON) must
+        # surface as a clean ValueError — cmd_audit turns that into an
+        # actionable "ERROR:" line — NOT an uncaught KeyError/AttributeError
+        # traceback. Regression guard for the narrowed except in
+        # _load_keys_for_verify.
+        kf = tmp_path / "keys.json"
+        kf.write_text(content)
+        (tmp_path / "audit.log").write_text("")  # existence not required here
+        _no_tty(monkeypatch)
+        for var in ("IRONMESH_PASSPHRASE", "IRONMESH_KEYS_PASSPHRASE"):
+            monkeypatch.delenv(var, raising=False)
+        with pytest.raises(ValueError):
+            verify_chain(str(tmp_path / "audit.log"), keys_path=str(kf))
+
 
 # ---------------------------------------------------------------------------
 # CLI level — a real headless `ironmesh doctor` against existing state

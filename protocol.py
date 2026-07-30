@@ -1046,30 +1046,37 @@ class Frame:
         if self.source_signature is None:
             return False
 
-        # Both helpers return bool and swallow BadSignatureError internally,
-        # so the branching below can try one scheme and fall through to the
-        # other without an exception short-circuiting the fallback.
+        # Both helpers return bool and swallow verification failures
+        # internally, so the branching below can try one scheme and fall
+        # through to the other without an exception short-circuiting the
+        # fallback. BadSignatureError is a wrong signature; ValueError/
+        # TypeError cover a malformed signature (e.g. wrong length — PyNaCl
+        # raises ValueError, not BadSignatureError) — all are fail-closed:
+        # an unverifiable signature returns False in-band rather than
+        # unwinding to the caller.
+        _VERIFY_FAIL = (nacl_exceptions.BadSignatureError, ValueError, TypeError)
+
         def _verify_v2() -> bool:
             from ironmesh.crypto import (
                 SIG_CTX_FRAME_INNER_SOURCE,
                 verify_detached_with_context,
             )
-            canon = canonical_inner_source_bytes(
-                self.source, self.destination, self.msg_id, self.payload,
-            )
             try:
+                canon = canonical_inner_source_bytes(
+                    self.source, self.destination, self.msg_id, self.payload,
+                )
                 return bool(verify_detached_with_context(
                     verify_key, SIG_CTX_FRAME_INNER_SOURCE, canon,
                     self.source_signature,
                 ))
-            except nacl_exceptions.BadSignatureError:
+            except _VERIFY_FAIL:
                 return False
 
         def _verify_v1() -> bool:
             try:
                 verify_key.verify(self.payload, self.source_signature)
                 return True
-            except nacl_exceptions.BadSignatureError:
+            except _VERIFY_FAIL:
                 return False
 
         # The scheme tag rides OUTSIDE the signed bytes. It is a hint, not a

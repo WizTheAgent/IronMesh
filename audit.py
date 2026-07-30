@@ -580,6 +580,20 @@ def _load_keys_for_verify(keys_path: Optional[str],
     """
     from ironmesh import keys as ew_keys
     kp = keys_path or "~/.ironmesh/keys.json"
+
+    def _load(passphrase):
+        # Normalize a valid-JSON-but-structurally-malformed key file (e.g. an
+        # empty {}, a truncated envelope, a JSON list) to a clear ValueError.
+        # load_keys reads fields like data["ed25519_public"] before its
+        # encryption check, so such files raise KeyError/TypeError/
+        # AttributeError; without this they would escape to an uncaught
+        # traceback in `ironmesh audit verify`.
+        try:
+            return ew_keys.load_keys(kp, passphrase=passphrase)
+        except (KeyError, TypeError, AttributeError) as e:
+            raise ValueError(
+                f"identity key file {kp} is malformed: {e}") from e
+
     # Honor both the keys-specific and legacy env var, keys-specific first —
     # the same pair `ironmesh doctor` reads, so the two commands agree on
     # the passphrase source in a given environment.
@@ -588,14 +602,14 @@ def _load_keys_for_verify(keys_path: Optional[str],
                or os.environ.get("IRONMESH_PASSPHRASE"))
     if not kp_pass:
         try:
-            return ew_keys.load_keys(kp, passphrase=None)  # plaintext file
+            return _load(None)  # plaintext file
         except FileNotFoundError:
             raise  # no key file — report it as itself
         except OSError:
             raise  # permission denied etc. — report it as itself
         except ValueError as e:
             if "encrypted" not in str(e).lower():
-                raise  # corrupt/invalid envelope — not a passphrase problem
+                raise  # corrupt/malformed envelope — not a passphrase problem
             # encrypted-but-no-passphrase → fall through to prompt/error
         from ironmesh.cli_output import stdin_is_interactive
         if stdin_is_interactive():
@@ -609,7 +623,7 @@ def _load_keys_for_verify(keys_path: Optional[str],
             "an interactive terminal. `ironmesh setup` encrypts the key file "
             "with the mesh passphrase, so that value works here too."
         )
-    return ew_keys.load_keys(kp, passphrase=kp_pass)
+    return _load(kp_pass)
 
 
 def verify_chain(audit_path: str, keys_path: Optional[str] = None,

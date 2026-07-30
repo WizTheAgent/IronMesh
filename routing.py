@@ -983,7 +983,12 @@ class RoutingMixin:
         try:
             return _parse_protocol_version(self._min_protocol_version) < (0, 9)
         except Exception:
-            return True
+            # Defense-in-depth: an unparseable floor defaults to the SAFER
+            # posture (refuse the unbound legacy v1 form), not the weaker
+            # one. (_parse_protocol_version already fails soft to (0,0), so
+            # this branch is effectively unreachable — but a future change
+            # to the parser must not silently re-enable v1.)
+            return False
 
     def _verify_inner_source(self, peer_id: str,
                              frame: "ew_protocol.Frame") -> bool:

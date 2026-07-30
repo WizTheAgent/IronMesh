@@ -144,6 +144,19 @@ class TestDirectFrames:
         f.source_signature = _sign_v1(attacker, f.payload)  # wrong key
         assert daemon._verify_inner_source(SRC_ID, f) is False
 
+    def test_wrong_length_signature_fails_closed_inband(self):
+        # A malformed (wrong-length) signature makes PyNaCl raise ValueError,
+        # not BadSignatureError. verify_source_signature must return False
+        # in-band (drop), never propagate the exception.
+        src = generate_keypair("src")
+        f = _frame(source=SRC_ID)
+        f.source_signature = b"\x00" * 10  # not 64 bytes
+        # Direct verify helper: no raise, returns False.
+        assert f.verify_source_signature(src.get_verify_key()) is False
+        # And via the daemon policy path (relayed → present-but-invalid drop).
+        daemon = _build_daemon(known_sources={SRC_ID: src})
+        assert daemon._verify_inner_source(RELAY_ID, f) is False
+
 
 # ---------------------------------------------------------------------------
 # Relayed frames (source != immediate peer) — the core verification gap
