@@ -192,17 +192,26 @@ Cross-tenant capability discovery is impossible without bridging.
 
 If two tenants on the same host **want** controlled cross-talk (e.g.
 `blue`'s data analyst should be able to query `green`'s LLM but not
-vice versa), use the federation gateway:
+vice versa), bridge them with the `FederationGateway` API. It joins two
+independent meshes and enforces a capability allow/deny policy at the
+boundary:
 
-```bash
-ironmesh-federation \
-    --left-port 8765 --right-port 8865 \
-    --allow "llm:*:right→left" \
-    --deny  "*"
+```python
+from ironmesh import FederationGateway
+
+gw = FederationGateway(
+    mesh_a={"name": "blue-gw",  "port": 8765, "passphrase": "blue-pass"},
+    mesh_b={"name": "green-gw", "port": 8865, "passphrase": "green-pass"},
+    policy={"allow": ["llm:*"], "deny": ["*"]},
+)
+gw.run()
 ```
 
-The federation gateway enforces capability-based ACLs at the
-mesh boundary. See `docs/MESH.md` for the policy syntax.
+The gateway matches each forwarded message's capability against the
+policy globs (allow-list wins, deny is the default). There is no
+`ironmesh-federation` console command — federation is driven through
+this API. See the `FederationGateway` section in the top-level README
+for the full parameter reference.
 
 ## Per-tenant operator dashboards
 

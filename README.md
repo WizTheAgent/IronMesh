@@ -307,7 +307,7 @@ ironmesh-mcp --passphrase-file ~/.ironmesh/passphrase
 
 OpenClaw agents can use IronMesh as a discovery + transport layer through
 the bundled MCP server. After registering `python -m ironmesh_mcp` as an
-MCP server in `~/.openclaw/openclaw.json`, your agent gets 13 mesh tools —
+MCP server in `~/.openclaw/openclaw.json`, your agent gets 25 mesh tools —
 discover capabilities, request services from peers, broadcast, subscribe
 to events. Drop the snippet at `examples/openclaw/soul_mesh_snippet.md`
 into the agent's `SOUL.md` so it knows when to reach for them. Full setup

@@ -20,10 +20,44 @@ RNS link binding activate only when both peers advertise
 `ironmesh/0.9+`; any peer at an older version keeps the exact legacy
 path, byte-for-byte. See the **Wire-compatibility** section below.
 
-**Operator action:** none required. Upgrade with
-`pip install --upgrade ironmesh==0.9.5` or pull
-`wiztheagent/ironmesh:0.9.5`. The at-rest storage key re-derives (and
-the database re-encrypts) automatically on first start.
+**Operator action:** none required for the common single-daemon or
+all-at-once upgrade. Upgrade with `pip install --upgrade ironmesh==0.9.5`
+or pull `wiztheagent/ironmesh:0.9.5`. The at-rest storage key re-derives
+(and the database re-encrypts) automatically on first start. Operators
+running **multi-hop relay meshes** or who may **roll back** should read
+"Upgrading in place" below first.
+
+## Upgrading in place (multi-hop meshes + rollback)
+
+- **Roll the whole mesh forward; don't leave it mixed long-term.** v0.9.5
+  authenticates the originator of relayed user-payload frames. A relayed
+  frame whose originator the receiving node has never met (no live session
+  and no TOFU pin) is dropped fail-closed. In a hub-and-spoke or multi-hop
+  topology this means: after upgrading a node, ensure it has pinned (or
+  will handshake) the originators whose traffic it must accept. Direct
+  peer-to-peer links and fully-upgraded meshes are unaffected; the bundled
+  Go/TS clients, which emit no inner source signature, must be reached
+  directly (one hop) or have their identities pinned at the destination.
+- **Legacy relays are handled automatically** as of this release: a v2
+  inner signature whose scheme tag a pre-0.9 relay strips on re-serialize
+  is still verified (the receiver tries the bound scheme regardless of the
+  tag), so upgraded-origin traffic transiting a legacy hop is not dropped.
+- **keys.json is re-encrypted on first start.** A node that was running a
+  *plaintext* `keys.json` (a bare `ironmesh run` on an older version) has
+  its key file encrypted with the mesh passphrase on the first v0.9.5
+  start. If you later **roll back** to an older daemon, add
+  `--keys-passphrase <mesh-passphrase>` (or `IRONMESH_KEYS_PASSPHRASE`) to
+  that node — the old daemon cannot open the now-encrypted file on its own.
+  Pass `--plaintext-keys` on v0.9.5 to opt out of the encryption entirely.
+- **The DB re-encryption is forward-only.** After first start, message
+  history and the offline queue are encrypted with the new Argon2id-derived
+  key. Rolling back to a pre-0.9.5 daemon will leave that data unreadable
+  by the old code (it is not corrupted — a re-upgrade reads it again), so
+  take a copy of `~/.ironmesh/data.db` before upgrading if you need the
+  option to roll back with history intact.
+- **Hardened deployments:** set `--min-protocol-version ironmesh/0.9` once
+  every node is upgraded to refuse the legacy unbound v1 inner signature
+  (and the legacy HELLO signature) mesh-wide.
 
 ## What shipped
 

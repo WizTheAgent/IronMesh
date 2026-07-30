@@ -125,7 +125,7 @@ ironmesh run --name node-a --port 8765 \
 python -m examples.llm_bridge \
     --name node-a-llm --port 8766 \
     --model llama3.2:3b \
-    --ollama-host http://localhost:11434
+    --ollama-url http://localhost:11434
 ```
 
 The first terminal runs the IronMesh daemon. The second runs the
