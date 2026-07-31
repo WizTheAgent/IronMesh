@@ -271,11 +271,31 @@ it into a production config.
 
 ### Docker
 
+The image ships a **secure default** — default-deny discovery (auto-connect
+needs `--allowed-peers`) and wss-first (no `ws://` fallback). The two insecure
+convenience flags (`--open-discovery`, `--allow-plaintext-ws`) are **not** in
+the default; pass them explicitly if you want them.
+
 ```bash
 # One-off .env with your passphrase (>= 12 chars)
 printf 'IRONMESH_PASSPHRASE=your-strong-secret-phrase\n' > .env
 docker compose up -d
 # Dashboard at http://127.0.0.1:8766 (GUI token printed in logs)
+```
+
+Zero-config 2-node LAN demo (isolated network + demo passphrase; the insecure
+convenience flags are enabled **explicitly** in the compose file — demo only):
+
+```bash
+docker compose -f docker-compose.demo.yml up
+```
+
+Single container with the demo flags spelled out:
+
+```bash
+docker run --rm -p 8765:8765 -e IRONMESH_PASSPHRASE=demo-passphrase-12 \
+  wiztheagent/ironmesh:0.9.5 \
+  sh -c 'ironmesh run --name demo --port 8765 --bind 0.0.0.0 --gui --open-discovery --allow-plaintext-ws'
 ```
 
 ### Framework integrations

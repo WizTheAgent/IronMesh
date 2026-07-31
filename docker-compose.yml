@@ -5,7 +5,12 @@
 #   2. docker compose up -d
 #   3. Dashboard: http://localhost:8766  (token printed in logs)
 #
-# Or run a pair of peers for local testing:
+# The single `ironmesh` service runs the secure image default (default-deny
+# discovery, wss-first — no --open-discovery / --allow-plaintext-ws).
+#
+# For a ready-made 2-node LAN demo, use docker-compose.demo.yml instead. The
+# optional `--profile pair` peer below is for local testing and opts into the
+# insecure convenience flags explicitly (it reaches out to the secure primary):
 #   docker compose --profile pair up
 
 services:
@@ -38,6 +43,10 @@ services:
     image: ironmesh:0.9.5
     container_name: ironmesh-peer
     restart: unless-stopped
+    # LOCAL TESTING ONLY — explicit insecure flags (not in the image default).
+    command: >
+      sh -c "ironmesh run --name peer --port 8765 --bind 0.0.0.0 --gui
+      --open-discovery --allow-plaintext-ws"
     ports:
       - "8767:8765"
       - "127.0.0.1:8768:8766"

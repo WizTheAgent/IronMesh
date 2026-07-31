@@ -3,6 +3,12 @@
 # Two preconfigured nodes (alice + bob) on an isolated bridge network.
 # Hardcoded demo passphrase — DO NOT USE FOR ANYTHING REAL.
 #
+# The `command:` below EXPLICITLY passes the two INSECURE convenience flags
+# (--open-discovery, --allow-plaintext-ws). They are NOT in the image default
+# (the shipped default is allowlist + wss-first); this demo opts into them on
+# purpose because it runs on a throwaway isolated network with a demo
+# passphrase. NEVER pass these in a real deployment.
+#
 # Quick start:
 #   docker compose -f docker-compose.demo.yml up
 #
@@ -18,14 +24,16 @@ services:
     image: wiztheagent/ironmesh:0.9.5
     container_name: ironmesh-demo-alice
     restart: "no"
+    # DEMO ONLY — explicitly re-enables the insecure flags the image default drops.
+    command: >
+      sh -c "ironmesh run --name alice --port 8765 --bind 0.0.0.0 --gui
+      --open-discovery --allow-plaintext-ws"
     ports:
       - "127.0.0.1:8865:8765"   # mesh ws
       - "127.0.0.1:8866:8766"   # dashboard
     environment:
       IRONMESH_NAME: alice
       IRONMESH_PORT: "8765"
-      IRONMESH_ALLOWED_PEERS: bob
-      IRONMESH_OPEN_DISCOVERY: "false"
       IRONMESH_GUI: "true"
       # Demo passphrase — would emit a startup warning in real use.
       IRONMESH_PASSPHRASE: ironmesh-demo-passphrase-do-not-reuse
@@ -38,14 +46,16 @@ services:
     image: wiztheagent/ironmesh:0.9.5
     container_name: ironmesh-demo-bob
     restart: "no"
+    # DEMO ONLY — explicitly re-enables the insecure flags the image default drops.
+    command: >
+      sh -c "ironmesh run --name bob --port 8765 --bind 0.0.0.0 --gui
+      --open-discovery --allow-plaintext-ws"
     ports:
       - "127.0.0.1:8867:8765"
       - "127.0.0.1:8868:8766"
     environment:
       IRONMESH_NAME: bob
       IRONMESH_PORT: "8765"
-      IRONMESH_ALLOWED_PEERS: alice
-      IRONMESH_OPEN_DISCOVERY: "false"
       IRONMESH_GUI: "true"
       IRONMESH_PASSPHRASE: ironmesh-demo-passphrase-do-not-reuse
     networks:

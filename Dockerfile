@@ -63,4 +63,10 @@ ENV PYTHONUNBUFFERED=1 \
     IRONMESH_PORT=8765
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["sh", "-c", "ironmesh run --name ${IRONMESH_NAME} --port ${IRONMESH_PORT} --bind 0.0.0.0 --gui --allow-plaintext-ws --open-discovery"]
+# Secure default: default-deny discovery (auto-connect needs --allowed-peers)
+# and wss-first (no ws:// fallback). The two INSECURE convenience flags
+# (--open-discovery, --allow-plaintext-ws) are deliberately NOT in the shipped
+# default — a pulled-and-run image must not silently disable peer allowlisting
+# and TLS. To run the isolated zero-config demo, pass them explicitly (see
+# docker-compose.demo.yml or the README "Docker" section).
+CMD ["sh", "-c", "ironmesh run --name ${IRONMESH_NAME} --port ${IRONMESH_PORT} --bind 0.0.0.0 --gui"]
