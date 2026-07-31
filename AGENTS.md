@@ -50,10 +50,24 @@ examples/                  # runnable walkthroughs (cap_binding_workflow etc.)
 
 2. **Every public-facing document reads as public documentation.**
    No internal plan milestone codes (M0/M1), audit severity codes
-   (C1/H1), "RAZOR #N", personal absolute paths, personal IPs, or
-   first-person pronouns in commit messages / changelogs / release
-   notes / public docs. `scripts/leak-scan.sh` enforces this and runs
-   on every push.
+   (C1/H1), "RAZOR #N", personal absolute paths, personal IPs, personal
+   fleet-node/host names, or first-person pronouns in commit messages /
+   changelogs / release notes / public docs. `scripts/leak-scan.sh`
+   enforces this and runs on every push.
+
+   **Remediating a leaked identifier — scrub-forward, don't rewrite
+   history, rotate secrets.** When a forbidden identifier (a personal
+   name, host name, path, or IP) is found in a *tracked* file — including
+   historical CHANGELOG entries and old release notes, which ship in the
+   sdist — genericize it in a normal forward commit (e.g. `wiz`/`kingpi` →
+   `node A`/`node B`, a real path → a placeholder). Rewriting git history
+   is **not** the remediation: public clones and forks retain the old
+   values regardless, so a history rewrite buys nothing and breaks SHAs.
+   For anything that is an actual *secret* (a passphrase, key, or token),
+   scrubbing the file is insufficient — the secret must be **rotated**,
+   because it is already exposed in history and any mirror. In short:
+   tracked-file scrubbing (forward) is allowed and expected; history
+   rewrite is not; rotation is the real fix for exposed secrets.
 
 3. **Live infrastructure only for mesh testing.** Run integration
    tests against a real multi-node production mesh rather than

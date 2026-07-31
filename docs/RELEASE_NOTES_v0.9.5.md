@@ -147,6 +147,35 @@ every node runs v0.9.5+. When the destination key is unknown the frame falls
 back to per-hop-only encryption (a relay can then read the body) and logs a
 warning — pin/handshake destinations before relying on relay confidentiality.
 
+### Pre-launch QA hardening
+
+A multi-round adversarial QA pass before release fixed several issues, most on
+the Reticulum/LoRa transport (see CHANGELOG for the full list):
+
+- **RNS/LoRa: e2e messages larger than the LoRa cap are no longer silently
+  dropped.** An end-to-end sealed frame was also LoRa-compressed, but the inner
+  source signature is verified by the destination *after* it unseals — over the
+  uncompressed plaintext — so the signature (computed over the compressed
+  on-wire bytes) never matched and every such frame was dropped in the default
+  configuration. E2E-sealed frames are no longer compressed.
+- **Session rekey no longer loses in-flight messages on RNS.** The dual-key
+  grace window is now opened symmetrically by both peers (previously only the
+  responder retained the retiring key, so an old-key frame arriving after
+  `REKEY_RESPONSE` — routine on RNS, which carries large frames on an
+  independent, unordered stream — was dropped). The window is retired by a
+  monotonic deadline, and a concurrent two-sided rekey is resolved
+  deterministically so the session cannot desync. *(This closes the rekey
+  message-loss window that earlier notes listed as a follow-up.)*
+- **Decompression-bomb hardening** — inbound LoRa-compressed payloads inflate
+  with a hard output ceiling; an authenticated peer can no longer expand a
+  ~1 MiB frame into ~1 GiB. A relay no longer decompresses a frame it forwards.
+- **`--e2e-strict-confidentiality` raises the protocol floor to `ironmesh/0.9`**
+  when enabled, so no pre-0.9 node can receive a stripped frame it cannot
+  authenticate.
+- Lifecycle/hardening: idempotent shutdown (no stop-time hang), owner-only
+  key-file ACL failures are surfaced, the metrics socket is released on
+  shutdown, and the legacy JSON receive path is depth-guarded.
+
 ### Invite tokens + guided onboarding
 
 **Ephemeral single-use invite tokens (`ironmesh invite create` /

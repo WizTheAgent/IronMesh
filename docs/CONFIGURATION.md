@@ -151,6 +151,15 @@ If the key file is encrypted and none of the above decrypts it, the
 command exits with an error listing these options. Plaintext key
 files need no passphrase.
 
+> **Git Bash / mintty / MSYS2 users:** these terminals run stdin through a
+> winpty pipe, not a Windows console, so IronMesh detects them as
+> non-interactive and does **not** offer a `getpass` prompt (it errors with
+> the list above instead of hanging). Supply the passphrase non-interactively —
+> `IRONMESH_KEYS_PASSPHRASE` (key file) / `IRONMESH_PASSPHRASE_FILE` (mesh) or
+> the `--keys-passphrase-file` / `--passphrase-file` flags — or run from a
+> native Windows console (`cmd.exe` / PowerShell / Windows Terminal) if you
+> want the interactive prompt.
+
 ### Other env vars
 
 These are read by the CLI / daemon / gateways:
