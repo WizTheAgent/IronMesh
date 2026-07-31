@@ -1049,6 +1049,10 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
 
         # Start WebSocket server
         self._running = True
+        # Clear the shutdown idempotency latch so an instance that is started
+        # again after a prior shutdown (start -> shutdown -> start) can shut
+        # down cleanly the second time rather than no-opping.
+        self._shutting_down = False
         self._server = await websockets.serve(
             self._handle_connection,
             self.bind_address,

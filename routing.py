@@ -43,8 +43,12 @@ logger = logging.getLogger("ironmesh.bridge")
 # authenticated peer could turn a ~1 MiB frame into ~1 GiB and OOM a
 # constrained node. Legitimate LoRa messages compress a small body (they must
 # fit the LoRa cap once compressed), so their decompressed size is far under
-# this bound; anything larger is rejected as a decompression bomb.
-_MAX_DECOMPRESSED_BYTES = ew_protocol.MAX_FRAME_BYTES
+# this bound; anything larger is rejected as a decompression bomb. The cap is a
+# generous multiple of MAX_FRAME_BYTES: it still bounds the ~1 GiB bomb by
+# three orders of magnitude, while leaving headroom so a legitimate
+# highly-compressible body under a large custom --lora-max-payload is never
+# false-dropped.
+_MAX_DECOMPRESSED_BYTES = 4 * ew_protocol.MAX_FRAME_BYTES
 
 
 def _bounded_gunzip(data: bytes, max_out: int) -> bytes:

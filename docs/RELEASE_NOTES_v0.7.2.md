@@ -11,7 +11,7 @@ and LoRa.
 ## TL;DR
 
 - **456 tests passing, zero regressions**
-- **Wiz's full production-hardening checklist closed** (observability, queue
+- **The full production-hardening checklist closed** (observability, queue
   backpressure, peer-drop alerts, per-peer bandwidth throttle, multi-NIC mDNS
   fix)
 - **Live validated** on a 3-node LAN mesh + a real Android Sideband client
@@ -42,7 +42,7 @@ agent-name tie-breaker applied uniformly in `_on_peer_discovered`,
 ahead of the real LAN adapter, causing peers to dial unreachable IPs. Fixed
 by preferring gateway-route-based detection.
 
-## Wiz's hardening checklist — closed
+## Production-hardening checklist — closed
 
 | Ask | Delivered |
 |---|---|
@@ -129,7 +129,7 @@ python tests/harness/mesh_bench.py \
   --output results.csv
 ```
 
-Measured live on a 3-node LAN mesh (Wiz ↔ KingPi ↔ Gatekeeper):
+Measured live on a 3-node LAN mesh (node A ↔ node B ↔ node C):
 
 | Payload | Delivery | p50 RTT | p95 RTT | Goodput |
 |---|---|---|---|---|
@@ -200,7 +200,7 @@ _long_drop_threshold_seconds = 300 # 0 disables
 
 ## Acknowledgments
 
-- **Wiz** — the production hardening checklist that drove most of this
+- **WizTheAgent** — the production hardening checklist that drove most of this
   release, plus the name
 - **Reticulum (Mark Qvist, unsigned.io)** — the transport substrate
   that makes the LoRa/off-grid story possible

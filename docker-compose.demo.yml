@@ -15,7 +15,7 @@
 
 services:
   alice:
-    image: wiztheagent/ironmesh:0.8.5.8
+    image: wiztheagent/ironmesh:0.9.5
     container_name: ironmesh-demo-alice
     restart: "no"
     ports:
@@ -35,7 +35,7 @@ services:
       - alice-data:/data/ironmesh
 
   bob:
-    image: wiztheagent/ironmesh:0.8.5.8
+    image: wiztheagent/ironmesh:0.9.5
     container_name: ironmesh-demo-bob
     restart: "no"
     ports:

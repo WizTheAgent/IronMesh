@@ -725,8 +725,8 @@ class MetricsMixin:
                 lines.append(f"{name} 0")
 
         # v0.7.2: per-peer labelled metrics — essential for multi-hop mesh
-        # observability. Wiz's hardening asks for per-hop RTT + retries +
-        # message lifetime. These series use the peer node_id as a label.
+        # observability. The production-hardening pass asks for per-hop RTT +
+        # retries + message lifetime. These series use the peer node_id as a label.
         def _label(pid: str) -> str:
             # node_ids are 32-hex already safe for Prometheus label values
             return pid.replace('"', '')
@@ -877,6 +877,8 @@ class MetricsMixin:
             async with server:
                 await server.serve_forever()
         except asyncio.CancelledError:
+            # Normal shutdown path: the task is cancelled, `async with server`
+            # closes the listening socket. Re-raise so it isn't swallowed below.
             raise
         except Exception as e:
-            logger.debug("Metrics server failed to start: %s", e)
+            logger.debug("Metrics server error (start or serve): %s", e)

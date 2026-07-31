@@ -33,7 +33,7 @@ keywords:
 # Update on every release. The version + date below are the current
 # stable release; the release-notes URL points at the matching tag.
 version: 0.9.5
-date-released: 2026-07-12
+date-released: 2026-07-26
 identifiers:
   - type: url
     value: "https://github.com/WizTheAgent/IronMesh/releases/tag/v0.9.5"

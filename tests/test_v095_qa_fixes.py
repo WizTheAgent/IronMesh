@@ -165,8 +165,11 @@ class TestRekeyDualKeySymmetric:
         return d, peer
 
     async def test_old_key_frame_in_window_decrypts(self, tmp_path):
-        """F1: the initiator (which retains prev via the symmetric helper) must
-        decrypt + dispatch an old-key frame arriving after the switch."""
+        """Dual-key RECEIVE path: with the grace window open (set up via
+        _begin_rekey_transition, exactly as both handlers do), an old-key frame
+        arriving after the switch must decrypt + dispatch. (The handlers that
+        OPEN the window are covered by test_initiator_handler_opens_dual_key_window
+        and test_responder_handler_opens_dual_key_window.)"""
         S = generate_keypair("S")
         d, peer = self._receiver(tmp_path, S)
         old_key, new_key = os.urandom(32), os.urandom(32)
@@ -394,3 +397,153 @@ class TestRestrictFileToOwner:
         if os.name != "nt":
             import stat
             assert stat.S_IMODE(os.stat(p).st_mode) == 0o600
+
+    def test_windows_invokes_icacls_owner_only(self, tmp_path, monkeypatch):
+        """The v0.9.5 fix IS the Windows icacls ACL — verify it's actually
+        invoked (not a no-op). Platform-independent via monkeypatch so it
+        guards the Windows path even when the suite runs on POSIX."""
+        import ironmesh.keys as keys_mod
+        calls = []
+
+        class _R:
+            returncode = 0
+            stderr = b""
+
+        def fake_run(args, **kw):
+            calls.append(args)
+            return _R()
+
+        monkeypatch.setattr(keys_mod.os, "name", "nt")
+        monkeypatch.setattr("subprocess.run", fake_run)  # function does a local `import subprocess`
+        monkeypatch.setenv("USERNAME", "testuser")
+        p = tmp_path / "k.json"
+        p.write_bytes(b"secret")
+        keys_mod.restrict_file_to_owner(str(p))
+        assert calls, "icacls was never invoked on the Windows path (silent no-op)"
+        argv = calls[-1]
+        assert argv[0] == "icacls"
+        assert "/inheritance:r" in argv and "/grant:r" in argv
+        assert "testuser:F" in argv
+
+    def test_windows_icacls_failure_is_swallowed(self, tmp_path, monkeypatch):
+        """A non-zero icacls exit must be logged, not raised (best-effort)."""
+        import ironmesh.keys as keys_mod
+
+        class _R:
+            returncode = 5
+            stderr = b"denied"
+
+        monkeypatch.setattr(keys_mod.os, "name", "nt")
+        monkeypatch.setattr("subprocess.run", lambda a, **k: _R())
+        monkeypatch.setenv("USERNAME", "testuser")
+        p = tmp_path / "k.json"
+        p.write_bytes(b"secret")
+        keys_mod.restrict_file_to_owner(str(p))  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Dispatch-level LoRa decompression: terminal decompresses+delivers; a relay
+# forwards the compressed frame intact; a decompression bomb is dropped.
+# (Locks the decompress-relocation + bomb-cap wiring at the real dispatch site.)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestDispatchDecompression:
+    @staticmethod
+    def _compressed_nonE2E_frame(origin_kp, dest, plaintext):
+        import gzip
+        from ironmesh.protocol import canonical_inner_source_bytes
+        from ironmesh.crypto import (
+            SIG_CTX_FRAME_INNER_SOURCE, sign_detached_with_context)
+        comp = gzip.compress(plaintext)
+        f = Frame(msg_type=MessageType.MSG, payload=comp, msg_id="m1",
+                  source="origin", destination=dest)
+        f.routing["compressed"] = True
+        canon = canonical_inner_source_bytes("origin", dest, "m1", comp)  # signed over COMPRESSED
+        f.source_signature = sign_detached_with_context(
+            origin_kp.get_signing_key(), SIG_CTX_FRAME_INNER_SOURCE, canon)
+        f.source_sig_scheme = Frame.SOURCE_SIG_SCHEME_V2
+        return f, comp, plaintext
+
+    def _daemon(self, tmp_path, origin_kp):
+        from unittest.mock import AsyncMock, MagicMock
+        d = BridgeDaemon(name="R", passphrase=STRONG_PASSPHRASE,
+                         db_path=str(tmp_path / "r.db"))
+        d._keypair = generate_keypair("R")
+        d._db = AsyncMock(); d.bus = MagicMock()
+        d.peers["origin"] = PeerState(node_id="origin", address="x")
+        d.peers["origin"].identity_public = origin_kp.ed25519_public
+        return d
+
+    async def test_terminal_decompresses_and_delivers(self, tmp_path):
+        O = generate_keypair("origin")
+        d = self._daemon(tmp_path, O); d._mesh = None
+        f, comp, plain = self._compressed_nonE2E_frame(O, d.node_id, b"Z" * 300)
+        await d._dispatch_message("relaypeer",
+                                  PeerState(node_id="relaypeer", address="y"), f)
+        assert f.payload == plain, "terminal node did not decompress"
+        assert d.bus.publish.called, "terminal compressed frame not delivered"
+
+    async def test_relay_forwards_compressed_intact(self, tmp_path):
+        from unittest.mock import AsyncMock, MagicMock
+        O = generate_keypair("origin")
+        d = self._daemon(tmp_path, O)
+        d._mesh = MagicMock()
+        d._mesh.relay_message = AsyncMock()
+        d._mesh.dedup = MagicMock()
+        d._mesh.dedup.check_and_add = MagicMock(return_value=False)
+        f, comp, plain = self._compressed_nonE2E_frame(O, "faraway-node", b"Z" * 300)
+        await d._dispatch_message("relaypeer",
+                                  PeerState(node_id="relaypeer", address="y"), f)
+        assert f.payload == comp, "relay decompressed in place (invalidates next-hop sig)"
+        assert d._mesh.relay_message.called, "relay did not forward"
+        assert not d.bus.publish.called, "relay delivered a non-terminal frame"
+
+    async def test_decompression_bomb_dropped(self, tmp_path):
+        import gzip
+        from ironmesh.protocol import canonical_inner_source_bytes
+        from ironmesh.crypto import (
+            SIG_CTX_FRAME_INNER_SOURCE, sign_detached_with_context)
+        O = generate_keypair("origin")
+        d = self._daemon(tmp_path, O); d._mesh = None
+        bomb = gzip.compress(b"\x00" * (64 * 1024 * 1024))  # ~64 MiB -> tiny
+        f = Frame(msg_type=MessageType.MSG, payload=bomb, msg_id="m1",
+                  source="origin", destination=d.node_id)
+        f.routing["compressed"] = True
+        canon = canonical_inner_source_bytes("origin", d.node_id, "m1", bomb)
+        f.source_signature = sign_detached_with_context(
+            O.get_signing_key(), SIG_CTX_FRAME_INNER_SOURCE, canon)
+        f.source_sig_scheme = Frame.SOURCE_SIG_SCHEME_V2
+        await d._dispatch_message("relaypeer",
+                                  PeerState(node_id="relaypeer", address="y"), f)
+        assert not d.bus.publish.called, "decompression bomb was delivered (not fail-closed)"
+
+
+# ---------------------------------------------------------------------------
+# Responder-handler symmetry: _handle_rekey_request must ALSO open the
+# dual-key window (previously only the initiator handler was asserted).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestResponderRekeyWindow:
+    async def test_responder_handler_opens_dual_key_window(self, tmp_path):
+        from unittest.mock import AsyncMock
+        d = BridgeDaemon(name="R", passphrase=STRONG_PASSPHRASE,
+                         db_path=str(tmp_path / "r.db"))
+        d._keypair = generate_keypair("R")
+        d._send_encrypted_control = AsyncMock()
+        peer_id = "z" * 40  # ensure no collision path (peer has no pending on us)
+        peer = PeerState(node_id=peer_id, address="x")
+        old = os.urandom(32)
+        peer.session_key = old
+        d.peers[peer_id] = peer
+        _priv, pub = generate_ephemeral()
+        payload = json.dumps({
+            "new_ephemeral_public": base64.b64encode(bytes(pub)).decode(),
+            "rekey_id": "rk-resp",
+        }).encode()
+        await d._handle_rekey_request(peer_id, payload, peer)
+        assert peer.prev_session_key == old, \
+            "responder handler did not open the dual-key window"
+        assert peer.session_key != old
+        assert peer.rekey_transition_until > time.monotonic()

@@ -59,6 +59,7 @@ def _parse_admin_identities(raw):
 
 def parse_args():
     parser = argparse.ArgumentParser(
+        prog="ironmesh",  # so `python -m ironmesh --help` reads 'ironmesh', not '__main__.py'
         description="IronMesh — Zero-config encrypted A2A protocol",
         epilog="Example: ironmesh run --name alice --port 8765 "
                "--passphrase-file ~/.ironmesh/passphrase",
@@ -221,7 +222,12 @@ def parse_args():
                                 "mesh where every node runs v0.9.5+ — an older "
                                 "node that verifies the inner-source signature but "
                                 "lacks the post-unseal exemption would drop a "
-                                "stripped frame. Default: off (sealed copy still "
+                                "stripped frame. Enabling this also RAISES the "
+                                "effective protocol floor to ironmesh/0.9 "
+                                "(overriding a lower --min-protocol-version): "
+                                "pre-0.9 peers cannot authenticate a stripped "
+                                "frame and are refused at handshake while strict "
+                                "mode is on. Default: off (sealed copy still "
                                 "attached, but plaintext also rides the per-hop "
                                 "layer, so relays can read it — fully "
                                 "wire-compatible with all node versions).")

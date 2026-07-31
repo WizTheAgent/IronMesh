@@ -9,7 +9,7 @@
 
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **v0.9.5 — security-hardening + onboarding release on the v0.9.4 pre-audit-hardening + dual-use-migration line.** 1390 tests collected (1380 green) on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus live cross-host validation on the new wire surfaces.
+> **v0.9.5 — security-hardening + onboarding release on the v0.9.4 pre-audit-hardening + dual-use-migration line.** 1396 tests collected (1386 green) on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus live cross-host validation on the new wire surfaces.
 > Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
 > Wire-format `ironmesh/0.8` added opt-in feature flags (handshake-skip, group-broadcast) without disturbing any existing path; the `ironmesh/0.9` protocol line adds domain-separated HELLO signatures, RNS link binding, and receive-side end-to-end source authentication, version-gated so older peers keep interoperating. The headline doc — [`docs/STABILITY_PROMISE.md`](docs/STABILITY_PROMISE.md) — is the v1.0 contract for everything we commit to keeping stable.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
@@ -34,7 +34,7 @@ None of them work when you pull the ethernet cable. None of them work in a basem
 IronMesh is the transport layer that keeps working when the router dies, the ISP is down, or you're fully air-gapped. It is alpha software in pre-audit hardening toward v1.0 — see [Distribution & caveats](#distribution--caveats) for exactly what's still rough.
 
 - Zero-config LAN discovery via mDNS
-- End-to-end encryption with forward secrecy (NaCl/libsodium)
+- End-to-end encryption; forward-secret session keys (NaCl/libsodium)
 - Offline message queuing in encrypted SQLite
 - Optional LoRa transport via Reticulum for off-grid use
 - Clean integration with Ollama, LangChain, AutoGen, CrewAI, and MCP

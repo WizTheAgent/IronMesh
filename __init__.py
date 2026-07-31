@@ -1,8 +1,9 @@
 """IronMesh — Local-first agent-to-agent mesh protocol.
 
-v0.4 adds multi-hop mesh routing, end-to-end NaCl SealedBox encryption,
-capability discovery, Prometheus metrics, and audit log rotation on top of
-the v0.3 WebSocket + mDNS + per-hop NaCl SecretBox foundation.
+Multi-hop mesh routing, end-to-end NaCl SealedBox encryption with
+receive-side source authentication, capability discovery, Reticulum/LoRa +
+LXMF transports, Prometheus metrics, and a tamper-evident audit log, on a
+WebSocket + mDNS + per-hop NaCl SecretBox foundation. Protocol ironmesh/0.9.
 """
 
 __version__ = "0.9.5"

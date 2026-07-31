@@ -118,7 +118,7 @@ the event. Regression test in
   (+45 new: 22 conversation, 16 tools, 6 roles, 1 GUI regression).
 - `ruff check .` clean.
 - Verified end-to-end on a real 3-node mesh (Windows desktop +
-  Raspberry Pi + NAS): wiz → gatekeeper (hermes3:3b) round-trip
+  Raspberry Pi + NAS): desktop → NAS (hermes3:3b) round-trip
   in 1.9 s with `peer_id` and payload correctly populated on the
   GUI WS stream.
 

@@ -116,6 +116,8 @@ DENY=(
   'carried solely in the destination-sealed'          # plaintext strip is opt-in, not default
   'Relays cannot decrypt the body'                    # relays read the per-hop plaintext by default (docs/SECURITY.md stale-twin regression)
   'Relays cannot read forwarded bodies'               # ditto — only true under --e2e-strict-confidentiality
+  'past sealed messages remain unrecoverable'         # SealedBox is sender-anonymity, NOT forward-secret vs destination-key compromise
+  'Forward-secret per-message ephemeral keys'         # ditto — the ephemeral is the sender's; dest decrypts with its long-term key
 )
 scope_files="$(git ls-files '*.md' 2>/dev/null | grep -vE 'CHANGELOG\.md|docs/RELEASE_NOTES_v|REVIEW_EVIDENCE')"
 deny_hits=0

@@ -33,7 +33,7 @@ sequencer. Any candidate must state explicitly how it replaces or removes the or
 | Membership churn rate (joins+leaves per epoch) | C | ___ | High churn punishes pairwise re-key designs |
 | Fraction of members offline at any given time | F_off | ___ | Offline members can't process commits → epoch divergence handling |
 | Revocation latency tolerance (compromise → excluded) | T_rev | ___ | Tactical profile likely demands minutes, not epochs |
-| Min device class (RAM / flash / crypto accel) | — | KingPi? ESP32-class? | Bounds tree state size and PQ key sizes |
+| Min device class (RAM / flash / crypto accel) | — | Pi-class? ESP32-class? | Bounds tree state size and PQ key sizes |
 | Narrowest transport (payload size, duty cycle) | — | LoRa via RNS: ___ B effective MTU, ___% duty | Bounds commit message size. ML-KEM-768 ct = 1088 B — check fragmentation cost |
 
 ## 3. Key Hierarchy (layers this RFC must connect)

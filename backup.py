@@ -59,11 +59,15 @@ def _atomic_owner_write(path: str, data: bytes) -> None:
             f.flush()
             try:
                 os.fsync(f.fileno())
-            except OSError:
+            except (OSError, AttributeError):
                 pass
+        # Restrict the temp BEFORE the rename so the final file is born
+        # owner-only; the owner-only security descriptor travels through the
+        # atomic os.replace on both POSIX (mode preserved) and Windows
+        # (inherit-protected SD preserved), so no second restrict is needed —
+        # matching keys.save_keys, which restricts only the temp.
         restrict_file_to_owner(tmp)
         os.replace(tmp, path)
-        restrict_file_to_owner(path)  # inherit-protected SD travels on Windows
     finally:
         if os.path.exists(tmp):
             try:

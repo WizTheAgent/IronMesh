@@ -57,7 +57,7 @@ def _derive_legacy_storage_key(passphrase: str) -> bytes:
     return hashlib.sha256((passphrase + _LEGACY_KEY_SUFFIX).encode()).digest()
 
 
-# v0.7.2 Wiz hardening: bound the offline queue so a perpetually-offline
+# v0.7.2 hardening: bound the offline queue so a perpetually-offline
 # peer can't consume unbounded disk. When at cap, the oldest LOW/NORMAL
 # message is evicted to make room. CRITICAL/HIGH priority messages always
 # get admitted (evicting NORMAL/LOW first if needed).

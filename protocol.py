@@ -1313,16 +1313,17 @@ class PeerState:
         self.ephemeral_public: Optional[bytes] = None  # Peer's X25519 public key
         self.verified: bool = False  # True after successful handshake
 
-        # Rekey dual-key transition (responder side). After answering a
-        # REKEY_REQUEST the receiver keeps the retiring key valid for
-        # DECRYPTING frames the initiator already sent under it, until the
-        # first frame under the new key arrives (or ``rekey_transition_until``
-        # elapses). Without this, in-flight frames during the ~1-RTT rekey
-        # window would fail to decrypt under the freshly-installed key and be
-        # silently dropped.
+        # Rekey dual-key transition (symmetric — both initiator and responder,
+        # via routing._begin_rekey_transition). After switching keys the node
+        # keeps the retiring key valid for DECRYPTING frames the peer already
+        # sent under it, until the ``rekey_transition_until`` monotonic deadline
+        # elapses (NOT on the first new-key frame — an old-key frame can arrive
+        # after a new-key one on a reordering transport such as RNS). Without
+        # this, in-flight frames during the ~1-RTT rekey window would fail to
+        # decrypt under the freshly-installed key and be silently dropped.
         self.prev_session_key: Optional[bytes] = None
         self.prev_epoch_key: Optional[str] = None  # ReplayGuard snapshot key
-        self.rekey_transition_until: float = 0.0
+        self.rekey_transition_until: float = 0.0  # time.monotonic() deadline
 
         # v0.9.4 Phase 2: peer's advertised X25519 identity public key.
         # Populated from the HELLO ``x25519_public_b64`` advertisement

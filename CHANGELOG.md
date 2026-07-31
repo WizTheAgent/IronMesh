@@ -254,8 +254,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   running `ironmesh doctor` as a real headless subprocess against a
   populated `~/.ironmesh` (encrypted keys + live audit chain) — the
   on-disk-state blind spot that hid both of this cycle's field bugs.
-- Test count: 1369 collected (was 1198 at the 2026-07-12 cut); full suite
-  1359 passed / 11 skipped / 1 xpassed.
+- Test count: 1396 collected (was 1198 at the 2026-07-12 cut); full suite
+  1386 passed / 11 skipped / 1 xpassed.
 
 ## [0.9.4.2] — 2026-05-23 — Operator-polish sweep
 
@@ -1848,7 +1848,7 @@ v0.8.x peer stays interoperable. Default behavior unchanged.
 - **`docker-compose.yml`** image tag bumped from `0.8.5` to `0.8.5.4`
   (was stale through three patch releases — caught by the release
   checklist's version-sync sweep).
-- **`tests/test_cli.py`** fixture name updated `wiz` → `alice` to
+- **`tests/test_cli.py`** fixture name genericized to `alice` to
   match the rest of the codebase's generic-name convention. Four new
   tests cover the `setup` wizard's non-interactive code paths.
 
@@ -2573,7 +2573,7 @@ protocol you integrate by hand into a platform you build on.
 ## [0.7.2] — Mesh stability, observability, and backpressure
 
 Focused on production-readiness for multi-node deployments. Closes
-Wiz's hardening checklist (per-hop RTT + retries + message lifetime,
+the production-hardening checklist (per-hop RTT + retries + message lifetime,
 queue backpressure, peer-drop alerting, per-peer bandwidth throttle).
 All 5 critical and 11/11 high-severity items from the prior audit now
 fixed. 472 tests passing, zero regressions.
@@ -2661,7 +2661,7 @@ upgrade.
   tie-breaker was about to tear down. Added `wait_peer_online(stability_seconds)`
   that waits for session_key to stay unchanged for ≥2s before returning.
 
-### Observability — Wiz's hardening checklist
+### Observability — production-hardening checklist
 
 - **Per-peer metrics**: `ironmesh_peer_{online,rtt_ms,retries_total,
   bytes_sent_total,bytes_received_total}{peer="…",name="…"}` — Prometheus-labelled
