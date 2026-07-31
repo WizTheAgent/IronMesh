@@ -148,6 +148,32 @@ class HandshakeMixin:
         if not peer_pub_b64:
             logger.warning("Invalid REKEY_REQUEST from %s", peer_id)
             return
+        # Rekey collision: we already have our OWN REKEY_REQUEST in flight to
+        # this peer. This happens when both sides initiate at once — e.g. the
+        # periodic loop on one node and a dashboard-triggered rotate on the
+        # other, which bypasses the loop's smaller-node-id tie-breaker. Without
+        # resolution both sides install a key from one DH pair, then overwrite
+        # it with a key from the other, and the session desyncs (black-hole).
+        # Resolve deterministically by node_id: the smaller id wins and ignores
+        # the peer's competing request (its own REKEY_RESPONSE completes the
+        # rekey); the larger id defers — it abandons its pending request and
+        # responds to the peer's, so both converge on exactly one new key
+        # (ECDH is symmetric, so the winner's response and the loser's response
+        # to the winner yield the same shared secret).
+        if peer_state._pending_rekey_id is not None:
+            if self.node_id < peer_id:
+                logger.info(
+                    "Rekey collision with %s — we (smaller id) proceed; "
+                    "ignoring peer's competing request", peer_id)
+                return
+            logger.info(
+                "Rekey collision with %s — we (larger id) defer, abandoning "
+                "our pending request", peer_id)
+            if peer_state._pending_rekey_private is not None:
+                ew_crypto.secure_wipe(peer_state._pending_rekey_private)
+            peer_state._pending_rekey_private = None
+            peer_state._pending_rekey_id = None
+            # fall through and respond to the peer's request normally
         from nacl.public import PublicKey as X25519Pub
         peer_pub = X25519Pub(base64.b64decode(peer_pub_b64))
         my_private, my_public = ew_keys.generate_ephemeral()

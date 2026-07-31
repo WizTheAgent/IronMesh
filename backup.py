@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import tarfile
+import threading
 import time
 from typing import Optional
 
@@ -35,6 +36,40 @@ _MAGIC = b"IMB1"  # IronMesh Backup v1
 _SALT_LEN = 16
 _AUDIT_TAIL_LINES = 10000
 _VERSION = 1
+
+
+def _atomic_owner_write(path: str, data: bytes) -> None:
+    """Write ``data`` to ``path`` owner-only and atomically.
+
+    Mirrors ``keys.save_keys``: write to a same-directory temp file, restrict
+    it to the owner and fsync it BEFORE the rename, then ``os.replace`` onto
+    the final path. This closes the write-then-restrict window where the final
+    file briefly existed with inherited (broader) permissions, and guarantees
+    a crash never leaves a half-written or world-readable target.
+    """
+    from ironmesh.keys import restrict_file_to_owner
+
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        restrict_file_to_owner(tmp)
+        os.replace(tmp, path)
+        restrict_file_to_owner(path)  # inherit-protected SD travels on Windows
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def _derive_key(passphrase: str, salt: bytes) -> bytes:
@@ -151,14 +186,8 @@ def create_backup(
     box = SecretBox(key)
     ciphertext = bytes(box.encrypt(plaintext))
 
-    # Write: [MAGIC:4][VERSION:1][SALT:16][CIPHERTEXT]
-    with open(out_path, "wb") as f:
-        f.write(_MAGIC)
-        f.write(bytes([_VERSION]))
-        f.write(salt)
-        f.write(ciphertext)
-    from ironmesh.keys import restrict_file_to_owner
-    restrict_file_to_owner(out_path)
+    # Write: [MAGIC:4][VERSION:1][SALT:16][CIPHERTEXT] — atomically, owner-only.
+    _atomic_owner_write(out_path, _MAGIC + bytes([_VERSION]) + salt + ciphertext)
 
     logger.info("Backup written to %s (%d bytes plaintext, %d bytes on disk)",
                 out_path, len(plaintext), len(ciphertext) + 21)
@@ -244,15 +273,10 @@ def restore_backup(
                 f"Destination files exist (use --force to overwrite): {existing}"
             )
 
-    # Write files
-    from ironmesh.keys import restrict_file_to_owner
+    # Write files atomically, owner-only (temp -> restrict -> replace), so a
+    # restored key/trust file is never briefly world-readable or half-written.
     for dest, data in files_to_write.items():
-        _parent = os.path.dirname(dest)
-        if _parent:
-            os.makedirs(_parent, exist_ok=True)
-        with open(dest, "wb") as f:
-            f.write(data)
-        restrict_file_to_owner(dest)
+        _atomic_owner_write(dest, data)
         logger.info("Restored %s (%d bytes)", dest, len(data))
 
     return manifest

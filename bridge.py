@@ -844,6 +844,27 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
         self._rekey_interval = rekey_interval
         # v0.6.0: protocol hardening
         self._min_protocol_version = min_protocol_version
+        # v0.9.5: strict relay-confidentiality only delivers its guarantee if
+        # NO pre-0.9 node can receive a stripped frame. A stripped frame
+        # reaching a v0.9.4 destination is delivered UNAUTHENTICATED (that node
+        # never verifies the inner source signature). A per-peer check cannot
+        # cover multi-hop relay destinations we never handshook, so the only
+        # sound enforcement is the protocol floor: when strict is enabled,
+        # raise the effective floor to ironmesh/0.9 so every peer — direct or
+        # relay-destination — is a 0.9+ node that verifies post-unseal. This
+        # matches the operator's asserted "fully-upgraded mesh" intent; any
+        # genuinely pre-0.9 peer is refused at handshake rather than silently
+        # handed an unauthenticated body.
+        if e2e_strict_confidentiality and \
+                _parse_protocol_version(self._min_protocol_version) < (0, 9):
+            logger.warning(
+                "--e2e-strict-confidentiality raises the protocol floor from "
+                "%s to ironmesh/0.9: pre-0.9 peers cannot verify a stripped "
+                "e2e frame's source and would receive it unauthenticated, so "
+                "they are refused at handshake while strict mode is on.",
+                self._min_protocol_version,
+            )
+            self._min_protocol_version = "ironmesh/0.9"
         self._backoff_state: dict = {}  # peer_id -> {"attempts": int, "next_at": float}
         # v0.6.1: gate to prevent overlapping reconnect attempts from multiple
         # paths (_reconnect_loop / _try_transport_failover / _discover_loop /

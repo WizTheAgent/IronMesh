@@ -241,3 +241,156 @@ class TestRekeyDualKeySymmetric:
         assert first_epoch not in d._replay_guard._peers, \
             "prior epoch snapshot orphaned on double-rekey (F6)"
         assert peer.prev_epoch_key != first_epoch
+
+
+# ---------------------------------------------------------------------------
+# Dispatch-level e2e integration (the CRITICAL coverage gap: fault-injecting
+# the post-unseal verify previously left the whole suite green)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestE2EDispatchIntegration:
+    def _receiver(self, tmp_path, origin_kp):
+        from unittest.mock import AsyncMock, MagicMock
+        dest = generate_keypair("dest")
+        d = BridgeDaemon(name="R", passphrase=STRONG_PASSPHRASE,
+                         db_path=str(tmp_path / "r.db"))
+        d._keypair = dest
+        d._db = AsyncMock()
+        d.bus = MagicMock()
+        d._mesh = None  # skip dedup/relay branches -> terminal local delivery
+        d.peers["origin"] = PeerState(node_id="origin", address="x")
+        d.peers["origin"].identity_public = origin_kp.ed25519_public
+        relay_ps = PeerState(node_id="relay", address="y")
+        return d, dest, relay_ps
+
+    def _e2e_frame(self, dest_kp, dest_node_id, plaintext, sign_kp, strip):
+        from ironmesh import mesh_crypto
+        from ironmesh.crypto import (
+            SIG_CTX_FRAME_INNER_SOURCE, sign_detached_with_context)
+        from ironmesh.protocol import canonical_inner_source_bytes
+        f = Frame(msg_type=MessageType.MSG,
+                  payload=(b"" if strip else plaintext),
+                  msg_id="mm", source="origin", destination=dest_node_id)
+        # Seal to the destination's advertised master-seed X25519 key when it
+        # has one (matching the real send path), so the receiver's master-seed
+        # unseal succeeds rather than trying legacy derivation.
+        dest_x25519 = (dest_kp.x25519_public
+                       if getattr(dest_kp, "x25519_seed", None) is not None
+                       else None)
+        f.e2e_payload = mesh_crypto.seal_to_destination(
+            plaintext, dest_kp.ed25519_public, dest_x25519_pub=dest_x25519)
+        canon = canonical_inner_source_bytes(
+            f.source, f.destination, f.msg_id, plaintext)
+        f.source_signature = sign_detached_with_context(
+            sign_kp.get_signing_key(), SIG_CTX_FRAME_INNER_SOURCE, canon)
+        f.source_sig_scheme = Frame.SOURCE_SIG_SCHEME_V2
+        return f
+
+    async def test_valid_e2e_delivers(self, tmp_path):
+        O = generate_keypair("origin")
+        d, dest, relay_ps = self._receiver(tmp_path, O)
+        f = self._e2e_frame(dest, d.node_id, b"secret-body", sign_kp=O, strip=False)
+        await d._dispatch_message("relay", relay_ps, f)
+        assert d.bus.publish.called, "valid e2e frame was not delivered"
+
+    async def test_forged_e2e_dropped_by_dispatch(self, tmp_path):
+        # Sealed to the destination (attacker can seal to a public key), but
+        # the inner sig is by the attacker while claiming source='origin'.
+        O = generate_keypair("origin")
+        attacker = generate_keypair("attacker")
+        d, dest, relay_ps = self._receiver(tmp_path, O)
+        f = self._e2e_frame(dest, d.node_id, b"spoofed", sign_kp=attacker, strip=False)
+        await d._dispatch_message("relay", relay_ps, f)
+        assert not d.bus.publish.called, \
+            "forged e2e frame was DELIVERED by dispatch (fail-open regression)"
+
+    async def test_stripped_frame_survives_precheck_and_delivers(self, tmp_path):
+        # payload=b"" (strict-mode wire form) must survive the chokepoint
+        # e2e-skip and deliver after post-unseal verify — not be black-holed.
+        O = generate_keypair("origin")
+        d, dest, relay_ps = self._receiver(tmp_path, O)
+        f = self._e2e_frame(dest, d.node_id, b"strict-body", sign_kp=O, strip=True)
+        assert f.payload == b""
+        await d._dispatch_message("relay", relay_ps, f)
+        assert d.bus.publish.called, \
+            "stripped e2e frame was black-holed (should deliver post-unseal)"
+
+
+# ---------------------------------------------------------------------------
+# Strict-mode ties the protocol floor to >= 0.9 (wire-compat F2)
+# ---------------------------------------------------------------------------
+
+class TestStrictProtocolFloor:
+    def test_strict_raises_floor_to_0_9(self, tmp_path):
+        d = BridgeDaemon(name="a", passphrase=STRONG_PASSPHRASE,
+                         db_path=str(tmp_path / "a.db"),
+                         e2e_strict_confidentiality=True)
+        assert d._min_protocol_version == "ironmesh/0.9", \
+            "strict mode must raise the floor so no pre-0.9 node gets a stripped frame"
+
+    def test_default_keeps_floor(self, tmp_path):
+        d = BridgeDaemon(name="b", passphrase=STRONG_PASSPHRASE,
+                         db_path=str(tmp_path / "b.db"))
+        assert d._min_protocol_version == "ironmesh/0.3"
+
+
+# ---------------------------------------------------------------------------
+# Rekey collision resolution (F3: dashboard rotate bypasses the loop tiebreak)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestRekeyCollision:
+    def _daemon_with_pending(self, tmp_path, peer_id):
+        from unittest.mock import AsyncMock
+        d = BridgeDaemon(name="R", passphrase=STRONG_PASSPHRASE,
+                         db_path=str(tmp_path / "r.db"))
+        d._keypair = generate_keypair("R")
+        d._send_encrypted_control = AsyncMock()
+        peer = PeerState(node_id=peer_id, address="x")
+        peer.session_key = os.urandom(32)
+        my_priv, _ = generate_ephemeral()
+        peer._pending_rekey_private = my_priv
+        peer._pending_rekey_id = "our-pending"
+        d.peers[peer_id] = peer
+        return d, peer
+
+    @staticmethod
+    def _request_payload():
+        _priv, pub = generate_ephemeral()
+        return json.dumps({
+            "new_ephemeral_public": base64.b64encode(bytes(pub)).decode(),
+            "rekey_id": "their-request",
+        }).encode()
+
+    async def test_smaller_id_wins_ignores_peer_request(self, tmp_path):
+        d, peer = self._daemon_with_pending(tmp_path, peer_id="z" * 40)
+        assert d.node_id < "z" * 40
+        await d._handle_rekey_request("z" * 40, self._request_payload(), peer)
+        assert d._send_encrypted_control.await_count == 0, \
+            "smaller-id node should ignore the competing request (not respond)"
+        assert peer._pending_rekey_id == "our-pending", "should keep our pending rekey"
+
+    async def test_larger_id_defers_and_responds(self, tmp_path):
+        d, peer = self._daemon_with_pending(tmp_path, peer_id="0" * 40)
+        assert d.node_id > "0" * 40
+        await d._handle_rekey_request("0" * 40, self._request_payload(), peer)
+        assert d._send_encrypted_control.await_count == 1, \
+            "larger-id node should defer and respond to the peer's request"
+        assert peer._pending_rekey_id is None, "should abandon our pending rekey"
+
+
+# ---------------------------------------------------------------------------
+# Owner-only key-file restriction is best-effort (does not raise)
+# ---------------------------------------------------------------------------
+
+class TestRestrictFileToOwner:
+    def test_best_effort_no_raise_and_posix_mode(self, tmp_path):
+        from ironmesh.keys import restrict_file_to_owner
+        p = tmp_path / "k.json"
+        p.write_bytes(b"secret")
+        restrict_file_to_owner(str(p))  # must never raise
+        assert p.exists()
+        if os.name != "nt":
+            import stat
+            assert stat.S_IMODE(os.stat(p).st_mode) == 0o600
