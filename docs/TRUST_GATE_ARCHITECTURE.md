@@ -143,11 +143,19 @@ all backed by the same daemon methods:
 | Operation | Scope        | Wire effect                 | Who notices               |
 |-----------|--------------|-----------------------------|---------------------------|
 | `block_peer` | local-only | none — peer keeps connecting | only this daemon          |
-| `revoke_peer` (existing) | mesh-wide | signed REVOCATION control frame propagates to every connected peer; their daemons drop the pin | every daemon on the mesh  |
+| `revoke_peer` (existing) | local + best-effort broadcast | removes the local TOFU pin, then best-effort broadcasts a signed REVOCATION to currently-online peers | this daemon immediately; online peers opportunistically |
 
 Use `block` when you want to silence one peer at one daemon. Use
-`revoke` when you want every operator on the mesh to drop trust in
-this peer (compromised key, stolen identity, abuse).
+`revoke` when you want to drop trust in this peer (compromised key,
+stolen identity, abuse) and signal that to online peers.
+
+> **Revocation scope.** Local revocation is supported and takes effect
+> immediately on the daemon that issues it. Networked revocation
+> propagation is deferred pending design of a bounded, persistent
+> replay store and proper domain separation (`SIG_CTX_FUTURE_REVOCATION`);
+> the current broadcast reaches only peers that are online at the time,
+> so do not rely on it to reach offline or future peers. Revoke on each
+> daemon that must drop the peer.
 
 ## Promote semantics
 
@@ -182,7 +190,10 @@ self-loopback) is unaffected, so the daemon stays manageable.
   peer is re-pinned from scratch (fresh `pending` state, queue is
   empty because msg_ids of the deleted history were never seen).
 - **Does not propagate to other daemons** — block is local. Only
-  REVOCATION (via `broadcast_revocation`) crosses the mesh.
+  REVOCATION (via `broadcast_revocation`) reaches other daemons, and
+  only as a best-effort broadcast to peers that are online at the time;
+  durable networked propagation is deferred (see "Revocation scope"
+  above).
 - **Does not gate the control plane** — KEY_ROTATE, REKEY_*,
   ROUTE_ANNOUNCE, CAPABILITY_ANNOUNCE always pass.
 - **Does not cap total queue size across peers** — only per-peer.

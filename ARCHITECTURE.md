@@ -399,9 +399,9 @@ The full surface contract for the v1.0 stability promise is in [`docs/STABILITY_
 | **Federation policy v2** — per-source matchers | v0.9.2 | n/a (local config) |
 | **OpenTelemetry spans** on the v0.9.x agent surfaces (`ironmesh[otel]`) | v0.9.2 | n/a (local) |
 | **Conformance test vectors** (language-agnostic golden vectors) | v0.9.2 | n/a (test) |
-| **Domain-separated HELLO signature** (detached Ed25519 under `SIG_CTX_HELLO`; legacy fallback for pre-0.9 peers) | unreleased (main) | `ironmesh/0.9` |
-| **RNS link binding** (`rns_link_id` inside the signed HELLO body; required on the handshake-skip path; `--rns-require-link-binding` refuses unbound legacy peers) | unreleased (main) | `ironmesh/0.9` |
-| **At-rest storage key via Argon2id + HKDF-SHA256** (replaces unsalted SHA-256; auto re-encrypts existing databases) | unreleased (main) | n/a (local storage) |
+| **Domain-separated HELLO signature** (detached Ed25519 under `SIG_CTX_HELLO`; legacy fallback for pre-0.9 peers) | v0.9.5 | `ironmesh/0.9` |
+| **RNS link binding** (`rns_link_id` inside the signed HELLO body; required on the handshake-skip path; `--rns-require-link-binding` refuses unbound legacy peers) | v0.9.5 | `ironmesh/0.9` |
+| **At-rest storage key via Argon2id + HKDF-SHA256** (replaces unsalted SHA-256; auto re-encrypts existing databases) | v0.9.5 | n/a (local storage) |
 
 ### Interoperability
 
@@ -420,4 +420,4 @@ The full surface contract for the v1.0 stability promise is in [`docs/STABILITY_
 
 ---
 
-*IronMesh v0.9.4.2 — Local-first encrypted agent-to-agent mesh protocol — No cloud, no internet, no compromises.*
+*IronMesh v0.9.5 — Local-first encrypted agent-to-agent mesh protocol — No cloud, no internet, no compromises.*

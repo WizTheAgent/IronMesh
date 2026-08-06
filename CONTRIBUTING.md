@@ -24,8 +24,9 @@ hooks will still be caught before merge.
    locked in the old behavior, that's fine; say so in the PR.
 2. **Don't break the wire protocol** without a version negotiation path.
    IronMesh peers negotiate protocol version at handshake time. A
-   wire-incompatible change needs a new version string (e.g.
-   `ironmesh/0.8`) and graceful fallback for peers that don't speak it.
+   wire-incompatible change needs a new version string (the current
+   line is `ironmesh/0.9`, so a breaking change would bump to
+   `ironmesh/0.10`) and graceful fallback for peers that don't speak it.
 3. **No secrets, ever.** Passphrases, identity keys, real LAN IPs,
    internal hostnames — none of it belongs in the repo. The `.gitignore`
    excludes the common landmines. If you're unsure, ask before pushing.
@@ -90,7 +91,7 @@ To change a dependency, edit `pyproject.toml` and regenerate the
 lockfile — the exact command is in the header of `requirements.lock`.
 Commit both files together.
 
-As of v0.9.5 the suite runs **1396 collected** (run: 1386 passed, 11 skipped, 1 xpassed) on
+As of v0.9.5 the suite runs **1420 collected** on
 the matrix Ubuntu + Windows + macOS × Python 3.10–3.13. Anything
 substantially below that on a clean checkout is a regression — open
 an issue with the platform + Python version.

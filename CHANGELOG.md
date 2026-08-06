@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.5] — 2026-07-26 — protocol ironmesh/0.9: HELLO domain separation, RNS link binding, E2E source authentication, invites + onboarding
+## [0.9.5] — 2026-08-06 — protocol ironmesh/0.9: HELLO domain separation, RNS link binding, E2E source authentication, invites + onboarding
 
 ### Added
 
@@ -254,8 +254,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   running `ironmesh doctor` as a real headless subprocess against a
   populated `~/.ironmesh` (encrypted keys + live audit chain) — the
   on-disk-state blind spot that hid both of this cycle's field bugs.
-- Test count: 1396 collected (was 1198 at the 2026-07-12 cut); full suite
-  1386 passed / 11 skipped / 1 xpassed.
+- Test count: 1420 collected; full suite 1400 passed / 9 skipped / 1 xpassed
+  (integration excluded).
 
 ## [0.9.4.2] — 2026-05-23 — Operator-polish sweep
 

@@ -15,7 +15,7 @@ path.**
 
 | Surface | Stability | Notes |
 |---|---|---|
-| `ironmesh/0.8` wire format | **Stable** | Additive fields only; existing field semantics frozen |
+| `ironmesh/0.9` wire format | **Stable** | Additive fields only; existing field semantics frozen. `ironmesh/0.9` is the currently advertised protocol line; the frame envelope is unchanged since v4 |
 | Announce app_data schema (`n`, `v`, `i`, `c`, `f`) | **Stable** | New keys may be added; existing keys will not be renamed or removed |
 | Feature flag vocabulary (`mesh`, `resource`, `lxmf`, `hskip`, `group`) | **Stable** | New flags may be added; existing flags are permanent |
 | Handshake stage 1/2 message shapes | **Stable** | Including the `hskip` channel-binding sentinel |
@@ -116,7 +116,7 @@ The wire protocol itself only bumps when the on-wire bytes change incompatibly. 
 | `ironmesh/0.6` | v0.6 | Hardening pass: length caps, nonce windows |
 | `ironmesh/0.7` | v0.7 | Rekey, QoS, LoRa payload negotiation |
 | `ironmesh/0.8` | v0.9.2 | Feature flags, handshake skip, group broadcast, capability routing |
-| `ironmesh/0.9` | unreleased (main) | Domain-separated HELLO signature (`SIG_CTX_HELLO`) + RNS link binding; legacy fallback for pre-0.9 peers |
+| `ironmesh/0.9` | v0.9.5 | Domain-separated HELLO signature (`SIG_CTX_HELLO`) + RNS link binding; legacy fallback for pre-0.9 peers |
 
 Peers negotiate the highest version both sides advertise. A v0.8 peer talking to a v0.3 peer downgrades cleanly; unknown feature flags are ignored.
 

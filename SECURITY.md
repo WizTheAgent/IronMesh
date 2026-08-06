@@ -53,6 +53,31 @@ free to disclose publicly. If we ship a fix earlier, we'll coordinate
 the disclosure timing with you and credit you in the release notes
 (unless you prefer anonymity).
 
+## Security maturity & audit status
+
+IronMesh is **Alpha** software. Its cryptography is built on audited
+libsodium/PyNaCl primitives, but **the IronMesh protocol and implementation
+have not undergone an independent, paid third-party security audit.** The
+current assurance comes from an internal self-audit plus multiple rounds of
+adversarial review. Treat the security properties below as engineering intent
+backed by tests and internal review — not as an externally certified guarantee.
+
+**Known limitations** (full list with targets in the
+[v0.9.5 release notes](docs/RELEASE_NOTES_v0.9.5.md#residual-risks--known-limitations)):
+
+- **Networked revocation propagation is deferred.** Local revocation is
+  supported; networked propagation awaits a bounded, persistent replay store and
+  proper domain separation (`SIG_CTX_FUTURE_REVOCATION`).
+- **Mesh-passphrase auth is not KDF-stretched.** The mesh-passphrase
+  challenge/response uses raw HMAC-SHA256; a passively captured handshake allows
+  an offline dictionary attack at HMAC speed. Use a high-entropy passphrase.
+  Argon2id stretching of this path is scheduled for 0.10.0. (Identity keys at
+  rest and the message store already use Argon2id.)
+- **Bundled Go/TS clients advertise `ironmesh/0.6`**, below the `ironmesh/0.9`
+  core floor — reference-status; bump + CI inclusion scheduled 0.9.6/0.10.0.
+- **Post-quantum:** roadmap-only; the surface is 100% classical today (see the
+  migration plan below).
+
 ## The threat model
 
 The full threat model is in [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).

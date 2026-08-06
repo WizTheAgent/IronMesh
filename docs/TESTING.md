@@ -6,7 +6,7 @@ PR, or extending the test suite.
 
 ## What gets run
 
-A full test pass collects **1396 tests** across four layers:
+A full test pass collects **1420 tests** across four layers:
 
 | Layer | Count (approx) | Purpose |
 |---|---|---|

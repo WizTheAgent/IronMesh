@@ -9,7 +9,7 @@
 
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **v0.9.5 — security-hardening + onboarding release on the v0.9.4 pre-audit-hardening + dual-use-migration line.** 1396 tests collected (1386 green) on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus live cross-host validation on the new wire surfaces.
+> **v0.9.5 — security-hardening + onboarding release on the v0.9.4 pre-audit-hardening + dual-use-migration line.** 1420 tests collected, full suite green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus live cross-host validation on the new wire surfaces.
 > Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
 > Wire-format `ironmesh/0.8` added opt-in feature flags (handshake-skip, group-broadcast) without disturbing any existing path; the `ironmesh/0.9` protocol line adds domain-separated HELLO signatures, RNS link binding, and receive-side end-to-end source authentication, version-gated so older peers keep interoperating. The headline doc — [`docs/STABILITY_PROMISE.md`](docs/STABILITY_PROMISE.md) — is the v1.0 contract for everything we commit to keeping stable.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
@@ -31,7 +31,7 @@ Most agent frameworks assume the cloud is always available. Google's A2A needs H
 
 None of them work when you pull the ethernet cable. None of them work in a basement. None of them work off-grid.
 
-IronMesh is the transport layer that keeps working when the router dies, the ISP is down, or you're fully air-gapped. It is alpha software in pre-audit hardening toward v1.0 — see [Distribution & caveats](#distribution--caveats) for exactly what's still rough.
+IronMesh is the transport layer that keeps working when the router dies, the ISP is down, or you're fully air-gapped. It is **alpha** software: its crypto is built on audited libsodium/PyNaCl primitives and it has passed a self-audit plus multiple rounds of adversarial review, but **an independent, paid third-party security audit has not yet been done** — see [Distribution & caveats](#distribution--caveats) and [SECURITY.md](SECURITY.md) for exactly what's still rough.
 
 - Zero-config LAN discovery via mDNS
 - End-to-end encryption; forward-secret session keys (NaCl/libsodium)
@@ -358,6 +358,15 @@ export IRONMESH_PASSPHRASE='your-strong-secret-phrase-12-plus'
 ./ironmesh-go --host <daemon-ip> --port 8765 --name go-client
 ```
 
+> **Reference status — read before using.** The Go and TypeScript clients are
+> reference implementations, not production clients. They advertise
+> `ironmesh/0.6`, which is **below the core protocol floor of `ironmesh/0.9`**,
+> so a default-floor or `--e2e-strict-confidentiality` mesh **refuses them at
+> handshake** until they are bumped. The Go client is currently **outside the CI
+> matrix and does not build cleanly locally**. The version bump + CI-matrix
+> inclusion is scheduled for 0.9.6 / 0.10.0. See `clients/go/STATUS.md` and
+> `clients/ts/STATUS.md`.
+
 See [`docs/PROTOCOL_SPEC.md`](docs/PROTOCOL_SPEC.md) for the formal wire specification.
 
 ### TypeScript client
@@ -622,7 +631,7 @@ Where to get it and what's still rough:
 - **PyPI** — `pip install ironmesh` (add `[rns]` for the Reticulum/LoRa transport, `[keychain]` for OS-keychain passphrase storage, `[otel]` for OpenTelemetry tracing). Latest: **v0.9.5**.
 - **Docker Hub** — `docker pull wiztheagent/ironmesh:0.9.5` (or `:latest`). Non-root UID 1000. See [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml), and [`docker-compose.demo.yml`](docker-compose.demo.yml) for an instant 2-node demo.
 - **GitHub releases** — annotated tags, wheel + sdist attached: [releases page](https://github.com/WizTheAgent/IronMesh/releases).
-- **Go client** — `clients/go/` (reference implementation, crypto primitives verified against Python).
+- **Go / TS clients** — `clients/go/`, `clients/ts/` — **reference implementations only.** They advertise `ironmesh/0.6` (below the `ironmesh/0.9` core floor, so refused by a default-floor or strict mesh until bumped); the Go client is outside the CI matrix and does not build cleanly locally. Bump + CI inclusion scheduled 0.9.6/0.10.0. See `clients/go/STATUS.md`.
 - **LoRa end-to-end latency** — Measured live at 915 MHz SF8/BW125 between two RNode-equipped nodes (1 hop, strong signal): 16-byte probe 1.07 — 1.23 s, 64-byte probe 1.17 — 1.25 s, 256-byte probe 1.77 — 1.98 s, 100% delivery across 9 probes. Multi-hop + long-range interference sweeps are still pending — see [`docs/LORA_VALIDATION.md`](docs/LORA_VALIDATION.md).
 - **`scripts/install.sh`** — The systemd installer works against the repo layout, but hasn't been re-tested on a clean Ubuntu VM recently. File itself is unchanged from v0.7.1.
 - **Android** — Use [Sideband](https://unsigned.io/sideband/) + the bundled LXMF gateway (`examples/lxmf_gateway.py`). Proven end-to-end with a Google Pixel. No first-party Android app planned — LXMF is the correct layer for that.

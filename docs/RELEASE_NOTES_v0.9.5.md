@@ -27,6 +27,74 @@ or pull `wiztheagent/ironmesh:0.9.5`. The at-rest storage key re-derives
 running **multi-hop relay meshes** or who may **roll back** should read
 "Upgrading in place" below first.
 
+## Residual Risks & Known Limitations
+
+v0.9.5 is an **Alpha** security-hardening release. An **independent, paid
+security audit has not yet been performed** — the security posture rests on a
+self-audit plus multiple rounds of adversarial internal review. Read these known
+limitations before deploying against a threat model that assumes more:
+
+- **Networked revocation propagation is deferred.** Local revocation is
+  supported. Networked revocation propagation is deferred pending design of a
+  bounded, persistent replay store and proper domain separation
+  (`SIG_CTX_FUTURE_REVOCATION`). Target: a later 0.9.x / 0.10.0.
+- **Mesh-passphrase authentication is not KDF-stretched.** The mesh-passphrase
+  challenge/response uses raw HMAC-SHA256 (no Argon2id), so a passively captured
+  handshake enables an offline dictionary attack at HMAC speed. Choose a
+  high-entropy mesh passphrase. Argon2id stretching of this path is scheduled
+  for 0.10.0. (Identity keys at rest and the SQLite message store already use
+  Argon2id — this limitation is specific to the mesh-passphrase auth handshake.)
+- **Bundled Go / TS clients advertise `ironmesh/0.6`.** The core protocol floor
+  is `ironmesh/0.9`; the reference Go/TS clients still advertise `ironmesh/0.6`
+  and are refused by a default-floor-0.9 or strict-mode mesh until bumped. They
+  are reference-status; the Go client is outside the CI matrix. Version bump +
+  CI-matrix inclusion is scheduled for 0.9.6 / 0.10.0.
+- **WebSocket query-string token auth.** The query-string token-auth weakness
+  was fixed additively in this release line; full removal of the query-string
+  path is scheduled for 0.10.0.
+- **Independent external security audit outstanding.** A self-audit and
+  multi-reviewer adversarial review are complete; an independent paid audit is
+  not.
+- **Upgrade path validated on a real 0.9.4.2 artifact.** The 0.9.4.2 → 0.9.5
+  on-disk migration — identity, pinned peers, offline queue, audit chain, and
+  the unsalted-SHA-256 → Argon2id storage-key re-encryption — was exercised
+  against state written by the **actual released 0.9.4.2 daemon**, with **no
+  migration caveats found**. (Rolling *back* remains forward-only for the DB and
+  key file — see "Upgrading in place".)
+- **Post-quantum cryptography is roadmap-only.** The current surface is 100%
+  classical (X25519 / Ed25519). A hybrid ML-KEM / ML-DSA migration is targeted
+  post-1.0; the plan is published in `SECURITY.md`.
+
+## Supported Platforms & Maturity
+
+One screen, honest — what is solid vs. still rough:
+
+- **Maturity:** Alpha. The core transport, handshake, at-rest encryption, and
+  the end-to-end integrity / source-authentication path are exercised by the
+  automated test suite and multi-round adversarial review. No independent
+  external audit yet.
+- **Linux / macOS:** primary, well-exercised targets.
+- **Windows:** supported. The headless-prompt freeze (`doctor` / `audit verify`
+  blocking on a hidden console prompt) is fixed; the console-interactive check
+  accounts for the Windows case where the NUL device masquerades as a TTY.
+- **Multi-homed hosts:** advertised-address selection on a host with several
+  interfaces is best-effort — pin the advertised address explicitly where it
+  matters.
+- **LoRa / Reticulum:** functional and hardened this release (e2e-compression ×
+  inner-signature, decompression-bomb cap, rekey under reorder). Exercised on
+  RNS transports in test; long-haul LoRa RF validation is limited — treat as
+  field-beta.
+- **Docker default:** the image default is hardened — no plaintext WebSocket
+  listener, no open discovery. The previously-default insecure demo modes now
+  require explicit flags (see the Docker notes / README). A bare `docker run`
+  with **no passphrase supplied is intentionally fail-closed**: it prints an
+  actionable "passphrase required" message and exits rather than silently
+  generating an ephemeral identity — explicit key custody is a deliberate
+  design choice. Provide `IRONMESH_PASSPHRASE_FILE` (or an interactive
+  passphrase) to start the daemon.
+- **Bundled Go / TS clients:** reference implementations only (see the client
+  version-skew limitation above).
+
 ## Upgrading in place (multi-hop meshes + rollback)
 
 - **Roll the whole mesh forward; don't leave it mixed long-term.** v0.9.5
@@ -354,9 +422,9 @@ that breaks v0.8.x / v0.9.x interop was found.
 
 ## Verification
 
-- 1396 tests collected; full suite green — run: 1386 passed, 11 platform/env-conditioned skips, 1 xpassed (`pytest tests/
-  --ignore=tests/integration`). ruff CI-scope clean. release-qc
-  `FAIL: 0`; doc-sync-check PASS.
+- 1420 tests collected; full suite green — 1400 passed / 9 skipped / 1
+  xpassed (`pytest tests/ --ignore=tests/integration`). ruff CI-scope
+  clean. release-qc `FAIL: 0`; doc-sync-check PASS.
 - Wheel + sdist build clean; public modules import; CLI entry point
   operational.
 

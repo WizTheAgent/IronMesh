@@ -170,7 +170,7 @@ labels:
       unexpected failure spike from the proxy's IP indicates either
       a misconfigured client or an attempted intrusion.
 
-## What is NOT yet implemented (as of v0.8.5.5)
+## What is NOT yet implemented (as of v0.9.5)
 
 The reverse-proxy story is "loud bind warning + recommended
 deployment recipe" today. Still on the roadmap for a future minor:

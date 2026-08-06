@@ -4,9 +4,13 @@ TypeScript / Node.js client for the IronMesh agent-to-agent mesh
 protocol. Connects, handshakes, and exchanges messages with an
 IronMesh daemon over WebSocket.
 
-> **Status:** `0.2.0` — not yet on npm; install from the GitHub repo. Compatible with IronMesh
-> daemons at v0.9.x (and forward across v1.0 per
-> [`STABILITY_PROMISE.md`](../../docs/STABILITY_PROMISE.md)). The full
+> **Status:** `0.2.0` — **reference implementation, not a production client** (see
+> [`STATUS.md`](STATUS.md)). Not yet on npm; install from the GitHub repo. This
+> client advertises wire version **`ironmesh/0.6`**, which is **below the core
+> protocol floor of `ironmesh/0.9`** — so a daemon on the default 0.9 floor or in
+> `--e2e-strict-confidentiality` mode **refuses it at the handshake** until the
+> advertised version is bumped (scheduled 0.9.6/0.10.0). It connects only against
+> a daemon explicitly configured to accept the older wire version. The full
 > wire protocol — 3-stage passphrase + ECDH + signed-HELLO handshake,
 > binary frame v4, SecretBox + Ed25519 — is implemented and end-to-end
 > tested against a live Python `BridgeDaemon`. Reconnect with backoff

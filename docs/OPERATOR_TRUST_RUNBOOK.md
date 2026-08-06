@@ -195,11 +195,19 @@ Click `BLOCK`. A confirmation dialog appears.
 | You want to…                                       | Use         |
 |----------------------------------------------------|-------------|
 | Stop one noisy peer at this daemon, quietly        | `block_peer` |
-| Tell every operator on the mesh "this key is compromised" | `revoke_peer` (signed, broadcasts a REVOCATION control frame) |
+| Drop trust in this key and signal it to online peers | `revoke_peer` (removes the local pin, then best-effort broadcasts a signed REVOCATION) |
 
 Block is reversible (`set_trust_state(node_id, "trusted")` via
 `promote_peer`). Revoke removes the TOFU pin entirely — the next
 connection from that node_id is treated as a new (pending) peer.
+
+> **Revocation scope.** Local revocation is supported and takes effect
+> immediately on the daemon that issues it. Networked revocation
+> propagation is deferred pending design of a bounded, persistent
+> replay store and proper domain separation (`SIG_CTX_FUTURE_REVOCATION`);
+> the broadcast reaches only peers that are online at the time, so run
+> `revoke` on each daemon that must drop the peer rather than relying on
+> the broadcast to reach offline or future peers.
 
 ## Tuning the queue cap
 
