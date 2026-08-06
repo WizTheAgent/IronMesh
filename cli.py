@@ -318,7 +318,8 @@ def parse_args():
     revoke_parser = trust_sub.add_parser("revoke", help="Revoke trust for a peer")
     revoke_parser.add_argument("node_id", help="Node ID to revoke")
     revoke_parser.add_argument("--broadcast", action="store_true",
-                               help="Also broadcast a signed REVOCATION to online peers")
+                               help="Also broadcast a signed REVOCATION to currently-online peers "
+                                    "(best-effort; durable mesh-wide propagation deferred to a future release)")
     revoke_parser.add_argument("--reason", default="",
                                help="Reason for revocation")
     revoke_parser.add_argument("--gui-url", default="ws://127.0.0.1:8767/ws",
@@ -1358,20 +1359,19 @@ def cmd_run(args):
             pinned_ca_path or "system trust store",
         )
 
-    # Pending-trust message gate deprecation notice (default-on in v0.9)
+    # Pending-trust message gate deprecation notice (default-on targeted for v0.9.6)
     require_msg_promotion = (
         getattr(args, "require_message_promotion", False)
         or os.environ.get("IRONMESH_REQUIRE_MSG_PROMOTION", "").lower() in ("1", "true", "yes")
     )
     if not require_msg_promotion:
         log.warning(
-            "DEPRECATION: pending-trust message gate is opt-in in v0.8.x. "
-            "It will be enabled by default in v0.9. To prepare, set "
+            "DEPRECATION: the pending-trust message gate is opt-in in v0.9.5. "
+            "Default-on is targeted for v0.9.6. To adopt it now, set "
             "IRONMESH_REQUIRE_MSG_PROMOTION=true or pass "
-            "--require-message-promotion now. To keep the legacy "
-            "trust-on-first-message behavior in v0.9 and later, you will "
-            "need to pass an explicit --no-message-promotion flag (not "
-            "yet implemented). See docs/migration/v0_9_default_deny.md."
+            "--require-message-promotion. An explicit --no-message-promotion "
+            "opt-out (to keep trust-on-first-message once the default flips) "
+            "is not yet implemented. See docs/migration/v0_9_default_deny.md."
         )
 
     daemon = BridgeDaemon(

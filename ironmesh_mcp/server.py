@@ -1174,7 +1174,7 @@ TOOL_SPECS = [
     },
     {
         "name": "ironmesh_revoke_peer",
-        "description": "Revoke a peer by name. Prevents future connections from its identity key. Requires confirm=true.",
+        "description": "Revoke a peer by name in the LOCAL trust store — prevents future connections from its identity key on this node. This is a local revocation only; it does not propagate over the mesh (use the CLI `ironmesh trust revoke --broadcast` for best-effort notification of currently-online peers). Requires confirm=true.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1311,7 +1311,7 @@ TOOL_SPECS = [
     },
     {
         "name": "ironmesh_block_peer",
-        "description": "Block a peer locally — discards queued messages and silently drops future MSGs from this peer. Distinct from ironmesh_revoke_peer (which propagates a signed REVOCATION across the mesh); this is a unilateral local block. Requires confirm=true.",
+        "description": "Block a peer locally — discards queued messages and silently drops future MSGs from this peer. Distinct from ironmesh_revoke_peer, which records a signed REVOCATION of the peer's identity in the local trust store (durable mesh-wide propagation of revocations is deferred to a future release); this is a unilateral local block. Requires confirm=true.",
         "inputSchema": {
             "type": "object",
             "properties": {
