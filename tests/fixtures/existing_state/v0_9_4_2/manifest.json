@@ -1,0 +1,59 @@
+{
+  "audit_entry_count": 5,
+  "generated_by": "ironmesh==0.9.4.2 (real wheel, isolated venv)",
+  "identity": {
+    "agent_name": "alice",
+    "ed25519_public_b64": "r0DH10r8vnEvP/5I72gGjqNveh2zV+D5P4rqFImMUB8=",
+    "fingerprint": "99c7282c98a15293b19a897d89e14548"
+  },
+  "messages": [
+    {
+      "destination": "self",
+      "direction": "inbound",
+      "msg_id": "m-0001",
+      "payload_b64": "Zmlyc3QgZGVsaXZlcmVkIGJvZHk=",
+      "source": "alice"
+    },
+    {
+      "destination": "bob",
+      "direction": "outbound",
+      "msg_id": "m-0002",
+      "payload_b64": "c2Vjb25kIGRlbGl2ZXJlZCBib2R5",
+      "source": "self"
+    },
+    {
+      "destination": "self",
+      "direction": "inbound",
+      "msg_id": "m-0003",
+      "payload_b64": "dGhpcmQgZGVsaXZlcmVkIGJvZHk=",
+      "source": "carol"
+    }
+  ],
+  "note": "DO NOT synthesize from HEAD. Regenerate only from a real 0.9.4.2 install via generate_v0942_fixture.py.",
+  "passphrase": "existing-state-v0942-pass",
+  "peers": [
+    {
+      "identity_public_b64": "AOHgeRjh99sSDDITSyRW6qKMPuT0gHPYfgBlqSDWfag=",
+      "node_id": "28fff9342c7030d3d899cc9e7bc11878"
+    },
+    {
+      "identity_public_b64": "mtqMfWa4zTVezJVMWjv0wOqTGXcvEkCpeg6Ob4teXHo=",
+      "node_id": "1ba145aa2ed6fa01ea237b28e569dbb6"
+    }
+  ],
+  "pending": {
+    "items": [
+      {
+        "msg_id": "q-0001",
+        "payload_b64": "cXVldWVkIHdoaWxlIGJvYiBvZmZsaW5lICMx",
+        "source": "alice"
+      },
+      {
+        "msg_id": "q-0002",
+        "payload_b64": "cXVldWVkIHdoaWxlIGJvYiBvZmZsaW5lICMy",
+        "source": "alice"
+      }
+    ],
+    "peer_node_id": "bob-node"
+  }
+}

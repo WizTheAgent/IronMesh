@@ -1,0 +1,5 @@
+# Golden 0.9.4.2 existing-state fixture — a real artifact written by the actual
+# released 0.9.4.2 wheel. Freeze the exact bytes: never normalize line endings,
+# never treat as text. This keeps the fixture byte-identical across platforms so
+# the cross-version migration tests exercise the real on-disk format.
+v0_9_4_2/** -text

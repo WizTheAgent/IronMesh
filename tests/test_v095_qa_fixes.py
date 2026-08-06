@@ -547,3 +547,113 @@ class TestResponderRekeyWindow:
             "responder handler did not open the dual-key window"
         assert peer.session_key != old
         assert peer.rekey_transition_until > time.monotonic()
+
+
+# ---------------------------------------------------------------------------
+# WO8 Phase 2 — named regression tests
+#
+# (1) Rekey reorder-interleaving: RNS reorders large frames onto an independent
+#     stream, so during the dual-key grace window old-key and new-key frames can
+#     arrive scrambled and interleaved. Every valid frame must still decrypt +
+#     dispatch, and a replayed sequence inside an epoch must still be dropped.
+#     Prior tests only sent 1-2 frames in order.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestRekeyReorderInterleaving:
+    def _receiver(self, tmp_path, sender_kp):
+        from unittest.mock import AsyncMock
+        d = BridgeDaemon(name="R", passphrase=STRONG_PASSPHRASE,
+                         db_path=str(tmp_path / "r.db"))
+        d._keypair = generate_keypair("R")
+        d._dispatch_message = AsyncMock()
+        peer = PeerState(node_id="S", address="127.0.0.1:9")
+        peer.identity_public = sender_kp.ed25519_public
+        peer.verified = True
+        d.peers["S"] = peer
+        return d, peer
+
+    async def test_interleaved_old_and_new_epoch_frames_all_deliver(self, tmp_path):
+        """Old-key and new-key frames INTERLEAVED across the grace window all
+        deliver. Each epoch keeps its own strict-monotonic replay counter (the
+        guard drops any seq <= last-seen within an epoch), so the reordering the
+        dual-key window must absorb is at the KEY/epoch level: alternating
+        old/new frames, each epoch advancing independently."""
+        S = generate_keypair("S")
+        d, peer = self._receiver(tmp_path, S)
+        old_key, new_key = os.urandom(32), os.urandom(32)
+        _post_rekey_state(d, "S", peer, old_key, new_key)
+
+        # Two epochs interleaved in arrival; each epoch's own sequence is
+        # monotonic (new: 10,11,12 ; old: 20,21,22).
+        arrivals = [
+            (new_key, 10), (old_key, 20), (new_key, 11),
+            (old_key, 21), (new_key, 12), (old_key, 22),
+        ]
+        for key, seq in arrivals:
+            raw = _wire(S, key, seq=seq, src="S", dst=d.node_id,
+                        payload=f"f{seq}".encode())
+            await d._handle_binary_frame("S", raw, peer)
+
+        assert d._dispatch_message.await_count == len(arrivals), \
+            "an interleaved in-window frame was dropped (dual-key epoch routing)"
+        assert peer.prev_session_key is not None, \
+            "grace window closed early under interleaving"
+
+    async def test_replayed_sequence_within_epoch_is_dropped(self, tmp_path):
+        """Reorder tolerance must not become replay tolerance: re-delivering an
+        already-seen sequence in the same epoch is dropped."""
+        S = generate_keypair("S")
+        d, peer = self._receiver(tmp_path, S)
+        old_key, new_key = os.urandom(32), os.urandom(32)
+        _post_rekey_state(d, "S", peer, old_key, new_key)
+
+        raw = _wire(S, new_key, seq=30, src="S", dst=d.node_id, payload=b"orig")
+        await d._handle_binary_frame("S", raw, peer)
+        assert d._dispatch_message.await_count == 1
+        # Exact same encrypted frame again (same epoch, same seq) — replay.
+        await d._handle_binary_frame("S", raw, peer)
+        assert d._dispatch_message.await_count == 1, \
+            "replayed in-epoch sequence was delivered a second time"
+
+
+# ---------------------------------------------------------------------------
+# (2) Strict-floor handshake-refusal: when --e2e-strict-confidentiality raises
+#     the floor to ironmesh/0.9, a peer advertising a pre-0.9 version must be
+#     refused. Both server enforcement sites (handshake.py and bridge.py's
+#     websocket HELLO handler) apply the SAME predicate:
+#         _parse_protocol_version(peer) < _parse_protocol_version(min)  -> refuse
+#     This pins the refusal boundary against a REAL strict-mode daemon's
+#     configured floor and the REAL version parser (TestStrictProtocolFloor only
+#     asserts the floor VALUE, not that sub-floor versions are refused).
+# ---------------------------------------------------------------------------
+
+class TestStrictFloorHandshakeRefusal:
+    def _floor(self, tmp_path, strict):
+        from ironmesh.handshake import _parse_protocol_version
+        d = BridgeDaemon(name="a", passphrase=STRONG_PASSPHRASE,
+                         db_path=str(tmp_path / "a.db"),
+                         e2e_strict_confidentiality=strict)
+        return _parse_protocol_version(d._min_protocol_version)
+
+    def test_strict_floor_refuses_pre_0_9_peers(self, tmp_path):
+        from ironmesh.handshake import _parse_protocol_version
+        floor = self._floor(tmp_path, strict=True)
+        assert floor == (0, 9)
+        for v in ("ironmesh/0.3", "ironmesh/0.4", "ironmesh/0.6", "ironmesh/0.8"):
+            assert _parse_protocol_version(v) < floor, \
+                f"{v} must be refused under the strict 0.9 floor"
+
+    def test_strict_floor_admits_0_9_and_newer(self, tmp_path):
+        from ironmesh.handshake import _parse_protocol_version
+        floor = self._floor(tmp_path, strict=True)
+        for v in ("ironmesh/0.9", "ironmesh/0.10", "ironmesh/1.0"):
+            assert not (_parse_protocol_version(v) < floor), \
+                f"{v} must be admitted under the strict 0.9 floor"
+
+    def test_default_floor_preserves_legacy_interop(self, tmp_path):
+        from ironmesh.handshake import _parse_protocol_version
+        floor = self._floor(tmp_path, strict=False)
+        # Default floor must NOT refuse the bundled reference clients (0.6) — the
+        # opt-in-off design keeps wire-compat with pre-0.9 nodes.
+        assert not (_parse_protocol_version("ironmesh/0.6") < floor)
