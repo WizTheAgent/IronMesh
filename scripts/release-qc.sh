@@ -164,34 +164,43 @@ else
 fi
 
 # ───── 7. Public-facing leak scan ────────────────────────────────
-# False-positive carve-outs (intentional, not leaks):
-#   - AGENTS.md — describes the standard, including counter-examples
-#     ("don't use M0/M1 codes")
-#   - discovery.py — RFC1918 default-gateway probe constants are
-#     internet-standard private IP space, not personal addresses
-#   - clients/go/ — example IPs use TEST-NET-1 (192.0.2.0/24) per
-#     RFC 5737
-echo "[ 7] public-facing standard"
-# Generic markers only. Environment-specific identifiers (host names,
-# private addresses, project names) load from the untracked
-# .leak-patterns.local — the same file scripts/leak-scan.sh sources;
-# see its section 2b for the rationale.
-LEAK_PATTERNS='C:[/\\]Users[/\\][a-z]|\bAudit [HCM]-[0-9]+\b|\bRAZOR #[0-9]+\b|\(M[01] (audit|fix|spike)\)|^Path [AB]\b|\bdev laptop\b'
-if [ -f .leak-patterns.local ]; then
-    LOCAL_LEAK="$(grep -Ev '^(#|$)' .leak-patterns.local | paste -sd'|' -)"
-    [ -n "$LOCAL_LEAK" ] && LEAK_PATTERNS="${LEAK_PATTERNS}|${LOCAL_LEAK}"
+# Delegates to the single hardened scanner (scripts/leak-scan.sh) instead of a
+# second, drifting pattern set. That script is case-insensitive for host/
+# identifier markers, scans history files (CHANGELOG / RELEASE_NOTES) that ship
+# in the sdist, and self-verifies with a planted-positive self-test. Keeping the
+# logic in one place is the root-cause fix for the class of bug where two copies
+# of the leak-scan diverge and coverage silently drops. Carve-outs (AGENTS.md,
+# discovery.py RFC1918 probes, clients/go RFC 5737 TEST-NET) are handled
+# structurally inside leak-scan.sh (doc-only IP class, meta-file list).
+echo "[ 7] public-facing standard (delegated to scripts/leak-scan.sh --all)"
+leak_rc=0
+leak_out="$(bash scripts/leak-scan.sh --all 2>&1)" || leak_rc=$?
+if [ "$leak_rc" -eq 0 ]; then
+    ok "leak-scan --all clean (host/identifier + generic + doc-only classes)"
 else
-    echo "     note: no .leak-patterns.local — scanning generic patterns only"
+    fail "leak-scan --all reported violations:"
+    printf '%s\n' "$leak_out" | sed 's/^/         /'
 fi
-LEAK_EXCLUDE='^(CHANGELOG\.md|docs/RELEASE_NOTES_v0\.|\.github/RELEASE_CHECKLIST\.md|\.gitignore|AGENTS\.md|discovery\.py|tests/|scripts/release-qc\.sh|scripts/leak-scan\.sh)'
-LEAK_HITS="$(git ls-files \
-    | grep -vE "$LEAK_EXCLUDE" \
-    | xargs grep -lnE "$LEAK_PATTERNS" 2>/dev/null | head)"
-if [ -z "$LEAK_HITS" ]; then
-    ok "no internal markers in tracked content (with documented carve-outs)"
+
+# ───── 7b. leak-scan self-test (gate integrity) ──────────────────
+# The gate must be able to catch its own planted canaries — a capitalized
+# identifier, a leak inside CHANGELOG/RELEASE_NOTES, and a leak inside the BUILT
+# sdist. If it cannot, a coverage regression has slipped in. The sdist assertion
+# builds an sdist, so it is skipped alongside the wheel smoke under --skip-smoke.
+echo "[ 7b] leak-scan self-test (planted-positive gate integrity)"
+st_rc=0
+if [ "$SKIP_SMOKE" = "1" ]; then
+    st_out="$(LEAKSCAN_SELFTEST_SDIST=0 bash scripts/leak-scan.sh --self-test 2>&1)" || st_rc=$?
+    st_note=" (sdist assertion skipped: --skip-smoke)"
 else
-    fail "internal markers found in:"
-    printf '         %s\n' $LEAK_HITS
+    st_out="$(bash scripts/leak-scan.sh --self-test 2>&1)" || st_rc=$?
+    st_note=""
+fi
+if [ "$st_rc" -eq 0 ]; then
+    ok "leak-scan self-test: every planted canary caught${st_note}"
+else
+    fail "leak-scan self-test FAILED — the gate cannot catch its own canary:"
+    printf '%s\n' "$st_out" | sed 's/^/         /'
 fi
 
 # ───── 8. MCP tool count: doc claim vs implementation ────────────

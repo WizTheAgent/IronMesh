@@ -35,3 +35,20 @@ jobs:
           fi
           echo "leak-scan: range $base..$head"
           bash scripts/leak-scan.sh --range "$base..$head"
+
+  self-test:
+    name: gate self-test (planted-positive)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Assert the gate catches its own canaries
+        shell: bash
+        # Fast source-tree canaries (capitalized identifier, history-file leak,
+        # generic/doc-only markers). The heavier sdist assertion runs in
+        # release-qc.yml via scripts/release-qc.sh, so keep this per-push job
+        # quick by skipping the sdist build here.
+        env:
+          LEAKSCAN_SELFTEST_SDIST: '0'
+        run: bash scripts/leak-scan.sh --self-test

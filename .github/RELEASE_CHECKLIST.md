@@ -16,6 +16,8 @@ Exit 0 = automated checks pass. Exit 1 = at least one regression caught — fix 
 
 The CI workflow at `.github/workflows/release-qc.yml` runs the same script on every push to `main` and on every `v*` tag, so a release that slips past the local run is still blocked at the CI gate before publication.
 
+The leak-scan step now delegates to the single hardened scanner (`scripts/leak-scan.sh`) and adds a **planted-positive self-test**: the gate seeds known canaries (a capitalized identifier, a leak inside `CHANGELOG` / `RELEASE_NOTES`, and a leak inside the built sdist) and fails if it cannot catch every one. This makes a future coverage regression — a reverted case-fold, a new exclusion, a pattern typo — a red gate instead of a silent leak. To run just the gate self-test: `bash scripts/leak-scan.sh --self-test` (add `LEAKSCAN_SELFTEST_SDIST=0` for the fast source-only tripwire). A one-shot full-tree audit is `bash scripts/leak-scan.sh --all` (seconds, not minutes).
+
 The sections below are the manual cross-check (operator judgment, not automated).
 
 ---
@@ -107,12 +109,19 @@ Per the public-facing-content standard: every comment, doc, test name, changelog
 
 Only run these after every box above is checked.
 
+> **Date check:** the `[X.Y.Z]` date in `CHANGELOG.md` and any dated release-notes
+> line must equal the actual tag/push date. If the push slips to a later day than
+> the last date bump, re-bump the CHANGELOG (and release-notes) date to the real
+> ship date before tagging — the date is a public claim about when the release
+> shipped.
+
 - [ ] `git tag -s vX.Y.Z -m "release vX.Y.Z"` (signed tag)
 - [ ] `git push origin main` (this push is allowed because release is in flight; otherwise pushes need explicit user instruction)
 - [ ] `git push origin vX.Y.Z`
 - [ ] `twine upload dist/*` (PyPI)
 - [ ] `docker push wiztheagent/ironmesh:X.Y.Z` and `:latest`
 - [ ] `gh release create vX.Y.Z --title "vX.Y.Z" --notes-file docs/RELEASE_NOTES_vX.Y.Z.md dist/*.whl dist/*.tar.gz SHA256SUMS SBOM*`
+- [ ] **Publish the GHSA security advisory in lockstep with the release** (between the tag/artifact push above and any public announcement). The v0.9.5 advisory is scoped to the unsalted-SHA-256 at-rest storage-key derivation (Moderate; local disk access required; fixed in 0.9.5 via Argon2id + HKDF). Publish it at release time and link it from the release notes. Keep the advisory scoped to that finding — the HELLO domain-separation and RNS link-binding hardening ship as release-notes items, not advisory items.
 
 ## 10. Post-release
 

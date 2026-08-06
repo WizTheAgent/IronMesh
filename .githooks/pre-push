@@ -13,6 +13,14 @@ SCAN="$REPO_ROOT/scripts/leak-scan.sh"
 ZERO=0000000000000000000000000000000000000000
 EXIT=0
 
+# Gate integrity first: if the scanner can't catch its own planted canaries,
+# a coverage regression has slipped in and any "clean" verdict below is
+# untrustworthy. Fast source-tree canaries only (skip the sdist build).
+if ! LEAKSCAN_SELFTEST_SDIST=0 bash "$SCAN" --self-test; then
+    echo "pre-push: leak-scan self-test FAILED — refusing to push a broken gate." >&2
+    exit 1
+fi
+
 while read -r local_ref local_sha remote_ref remote_sha; do
     # Skip ref deletion
     if [[ "$local_sha" == "$ZERO" ]]; then

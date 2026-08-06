@@ -30,10 +30,9 @@ checkpoints, each catching what the previous layer might miss:
    the commit if any staged file matches a reserved internal-only
    filename pattern (audit reports, plan docs, gap analyses,
    top-level roadmap files) or contains content markers that should
-   never appear in shipped text (audit hardening codes, decision-tree
-   shorthand like `RAZOR #N` or `Path A/B`, personal identifiers,
-   personal absolute paths, mesh-fleet personal node names,
-   mesh-wide passphrase substring).
+   never appear in shipped text (audit hardening codes, internal
+   decision-tree shorthand, personal identifiers, personal absolute
+   paths, mesh-fleet node names, mesh-wide passphrase substrings).
 2. **`.githooks/pre-push`** — fires on every `git push`. Same scan
    against the diff being pushed. Catches anything that bypassed the
    pre-commit hook (e.g. via `--no-verify`).
@@ -287,7 +286,7 @@ docs/RELEASE_NOTES_v0.8.5.4.md               | NEW (this file)
 docs/TESTING.md                              | NEW (~165 lines)
 docs/deployments/homelab.md                  | NEW (~230 lines)
 docs/migration/v0_9_default_deny.md          | NEW (~100 lines)
-tests/test_cli.py                            | wiz→alice fixture rename
+tests/test_cli.py                            | host fixture rename → alice
                                              |   + 4 new TestSetupWizard tests
 __init__.py                                  | version bump
 pyproject.toml                               | version bump
