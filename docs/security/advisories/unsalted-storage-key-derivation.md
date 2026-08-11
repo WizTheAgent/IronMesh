@@ -1,18 +1,15 @@
 # Security Advisory: at-rest storage key derived without a salt or KDF stretching
 
-> **DRAFT — pending maintainer finalization. Do NOT publish until reviewed.**
-> No operator-supplied draft (`ghsa-draft-unsalted-storage-kdf.md`) was present in
-> the exchange folder, so this advisory was authored from the verified source at
-> HEAD. Every fact below is quoted/derived from code, not from documentation.
-> Publish this as a GitHub Security Advisory (GHSA) **in lockstep with the v0.9.5
-> release** and link it from the v0.9.5 release notes.
+> This advisory is published as a GitHub Security Advisory in lockstep with the
+> v0.9.5 release and is linked from the v0.9.5 release notes.
 
 - **Severity:** Moderate
-- **CVSS v3.1:** `5.5` — `CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N`
+- **CVSS v3.1:** `6.2` — `CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N`
+- **CVE:** requested via the GitHub CNA at publication
 - **Weakness:** CWE-759 (use of a one-way hash without a salt) / CWE-916 (use of a password hash with insufficient computational effort)
 - **Affected:** IronMesh `v0.7.2-beta` through `v0.9.4.2` (all releases prior to `v0.9.5` that write an encrypted at-rest message store)
 - **Fixed in:** `v0.9.5`
-- **Reporter:** internal self-audit
+- **Reporter:** found during internal security review prior to the v0.9.5 release
 
 ## Summary
 
@@ -43,13 +40,14 @@ file, which is written owner-only.
   copy of it). There is no network vector.
 - **AC:L** — the offline attack is a straightforward unsalted-hash dictionary
   attack; no special conditions.
-- **PR:L** — the database file is created owner-only
-  (`keys.restrict_file_to_owner` → mode `0600` on POSIX, an owner-only ACL on
-  Windows), so reading it on a live host requires the daemon user's privileges
-  or root. (For a **stolen-disk / captured-backup** model, where the attacker
-  already holds the bytes, `PR:N` is arguable and would raise the base score to
-  ~6.2; `PR:L` is used here as the conservative live-host model. Maintainer may
-  select `PR:N` if the intended threat model is offline media capture.)
+- **PR:N** — scored for the **stolen-disk / captured-backup** model: once an
+  attacker holds a copy of the bytes (a stolen disk image, a backup, a copied
+  VM volume), no privileges on the running system are required to mount the
+  offline attack, and that offline-media scenario is exactly where this
+  weakness bites. (On a **live host** the database file is created owner-only —
+  `keys.restrict_file_to_owner` → mode `0600` on POSIX, an owner-only ACL on
+  Windows — so reading it in place requires the daemon user's privileges or
+  root; under that narrower `PR:L` model the base score would be 5.5.)
 - **UI:N**, **S:U**.
 - **C:H** — passphrase recovery decrypts all stored message content (and, since
   the mesh passphrase is shared, undermines mesh auth). **I:N / A:N** — no
