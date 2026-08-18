@@ -550,7 +550,7 @@ class TestResponderRekeyWindow:
 
 
 # ---------------------------------------------------------------------------
-# WO8 Phase 2 — named regression tests
+# Named regression tests
 #
 # (1) Rekey reorder-interleaving: RNS reorders large frames onto an independent
 #     stream, so during the dual-key grace window old-key and new-key frames can
