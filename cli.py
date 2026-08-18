@@ -3225,11 +3225,13 @@ def _doctor_fix_firewall(args, posture) -> bool:
     import shlex
     import subprocess
     try:
-        # Split with shlex on POSIX; on Windows netsh, pass as a string.
+        # Split with shlex on POSIX. On Windows the command is a plain
+        # netsh invocation, so the string goes to CreateProcess directly —
+        # no shell is involved on either OS.
         if os.name == "posix":
             rc = subprocess.call(shlex.split(primary))
         else:
-            rc = subprocess.call(primary, shell=True)
+            rc = subprocess.call(primary)
         if rc == 0:
             print("      FIX APPLIED — firewall rule added. To revert, "
                   "remove the rule with your firewall's delete command.")
