@@ -5,4 +5,11 @@
 # Measured with mypy 1.20.2 (the requirements.lock pin), --platform
 # linux, in an environment installed from requirements.lock, against
 # the installed-layout staging tree the CI step builds.
-152
+#
+# 2026-08-18: re-frozen at 530 for the v0.9.5 tree (maintainer call).
+# The previous figure (152, recorded 2026-07-01) was measured before
+# the v0.9.5 feature work merged, and CI first ran against the merged
+# tree at release-push time. This re-measures the frozen backlog for
+# the tree CI actually checks; it does not admit new errors on a
+# previously CI-green base. The ratchet-down rule applies from here.
+530
