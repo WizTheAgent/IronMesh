@@ -6,7 +6,7 @@ or clipboard sync. The token is ephemeral and single-use, so the QR (like
 the string) is useless after it is consumed or expires — that is what
 makes screen-scanning an acceptable transport.
 
-Design constraints (from the onboarding work order):
+Design constraints:
 
 * NO heavy new REQUIRED dependency. QR rendering is provided by the
   ``segno`` package behind the optional ``[qr]`` extra. ``segno`` is a

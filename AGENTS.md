@@ -50,7 +50,7 @@ examples/                  # runnable walkthroughs (cap_binding_workflow etc.)
 
 2. **Every public-facing document reads as public documentation.**
    No internal plan milestone codes (M0/M1), audit severity codes
-   (C1/H1), "RAZOR #N", personal absolute paths, personal IPs, personal
+   (C1/H1), internal finding codenames, personal absolute paths, personal IPs, personal
    fleet-node/host names, or first-person pronouns in commit messages /
    changelogs / release notes / public docs. `scripts/leak-scan.sh`
    enforces this and runs on every push.

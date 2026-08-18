@@ -95,7 +95,7 @@ Per the public-facing-content standard: every comment, doc, test name, changelog
 - [ ] No plan milestone codes (`M0`, `M1`, etc.)
 - [ ] No audit severity codes (`C1`, `H1`, `M1`)
 - [ ] No audit hardening codes (`Audit H-##`)
-- [ ] No `RAZOR #N` references
+- [ ] No internal finding codenames (patterns live in the untracked `.leak-patterns.local`)
 - [ ] No `Path A/B` references
 - [ ] No `RCA` (use "post-mortem" or "root cause analysis" spelled out)
 - [ ] No personal absolute paths (Windows `C:\Users\...` or POSIX `/home/...`)
