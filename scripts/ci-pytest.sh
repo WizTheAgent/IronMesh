@@ -22,7 +22,8 @@
 # assert the run actually executed the suite rather than skipping it.
 
 set -u
-HARD_TIMEOUT="${HARD_TIMEOUT:-600}"   # absolute ceiling; 10 min
+HARD_TIMEOUT="${HARD_TIMEOUT:-1200}"  # absolute ceiling; 20 min (macOS runners
+                                      # need the headroom under coverage)
 LOG_FILE="$(mktemp -t pytest-ci-log.XXXXXX)"
 
 # Optional result floors — guard against the "green CI, but the check never
