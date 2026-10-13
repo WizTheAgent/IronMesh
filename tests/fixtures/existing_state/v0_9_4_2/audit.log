@@ -1,0 +1,5 @@
+{"details":{"version":"0.9.4.2"},"event":"NODE_START","hmac":"93b2dedf87fc6a09e028b34d4b2b6cb006b55114f9385d48466ca7d1fde696c9","timestamp":1791859104.0760279}
+{"details":{"peer":"bob"},"event":"PEER_PINNED","hmac":"dda50ed3ccff44c5279fc168605dd3297de7689798934c12589bf44afec07093","timestamp":1791859104.0830235}
+{"details":{"peer":"carol"},"event":"PEER_PINNED","hmac":"d39d6d7b9ba6378050df6f4c48d1a0dc70e2344333014c64c478b8892ca1e1e6","timestamp":1791859104.0900252}
+{"details":{"msg_id":"m-0002"},"event":"MESSAGE_SENT","hmac":"91b9e41c293f496b15797b57c4fda13c2cfcdbe0db8c88ef4af1bd8e62913cc9","timestamp":1791859104.0960267}
+{"details":{},"event":"NODE_STOP","hmac":"ad96e0c372a5d24496d819458878e5bfc7980bb9064b10ef62cbf6b51eb8328e","timestamp":1791859104.1025274}

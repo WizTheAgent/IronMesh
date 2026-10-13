@@ -30,6 +30,9 @@ include mkdocs.yml
 # Tests (so `pytest` works from a fresh sdist install)
 recursive-include tests *.py *.json *.md
 recursive-include tests/conformance *.json *.md
+# The golden existing-state fixture's key file is a committed test artifact,
+# not something to ship; its tests skip without the (unshipped) data.db.
+exclude tests/fixtures/existing_state/v0_9_4_2/keys.json
 
 # Documentation
 recursive-include docs *.md *.json *.yml *.yaml *.png

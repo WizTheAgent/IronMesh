@@ -3,8 +3,8 @@
   "generated_by": "ironmesh==0.9.4.2 (real wheel, isolated venv)",
   "identity": {
     "agent_name": "alice",
-    "ed25519_public_b64": "r0DH10r8vnEvP/5I72gGjqNveh2zV+D5P4rqFImMUB8=",
-    "fingerprint": "99c7282c98a15293b19a897d89e14548"
+    "ed25519_public_b64": "1wWeUlMqBHSfFLI09HGixGxq22+YXE9HM3nV+ndUfWo=",
+    "fingerprint": "6b7907ab7fd675cc7c2942cb238f90ab"
   },
   "messages": [
     {
@@ -33,12 +33,12 @@
   "passphrase": "existing-state-v0942-pass",
   "peers": [
     {
-      "identity_public_b64": "AOHgeRjh99sSDDITSyRW6qKMPuT0gHPYfgBlqSDWfag=",
-      "node_id": "28fff9342c7030d3d899cc9e7bc11878"
+      "identity_public_b64": "vgRPwS90eLNANUaM6QbsgYyubvwtvYoTFwdpukzFSIM=",
+      "node_id": "696e41458ebf65d583c805ae10479a55"
     },
     {
-      "identity_public_b64": "mtqMfWa4zTVezJVMWjv0wOqTGXcvEkCpeg6Ob4teXHo=",
-      "node_id": "1ba145aa2ed6fa01ea237b28e569dbb6"
+      "identity_public_b64": "0xQjOUVeJtNtSJ2qmcphXnaT+6H/TRrKfae0eP64uW4=",
+      "node_id": "e6295cd6777a1fd2e64cdbfe8404d9b6"
     }
   ],
   "pending": {
