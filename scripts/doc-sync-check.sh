@@ -127,6 +127,10 @@ DENY=(
   'scheduled for 0.9.6 / 0.10.0'                      # Go/TS to ironmesh/0.9 in CI is a 0.9.6 deliverable
   'end-to-end tested against a live Python daemon'    # TS client advertises ironmesh/0.6; refused by default-floor daemons
   'Go (full wire protocol'                            # Go client is reference-status, outside CI, below the 0.9 floor
+  'privkeys destroyed'                                # key wipe is best-effort (immutable bytes); say discarded
+  'private keys destroyed'                            # ditto
+  'securely wiped'                                    # ditto (session keys are immutable bytes)
+  'are destroyed immediately'                         # ditto
 )
 scope_files="$(git ls-files '*.md' 2>/dev/null | grep -vE 'CHANGELOG\.md|docs/RELEASE_NOTES_v|REVIEW_EVIDENCE')"
 deny_hits=0

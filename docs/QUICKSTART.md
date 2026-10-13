@@ -68,7 +68,7 @@ That's it. Both agents are now communicating over an encrypted channel. No inter
 4. Signed HELLO exchange — Ed25519 signatures with channel binding to prevent handshake splicing
 5. TOFU key pinning — each peer's identity key was recorded for future verification
 6. Ephemeral X25519 keys were generated and exchanged (forward secrecy)
-7. A shared secret was derived via ECDH — ephemeral private keys destroyed
+7. A shared secret was derived via ECDH — ephemeral private keys discarded
 8. All messages are now encrypted (XSalsa20-Poly1305) AND signed (Ed25519) with replay protection
 
 ## 5. Generate keys (optional)

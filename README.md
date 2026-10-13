@@ -473,7 +473,7 @@ Client                                 Server
   |                                      |
   | ECDH(eph_priv_A, eph_pub_B)         | ECDH(eph_priv_B, eph_pub_A)
   |    = shared_secret                   |    = shared_secret
-  |  (ephemeral privkeys destroyed)      | (ephemeral privkeys destroyed)
+  |  (ephemeral privkeys discarded)      | (ephemeral privkeys discarded)
   |                                      |
   |<=== Encrypted + Signed messages ===>| (SecretBox + Ed25519 on every message)
 ```

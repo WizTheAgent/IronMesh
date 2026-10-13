@@ -197,7 +197,7 @@ The passphrase is never sent over the wire. The nonce prevents replay. The rever
     - Signed with Ed25519: same channel_binding field
 11. Client verifies server HELLO signature + TOFU check
 12. Both derive session key: ECDH(my_ephemeral_private, their_ephemeral_public)
-13. Ephemeral private keys destroyed. Encrypted communication begins.
+13. Ephemeral private keys discarded (wiping is best-effort in Python). Encrypted communication begins.
 ```
 
 Channel binding (step 8, 10) cryptographically ties the ECDH handshake to the authentication stage. An attacker who bypasses passphrase auth can't splice in a different ECDH exchange.

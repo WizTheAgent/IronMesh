@@ -316,7 +316,9 @@ shared_secret = X25519(my_ephemeral_private, peer_ephemeral_public)
 ```
 
 - The shared secret is 32 bytes.
-- Ephemeral private keys are destroyed immediately after derivation.
+- Ephemeral private keys are discarded immediately after derivation. Implementations
+  SHOULD wipe them; the Python reference implementation attempts this, but a wipe of
+  immutable key bytes is best-effort only.
 - The shared secret is used as the NaCl `SecretBox` key for all subsequent frames.
 
 After Stage 3, all communication switches to the **binary wire format** below.
@@ -663,7 +665,8 @@ lexicographically smaller `node_id` periodically initiates a rekey:
 1. Initiator sends `REKEY_REQUEST` with a new X25519 ephemeral public key.
 2. Responder replies with `REKEY_RESPONSE` containing their new ephemeral public key.
 3. Both sides compute a new shared secret via ECDH and replace the session key.
-4. Old session key is securely wiped.
+4. Old session key is discarded (in the Python reference implementation a wipe is
+   best-effort only; session keys are immutable bytes).
 
 Default interval: 1800 seconds (30 minutes).
 
