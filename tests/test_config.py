@@ -51,13 +51,16 @@ class TestFromFile:
         cfg = IronMeshConfig.from_file(str(tmp_path / "does-not-exist.json"))
         assert cfg.agent_name == "agent"
 
-    @pytest.mark.xfail(reason="Audit L-07 fix pending (Phase 4): malformed JSON currently raises")
-    def test_invalid_json_falls_back_to_defaults(self, tmp_path):
-        """Audit L-07: malformed JSON must not crash — fall back."""
+    def test_invalid_json_falls_back_to_defaults(self, tmp_path, caplog):
+        """Malformed JSON must not crash — warn and fall back to defaults."""
+        import logging
         p = tmp_path / "cfg.json"
         p.write_text("{ this is not valid JSON ][ :")
-        cfg = IronMeshConfig.from_file(str(p))
+        with caplog.at_level(logging.WARNING, logger="ironmesh.config"):
+            cfg = IronMeshConfig.from_file(str(p))
         assert cfg.agent_name == "agent"
+        assert any("malformed or unreadable" in r.getMessage()
+                   for r in caplog.records)
 
     def test_unknown_keys_ignored(self, tmp_path):
         p = tmp_path / "cfg.json"
