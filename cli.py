@@ -2860,18 +2860,20 @@ def cmd_doctor(args):
         gate_state = "on" if parse_env_flag("IRONMESH_REQUIRE_MSG_PROMOTION") else "off"
     except ConfigError as e:
         gate_state = "INVALID"
-        env_errors.append(str(e))
+        env_errors.append(f"{e}; ironmesh run and ironmesh-mcp refuse to start")
     try:
         parse_env_limit("IRONMESH_PENDING_QUEUE_CAP", 100, int, 1)
     except ConfigError as e:
-        env_errors.append(str(e))
+        # `ironmesh run` takes --pending-trust-queue-cap instead of this var.
+        env_errors.append(f"{e}; ironmesh-mcp refuses to start "
+                          "(ironmesh run does not read it)")
     print(f"      IRONMESH_REQUIRE_MSG_PROMOTION = "
           f"{gate_state}{' (' + gate_raw + ')' if gate_raw else ''}")
     print(f"      IRONMESH_PENDING_QUEUE_CAP     = {cap_env or '100 (default)'}")
     print(f"      IRONMESH_TRUST_PATH            = {trust_env or '(default)'}")
     if env_errors:
         for msg in env_errors:
-            print(f"      FAIL — {msg}; nodes refuse to start with this value")
+            print(f"      FAIL — {msg}")
         failures += 1
     else:
         print("      OK — env reported (informational; CLI flags override env)")
