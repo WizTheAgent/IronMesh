@@ -30,6 +30,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could trip the breaker on another, and unregistering from one point reset the
   count for the rest. Counts are now kept per hook point.
 
+### Dependencies
+
+- **Development lockfile clears two advisories.** `requirements.lock` (the CI /
+  strict-install set: base + `dev` + `rns`) moves `cryptography` 49.0.0 →
+  50.0.0 (GHSA-g6cj-pr64-35w5 / CVE-2026-69247: PKCS#7 EnvelopedData
+  decryption oracle, affected 44.0.0–<50.0.0; reached only through the `rns`
+  extra, and neither IronMesh nor Reticulum calls the affected `pkcs7_decrypt_*`
+  functions) and `pytest` 8.4.2 → 9.0.3 (GHSA-6w46-j5rx-g56g / CVE-2025-71176:
+  tmpdir handling on multi-user UNIX hosts, all versions before 9.0.3; dev
+  only). `pytest-asyncio` 0.26.0 → 1.3.0 is the first release that supports
+  pytest 9; it adds `backports-asyncio-runner` on Python < 3.11. The `dev`
+  extra's caps move to `pytest>=9.0.3,<10` and `pytest-asyncio>=1.3.0,<2`.
+  The published 0.9.5 Docker image already ships `cryptography` 50.0.0 and no
+  pytest. Existing `ironmesh[rns]` installs that still carry cryptography
+  44–49 should upgrade it (`pip install -U cryptography`).
+
 ### Tests
 
 - **Cross-version tests against real 0.9.4.2 state now run.** The golden
