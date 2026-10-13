@@ -144,6 +144,9 @@ jobs:
           # no-op fails loudly. Adjust only as a deliberate change.
           CI_PYTEST_MIN_PASSED: 750
           CI_PYTEST_MAX_SKIPPED: 40
+          # The 0.9.4.2 cross-version tests must run, not skip: a missing
+          # fixture file is a collection error here.
+          IRONMESH_REQUIRE_GOLDEN_FIXTURE: "1"
         # scripts/ci-pytest.sh runs pytest, watches its stdout for the
         # passing-summary line, and exits 0 as soon as that line shows
         # up — even if the Python interpreter then hangs in atexit. We

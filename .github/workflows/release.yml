@@ -44,6 +44,9 @@ jobs:
           # the gate unless at least this many tests actually passed.
           CI_PYTEST_MIN_PASSED: 750
           CI_PYTEST_MAX_SKIPPED: 40
+          # The 0.9.4.2 cross-version tests must run, not skip: a missing
+          # fixture file is a collection error here.
+          IRONMESH_REQUIRE_GOLDEN_FIXTURE: "1"
         run: ./scripts/ci-pytest.sh pytest -q -p no:cacheprovider --ignore=tests/integration
       - name: Doc-sync + release-qc gate
         run: bash scripts/release-qc.sh --skip-smoke
