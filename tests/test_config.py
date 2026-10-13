@@ -115,6 +115,35 @@ class TestFromEnv:
         assert cfg.log_level == "ERROR"
         assert cfg.port == 8765
 
+    # Policy for from_env(): an unparseable numeric override never aborts
+    # startup — it warns, keeps that field's default and applies the rest.
+    # Values that parse but are unusable (e.g. a port the OS rejects) are
+    # left to the component that uses them.
+    @pytest.mark.parametrize("env_var,attr,bad,good,expected", [
+        ("IRONMESH_PORT", "port", "abc", "9001", 9001),
+        ("IRONMESH_RNS_RATCHET_INTERVAL", "rns_ratchet_interval",
+         "half-hour", "1800.5", 1800.5),
+        ("IRONMESH_RNS_RETAINED_RATCHETS", "rns_retained_ratchets",
+         "4.5", "7", 7),
+        ("IRONMESH_PENDING_QUEUE_CAP", "pending_trust_queue_cap",
+         "", "250", 250),
+    ])
+    def test_every_numeric_override_parses_or_falls_back(
+            self, monkeypatch, caplog, env_var, attr, bad, good, expected):
+        import logging
+        default = getattr(IronMeshConfig(), attr)
+
+        monkeypatch.setenv(env_var, good)
+        assert getattr(IronMeshConfig.from_env(), attr) == expected
+
+        monkeypatch.setenv(env_var, bad)
+        monkeypatch.setenv("IRONMESH_NAME", "kept")
+        with caplog.at_level(logging.WARNING, logger="ironmesh.config"):
+            cfg = IronMeshConfig.from_env()
+        assert getattr(cfg, attr) == default
+        assert cfg.agent_name == "kept"
+        assert any(env_var in r.getMessage() for r in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # save
