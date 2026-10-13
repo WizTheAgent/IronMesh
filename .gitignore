@@ -42,6 +42,7 @@ logs/
 # Runtime lock/sentinel files — but the dependency lockfile is tracked.
 *.lock
 !requirements.lock
+!requirements-integration.lock
 
 # Keys (NEVER commit secrets)
 keys.json

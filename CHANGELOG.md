@@ -72,6 +72,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 
+- **The integration job installs a pinned, coherent environment.** It used to
+  `pip install` langchain-core, crewai and autogen-agentchat one at a time,
+  unpinned. Each install resolved separately, and from September 2026 the
+  result was inconsistent (autogen-core needs protobuf 5.29.x; newer
+  googleapis-common-protos pulled in by CrewAI needs >=6.33.5), so an import
+  failed before any test ran. `requirements-integration.lock` now pins the
+  complete environment (the framework versions from the last green run,
+  every transitive dependency resolved in one pass, hash-checked), and the job
+  requires `pip check`, the framework imports and clean collection of every
+  integration module before running the tests. See
+  `requirements-integration.in` and `scripts/refresh-integration-lock.sh`.
 - **Cross-version tests against real 0.9.4.2 state now run.** The golden
   fixture's key, database and audit-log files matched the repository's
   `keys.json` / `*.db` / `*.log` ignore rules and were never committed, so the
