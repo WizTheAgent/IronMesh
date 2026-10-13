@@ -366,8 +366,33 @@ class TestAuditVerify:
 # Doctor — a real headless `ironmesh doctor` against a REAL 0.9.4.2 node's state
 # ---------------------------------------------------------------------------
 
-_DOCTOR_CMD = ("import sys; sys.argv = ['ironmesh', 'doctor']; "
-               "from ironmesh.cli import main; raise SystemExit(main())")
+# Same isolation as tests/test_doctor_existing_state.py: the child refuses to
+# run unless it imported this process's ironmesh (argv[1]), so an older
+# installed copy cannot run instead and hang on its pre-fix prompt.
+_DOCTOR_CMD = (
+    "import os, sys, ironmesh\n"
+    "want, got = (os.path.normcase(os.path.realpath(f))\n"
+    "             for f in (sys.argv[1], ironmesh.__file__))\n"
+    "if got != want:\n"
+    "    sys.exit('doctor child imported a different ironmesh: '\n"
+    "             + ironmesh.__file__)\n"
+    "sys.argv = ['ironmesh', 'doctor']\n"
+    "from ironmesh.cli import main\n"
+    "raise SystemExit(main())\n"
+)
+
+
+def _child_pythonpath():
+    """PYTHONPATH that makes the child import this process's ironmesh (the
+    unresolved parent only when the package dir is named ``ironmesh``; any
+    inherited PYTHONPATH kept)."""
+    parts = []
+    pkg_dir = Path(ironmesh.__file__).parent
+    if pkg_dir.name == "ironmesh":
+        parts.append(str(pkg_dir.parent))
+    if os.environ.get("PYTHONPATH"):
+        parts.append(os.environ["PYTHONPATH"])
+    return os.pathsep.join(parts)
 
 
 def _run_doctor(home, extra_env=None, timeout=120):
@@ -375,16 +400,19 @@ def _run_doctor(home, extra_env=None, timeout=120):
     timeout IS the regression assertion — the pre-fix code froze forever with
     an existing audit log present."""
     env = {k: v for k, v in os.environ.items()
-           if k not in ("IRONMESH_PASSPHRASE", "IRONMESH_KEYS_PASSPHRASE")}
+           if k not in ("IRONMESH_PASSPHRASE", "IRONMESH_KEYS_PASSPHRASE",
+                        "PYTHONPATH")}
     env["HOME"] = str(home)
     env["USERPROFILE"] = str(home)
-    env["PYTHONPATH"] = str(Path(ironmesh.__file__).resolve().parent.parent)
+    pythonpath = _child_pythonpath()
+    if pythonpath:
+        env["PYTHONPATH"] = pythonpath
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
-        [sys.executable, "-c", _DOCTOR_CMD],
+        [sys.executable, "-c", _DOCTOR_CMD, ironmesh.__file__],
         stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8",
         env=env, timeout=timeout,
     )
