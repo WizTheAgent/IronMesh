@@ -47,7 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   negative queue cap previously disabled the cap entirely, and an infinite
   ratchet interval meant ratchets never rotated. `--pending-trust-queue-cap`
   likewise rejects values below 1. `IRONMESH_PORT` keeps the lenient
-  warn-and-default policy.
+  warn-and-default policy; that fallback can put a node on an unintended
+  endpoint or collide with another node on the default port, so it is logged
+  as a warning and documented in `docs/CONFIGURATION.md`.
 
 ### Dependencies
 

@@ -205,8 +205,15 @@ security-relevant limits (`IRONMESH_PENDING_QUEUE_CAP`,
 strictly: an unrecognised word, a non-number, a non-finite number or a value
 below the minimum is a configuration error, and the node refuses to start
 rather than guess. A typo such as `IRONMESH_REQUIRE_MSG_PROMOTION=ture` used to
-leave the gate silently off. `IRONMESH_PORT` stays lenient (warning, default
-port) because a wrong port cannot weaken a control.
+leave the gate silently off.
+
+**`IRONMESH_PORT` is the exception.** An unparseable value is logged as a
+warning and the default port is used (`8765` for `IronMeshConfig.from_env()`,
+`8767` for `ironmesh-mcp`); the other settings still apply. This fallback is
+not harmless: the node may listen on an endpoint you did not intend, or collide
+with another node already using the default port. Check startup logs for the
+`IRONMESH_PORT` warning, and set the port explicitly (`--port`) where it
+matters.
 
 ## Files written / read
 

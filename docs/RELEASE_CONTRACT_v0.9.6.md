@@ -27,6 +27,12 @@ Worked in this order; deliverable 7 runs alongside all of them.
 | 6 | **Independent audit: scope and funding** | A written scope for an independent, paid third-party audit of the protocol and implementation, and a funding plan for it. 0.9.6 does not claim an audit. | Not started |
 | 7 | **Claims backed by evidence** | Every capability claim in `README.md`, `WHATS_NEW.md` and on the website points to a test, a CI job or a dated recorded run; claims without one are removed or dated. | In progress |
 
+## Evidence rule for the GUI
+
+Advanced GUI panels must remain explicitly labelled DEMO DATA until their
+displayed values come from the daemon as the authoritative source. Mock panels
+and recorded screenshots do not count as release-readiness evidence.
+
 ## Before 1.0 (not 0.9.6)
 
 1.0 requires an **independent, paid third-party audit** with its report

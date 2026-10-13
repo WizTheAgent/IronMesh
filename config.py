@@ -253,8 +253,10 @@ class IronMeshConfig:
 
         Booleans and security-relevant limits are strict: an unrecognised or
         out-of-range value raises :class:`ConfigError`. ``IRONMESH_PORT`` alone
-        keeps the lenient policy (warn, keep the default, apply the rest);
-        a bad port cannot weaken a control, and an unusable one fails at bind.
+        keeps the lenient policy: it logs a warning, keeps the default port and
+        applies the rest. That fallback is not harmless — the node may listen on
+        an endpoint the operator did not intend, or collide with another node on
+        the default port — so the warning must not be suppressed.
         """
         config = cls()
         env_map = {
