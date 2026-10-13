@@ -1420,7 +1420,7 @@ def serve(daemon: BridgeDaemon, loop: Optional[asyncio.AbstractEventLoop],
     # stdin pipe open without ever sending a frame, so the EOF exit below
     # never fires. If nothing arrives before the deadline, exit.
     first_frame = threading.Event()
-    if init_timeout_seconds:
+    if init_timeout_seconds is not None and init_timeout_seconds > 0:
         def _init_watchdog():
             if not first_frame.wait(init_timeout_seconds):
                 log.error("no MCP traffic within %.0fs; exiting to avoid "
@@ -1562,6 +1562,10 @@ def main() -> int:
         require_promo = parse_env_flag("IRONMESH_REQUIRE_MSG_PROMOTION")
         parse_env_flag("IRONMESH_ROTATE_KEYS")  # read again at daemon start
         queue_cap = int(parse_env_limit("IRONMESH_PENDING_QUEUE_CAP", 100, int, 1))
+        # 0 disables the orphan watchdog; a negative value would make it
+        # fire immediately (Event.wait(-1) returns at once) and kill the
+        # server before the host could speak.
+        init_timeout = int(parse_env_limit("IRONMESH_MCP_INIT_TIMEOUT", 120, int, 0))
     except ConfigError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
@@ -1646,9 +1650,7 @@ def main() -> int:
     # Self-destruct if the host never speaks. A host that times out on
     # its own connect deadline may neither kill us nor close our stdin
     # (it holds the pipe open for its lifetime), which leaks a fully
-    # started node squatting the port. 0 disables.
-    init_timeout = _env_int("IRONMESH_MCP_INIT_TIMEOUT", 120)
-
+    # started node squatting the port. 0 disables (validated above).
     try:
         serve(daemon, None,
               loop_ready=loop_ready, loop_holder=loop_holder,

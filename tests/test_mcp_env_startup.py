@@ -168,6 +168,27 @@ class TestInitWatchdog:
             stdin.release.set()
             t.join(5)
 
+    @pytest.mark.parametrize("timeout", [-1, 0])
+    def test_non_positive_timeout_never_fires(self, monkeypatch, timeout):
+        # serve() is also callable directly; a non-positive value must mean
+        # "no watchdog", never an immediate exit.
+        exited = []
+        monkeypatch.setattr(srv.os, "_exit", exited.append)
+        stdin = _HeldOpenStdin()
+        t = threading.Thread(
+            target=srv.serve, args=(object(), None),
+            kwargs=dict(stdin=stdin, stdout=io.StringIO(),
+                        loop_ready=threading.Event(), loop_holder={},
+                        init_timeout_seconds=timeout),
+            daemon=True)
+        t.start()
+        try:
+            threading.Event().wait(0.5)
+            assert exited == []
+        finally:
+            stdin.release.set()
+            t.join(5)
+
     def test_disarmed_once_the_host_speaks(self, monkeypatch):
         exited = []
         monkeypatch.setattr(srv.os, "_exit", exited.append)

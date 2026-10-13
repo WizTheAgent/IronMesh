@@ -56,7 +56,7 @@ class TestMcpEntrypoint:
         monkeypatch.setenv("IRONMESH_PASSPHRASE", "strict-env-test-passphrase")
         monkeypatch.setattr(sys, "argv", ["ironmesh-mcp"])
         for var in ("IRONMESH_REQUIRE_MSG_PROMOTION", "IRONMESH_ROTATE_KEYS",
-                    "IRONMESH_PENDING_QUEUE_CAP"):
+                    "IRONMESH_PENDING_QUEUE_CAP", "IRONMESH_MCP_INIT_TIMEOUT"):
             monkeypatch.delenv(var, raising=False)
 
     @pytest.mark.parametrize("var,bad", [
@@ -65,6 +65,10 @@ class TestMcpEntrypoint:
         ("IRONMESH_PENDING_QUEUE_CAP", "-1"),
         ("IRONMESH_PENDING_QUEUE_CAP", "0"),
         ("IRONMESH_PENDING_QUEUE_CAP", "1O"),
+        # A negative watchdog timeout used to reach Event.wait(-1), which
+        # returns at once, so the server killed itself (exit 3) on startup.
+        ("IRONMESH_MCP_INIT_TIMEOUT", "-1"),
+        ("IRONMESH_MCP_INIT_TIMEOUT", "soon"),
     ])
     def test_invalid_value_refuses_before_daemon(self, monkeypatch, capsys,
                                                  var, bad):
@@ -87,6 +91,13 @@ class TestMcpEntrypoint:
             mcp_srv.main()
         assert seen["require_message_promotion"] is True
         assert seen["pending_trust_queue_cap"] == 25
+
+    def test_zero_init_timeout_is_accepted_as_disabled(self, monkeypatch):
+        monkeypatch.setattr(mcp_srv, "BridgeDaemon",
+                            lambda **kw: (_ for _ in ()).throw(_Reached()))
+        monkeypatch.setenv("IRONMESH_MCP_INIT_TIMEOUT", "0")
+        with pytest.raises(_Reached):
+            mcp_srv.main()
 
 
 class TestQueueCapFlag:
