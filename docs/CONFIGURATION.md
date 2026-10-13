@@ -166,10 +166,10 @@ These are read by the CLI / daemon / gateways:
 
 | Variable | Effect |
 |---|---|
-| `IRONMESH_REQUIRE_MSG_PROMOTION` | `1\|true\|yes` enables the pending-trust gate (same as `--require-message-promotion`). |
-| `IRONMESH_PENDING_QUEUE_CAP` | Override the per-peer pending-trust queue cap (default `100`). |
+| `IRONMESH_REQUIRE_MSG_PROMOTION` | `1\|true\|yes\|on` enables the pending-trust gate (same as `--require-message-promotion`); `0\|false\|no\|off` or unset leaves it off. Any other value is a configuration error and the node refuses to start. |
+| `IRONMESH_PENDING_QUEUE_CAP` | Per-peer pending-trust queue cap for `ironmesh-mcp` and `IronMeshConfig.from_env()` (default `100`, minimum `1`; anything else refuses to start). `ironmesh run` takes `--pending-trust-queue-cap` instead. |
 | `IRONMESH_TRUST_PATH` | Override `~/.ironmesh/known_peers.json`. |
-| `IRONMESH_ROTATE_KEYS=1` | Rotate keys before start (same as `--rotate-keys`). |
+| `IRONMESH_ROTATE_KEYS=1` | Rotate keys before start (same as `--rotate-keys`). Accepts the same boolean words as above; any other value refuses to start. |
 | `IRONMESH_PASSPHRASE_NEW` | Used by `ironmesh keys keychain-store --passphrase-from-env` to read the new passphrase non-interactively. |
 | `IRONMESH_SETUP_PASSPHRASE` | Used by `ironmesh setup --non-interactive --passphrase-from-env`. |
 | `IRONMESH_RNS_ADMIN_IDENTITIES` | Comma-separated allow-list of RNS Identity hashes for admin RPC paths. |
@@ -178,6 +178,7 @@ These are read by the CLI / daemon / gateways:
 | `IRONMESH_KEYS_PASSPHRASE` | Passphrase used to decrypt the identity key file when it differs from the mesh passphrase. Precedence: `--keys-passphrase` > `--keys-passphrase-file` > this variable > mesh passphrase (tried automatically) > interactive prompt. |
 | `IRONMESH_A2A_TOKEN` | Bearer token enforced by the `ironmesh-a2a` HTTP gateway. |
 | `IRONMESH_ACP_TIMEOUT` | Per-call timeout (seconds) for the `ironmesh-acp` server. |
+| `IRONMESH_MCP_INIT_TIMEOUT` | Seconds the `ironmesh-mcp` server waits for its host's first frame before exiting (default `120`, `0` disables). Must be a whole number of at least `0`; a negative or non-numeric value refuses to start. |
 
 A second family (`IRONMESH_NAME`, `IRONMESH_PORT`, `IRONMESH_KEYS_PATH`,
 `IRONMESH_DB_PATH`, `IRONMESH_LOG_LEVEL`, `IRONMESH_LOG_FILE`,
@@ -189,6 +190,31 @@ that embed IronMesh, but **is not read by `ironmesh run`** — pass the
 corresponding CLI flags instead. In particular, `ironmesh run` always
 requires `--name` on the command line; setting `IRONMESH_NAME` alone
 is not enough.
+
+The `ironmesh-mcp` server is the exception: MCP hosts can only set
+environment variables, so it reads `IRONMESH_NAME`, `IRONMESH_PORT`,
+`IRONMESH_KEYS_PATH` and `IRONMESH_DB_PATH`. Explicit `--name` / `--port`
+arguments win over the environment. See
+[OPENCLAW_MCP_SETUP.md](OPENCLAW_MCP_SETUP.md) for running it next to an
+existing node.
+
+**Strict values.** Boolean settings (`IRONMESH_REQUIRE_MSG_PROMOTION`,
+`IRONMESH_ROTATE_KEYS`, `IRONMESH_RNS_ENABLED`, `IRONMESH_RNS_RATCHETS`) and
+security-relevant limits (`IRONMESH_PENDING_QUEUE_CAP`,
+`IRONMESH_RNS_RATCHET_INTERVAL`, `IRONMESH_RNS_RETAINED_RATCHETS`), plus
+`IRONMESH_MCP_INIT_TIMEOUT` (minimum `0`), are parsed strictly: an
+unrecognised word, a non-number, a non-finite number or a value below the
+minimum is a configuration error, and the node refuses to start
+rather than guess. A typo such as `IRONMESH_REQUIRE_MSG_PROMOTION=ture` used to
+leave the gate silently off.
+
+**`IRONMESH_PORT` is the exception.** An unparseable value is logged as a
+warning and the default port is used (`8765` for `IronMeshConfig.from_env()`,
+`8767` for `ironmesh-mcp`); the other settings still apply. This fallback is
+not harmless: the node may listen on an endpoint you did not intend, or collide
+with another node already using the default port. Check startup logs for the
+`IRONMESH_PORT` warning, and set the port explicitly (`--port`) where it
+matters.
 
 ## Files written / read
 

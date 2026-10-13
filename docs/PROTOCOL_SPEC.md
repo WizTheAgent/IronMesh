@@ -316,7 +316,9 @@ shared_secret = X25519(my_ephemeral_private, peer_ephemeral_public)
 ```
 
 - The shared secret is 32 bytes.
-- Ephemeral private keys are destroyed immediately after derivation.
+- Ephemeral private keys MUST become unreachable immediately after the shared secret
+  is derived. Implementations SHOULD overwrite mutable key buffers when the runtime
+  permits, but MUST NOT claim guaranteed erasure on runtimes that cannot provide it.
 - The shared secret is used as the NaCl `SecretBox` key for all subsequent frames.
 
 After Stage 3, all communication switches to the **binary wire format** below.
@@ -662,8 +664,23 @@ lexicographically smaller `node_id` periodically initiates a rekey:
 
 1. Initiator sends `REKEY_REQUEST` with a new X25519 ephemeral public key.
 2. Responder replies with `REKEY_RESPONSE` containing their new ephemeral public key.
-3. Both sides compute a new shared secret via ECDH and replace the session key.
-4. Old session key is securely wiped.
+3. Both sides compute a new shared secret via ECDH and replace the session key. The
+   previous key MAY still be used to *decrypt* frames the peer sent under it until a
+   grace window closes (30 seconds in the reference implementation), because frames
+   can arrive out of order; it MUST NOT be used to encrypt.
+4. The previous key is **retired** when that grace window closes, or earlier if a
+   further rekey supersedes it. Retired session-key material MUST become unreachable
+   immediately. Implementations SHOULD overwrite mutable key buffers when the runtime
+   permits, but MUST NOT claim guaranteed erasure on runtimes that cannot provide it.
+
+> **Conformance note (0.9.6 preparation).** The Python reference implementation stops
+> using a retired key at the deadline, but releases the reference lazily: on the next
+> frame from that peer, or at the next rekey. While a peer is silent, a retired key can
+> therefore remain referenced in memory. Separately, on the rekey *responder* path the
+> new ephemeral private key stays referenced by a local variable until the handler
+> returns (after it has sent `REKEY_RESPONSE`), not only until derivation. Neither yet
+> meets the MUSTs above; both are tracked as follow-ups. The implementation holds keys
+> in immutable `bytes`, so any overwrite it attempts is best-effort.
 
 Default interval: 1800 seconds (30 minutes).
 

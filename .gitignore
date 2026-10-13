@@ -42,6 +42,7 @@ logs/
 # Runtime lock/sentinel files — but the dependency lockfile is tracked.
 *.lock
 !requirements.lock
+!requirements-integration.lock
 
 # Keys (NEVER commit secrets)
 keys.json
@@ -96,3 +97,11 @@ IRONMESH_V*_ROADMAP.md
 # the repo root can also drop one here. clients/ts/package-lock.json
 # stays tracked for reproducible builds.
 node_modules/
+
+# Golden 0.9.4.2 existing-state fixture: deliberately committed test
+# artifacts written by the released wheel (throwaway identity, test
+# passphrase published in manifest.json). Without these the cross-version
+# migration tests skip. Lock files stay ignored.
+!tests/fixtures/existing_state/v0_9_4_2/keys.json
+!tests/fixtures/existing_state/v0_9_4_2/data.db
+!tests/fixtures/existing_state/v0_9_4_2/audit.log

@@ -7,7 +7,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.5] — 2026-08-06 — protocol ironmesh/0.9: HELLO domain separation, RNS link binding, E2E source authentication, invites + onboarding
+### Fixed
+
+- **`ironmesh-mcp` honours its environment.** MCP hosts can only pass env
+  vars, but the server ignored `IRONMESH_NAME`, `IRONMESH_PORT`,
+  `IRONMESH_KEYS_PATH` and `IRONMESH_DB_PATH`, so an MCP server started next to
+  a regular node shared that node's `~/.ironmesh` identity, database and audit
+  log and bound the default port. They are now read, with explicit arguments
+  still taking precedence; a malformed `IRONMESH_PORT` warns and falls back to
+  the default.
+- **`ironmesh-mcp` no longer stalls or leaks on slow startup.** `initialize`
+  and `tools/list` are answered before the mesh finishes starting; an early
+  `tools/call` waits up to 90 s and then returns an error. A host that never
+  speaks no longer leaves the process running with its port bound: the server
+  exits after `IRONMESH_MCP_INIT_TIMEOUT` seconds (default 120, `0` disables).
+  The value must be a whole number of at least 0: a negative value would have
+  made the watchdog fire at once and kill the server on startup, so it refuses
+  to start instead.
+- **`IronMeshConfig.from_env()` no longer crashes on a malformed
+  `IRONMESH_PORT`.** It logs a warning, keeps the default port and still
+  applies the other overrides. (Security-relevant numeric settings are strict
+  instead — see Security below.)
+- **Hook circuit breaker counts failures per hook point.** A callback registered
+  on several hook points shared one failure counter, so failures on one point
+  could trip the breaker on another, and unregistering from one point reset the
+  count for the rest. Counts are now kept per hook point.
+
+### Security
+
+- **A mistyped security setting refuses to start instead of meaning "off".**
+  Boolean environment settings were true only for `1`/`true`/`yes` and silently
+  false for anything else, so `IRONMESH_REQUIRE_MSG_PROMOTION=ture` left the
+  pending-trust gate off and `IRONMESH_RNS_RATCHETS=treu` turned ratchets off
+  (their default is on). `IRONMESH_ROTATE_KEYS` acted only on exactly `1`.
+  These now accept `1/true/yes/on` and `0/false/no/off`; any other value is a
+  configuration error in `ironmesh run` (checked before any other startup step),
+  `ironmesh-mcp`, `IronMeshConfig.from_env()` and the daemon's key-rotation
+  trigger, and `ironmesh doctor` reports it as a failed check.
+- **Security-relevant limits reject bad values instead of falling back.**
+  `IRONMESH_PENDING_QUEUE_CAP`, `IRONMESH_RNS_RATCHET_INTERVAL` and
+  `IRONMESH_RNS_RETAINED_RATCHETS` must parse, be finite and be at least 1; a
+  negative queue cap previously disabled the cap entirely, and an infinite
+  ratchet interval meant ratchets never rotated. `--pending-trust-queue-cap`
+  likewise rejects values below 1. `IRONMESH_PORT` keeps the lenient
+  warn-and-default policy; that fallback can put a node on an unintended
+  endpoint or collide with another node on the default port, so it is logged
+  as a warning and documented in `docs/CONFIGURATION.md`.
+
+### Dependencies
+
+- **Development lockfile clears two advisories.** `requirements.lock` (the CI /
+  strict-install set: base + `dev` + `rns`) moves `cryptography` 49.0.0 →
+  50.0.0 (GHSA-g6cj-pr64-35w5 / CVE-2026-69247: PKCS#7 EnvelopedData
+  decryption oracle, affected 44.0.0–<50.0.0; reached only through the `rns`
+  extra, and neither IronMesh nor Reticulum calls the affected `pkcs7_decrypt_*`
+  functions) and `pytest` 8.4.2 → 9.0.3 (GHSA-6w46-j5rx-g56g / CVE-2025-71176:
+  tmpdir handling on multi-user UNIX hosts, all versions before 9.0.3; dev
+  only). `pytest-asyncio` 0.26.0 → 1.3.0 is the first release that supports
+  pytest 9; it adds `backports-asyncio-runner` on Python < 3.11. The `dev`
+  extra's caps move to `pytest>=9.0.3,<10` and `pytest-asyncio>=1.3.0,<2`.
+  The published 0.9.5 Docker image already ships `cryptography` 50.0.0 and no
+  pytest. Existing `ironmesh[rns]` installs that still carry cryptography
+  44–49 should upgrade it (`pip install -U cryptography`).
+
+### Tests
+
+- **The integration job installs a pinned, coherent environment.** It used to
+  `pip install` langchain-core, crewai and autogen-agentchat one at a time,
+  unpinned. Each install resolved separately, and from September 2026 the
+  result was inconsistent (autogen-core needs protobuf 5.29.x; newer
+  googleapis-common-protos pulled in by CrewAI needs >=6.33.5), so an import
+  failed before any test ran. `requirements-integration.lock` now pins the
+  complete environment (the framework versions from the last green run,
+  every transitive dependency resolved in one pass, hash-checked), and the job
+  requires `pip check`, the framework imports and clean collection of every
+  integration module before running the tests. See
+  `requirements-integration.in` and `scripts/refresh-integration-lock.sh`.
+- **Cross-version tests against real 0.9.4.2 state now run.** The golden
+  fixture's key, database and audit-log files matched the repository's
+  `keys.json` / `*.db` / `*.log` ignore rules and were never committed, so the
+  19 tests in `tests/test_existing_state_v0942.py` skipped in every fresh
+  checkout and in CI. The fixture is regenerated from the published 0.9.4.2
+  wheel and committed.
+- **Headless `doctor` tests run the code under test.** Their subprocess could
+  import a different installed `ironmesh` (for example an older release in
+  site-packages), whose passphrase prompt then hung the test until its 120 s
+  timeout. The child now refuses to run unless it imported the same package.
+
+### Documentation
+
+- `docs/RELEASE_CONTRACT_v0.9.6.md` defines the 0.9.6 release (Interop &
+  Evidence) and what is deferred to 0.10.0.
+- The README protocol comparison is now organised by architectural layer
+  instead of a single scored grid, and the roadmap checklist reflects what has
+  shipped through 0.9.5.
+- Unbacked validation claims are dated or removed: the E2E stress driver's last
+  recorded run (2026-04-24, v0.9.1 line) and the April 2026 field tests are
+  stated as such, and the Go/TypeScript client status points at 0.9.6.
+- Release dates: `CITATION.cff` and the 0.9.5 heading now use the PyPI
+  publication date (2026-08-20); the 0.9.5 release notes list tag creation,
+  image and package publication, and the website update separately.
+
+## [0.9.5] — 2026-08-20 — protocol ironmesh/0.9: HELLO domain separation, RNS link binding, E2E source authentication, invites + onboarding
 
 ### Added
 

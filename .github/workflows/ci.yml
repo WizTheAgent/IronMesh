@@ -6,6 +6,11 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main]
+    # `labeled` so that adding the full-matrix label (below) re-runs CI.
+    types: [opened, synchronize, reopened, labeled]
+  # Manual full-matrix run (macOS included) from the Actions tab or
+  # `gh workflow run ci.yml --ref <branch>`; available once on main.
+  workflow_dispatch:
 
 jobs:
   test:
@@ -13,7 +18,8 @@ jobs:
     # Cap job runtime so a hung background process (mDNS deadlock on a
     # constrained runner, an orphaned websocket server, etc.) can never
     # sit indefinitely and starve the queue. Happy path is ~7 min; 20
-    # gives comfortable headroom for cold macOS runners on release tags.
+    # gives comfortable headroom for cold macOS runners (release tags,
+    # full-matrix PRs, manual runs).
     timeout-minutes: 20
     strategy:
       matrix:
@@ -24,7 +30,10 @@ jobs:
         # macOS still work?" matters before we cut a release, not every
         # commit. Tagging v0.8.4 pulls macOS back into the matrix; day-
         # to-day main pushes stay at 8 jobs (Ubuntu + Windows × 4 Python).
-        os: ${{ fromJSON((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) && '["ubuntu-latest", "windows-latest", "macos-latest"]' || '["ubuntu-latest", "windows-latest"]') }}
+        # The complete supported matrix (adding macOS × 4 Python) also runs
+        # on demand without a release tag: on a manual workflow_dispatch,
+        # or on a pull request carrying the `full-matrix` label.
+        os: ${{ fromJSON(((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-matrix'))) && '["ubuntu-latest", "windows-latest", "macos-latest"]' || '["ubuntu-latest", "windows-latest"]') }}
       fail-fast: false
 
     steps:
@@ -144,6 +153,9 @@ jobs:
           # no-op fails loudly. Adjust only as a deliberate change.
           CI_PYTEST_MIN_PASSED: 750
           CI_PYTEST_MAX_SKIPPED: 40
+          # The 0.9.4.2 cross-version tests must run, not skip: a missing
+          # fixture file is a collection error here.
+          IRONMESH_REQUIRE_GOLDEN_FIXTURE: "1"
         # scripts/ci-pytest.sh runs pytest, watches its stdout for the
         # passing-summary line, and exits 0 as soon as that line shows
         # up — even if the Python interpreter then hangs in atexit. We
@@ -185,49 +197,41 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install IronMesh + real framework deps
+      - name: Install IronMesh + the pinned integration environment
         run: |
           python -m pip install --upgrade pip
-          # Same hash-pinned lockfile as the unit-test job.
-          pip install --require-hashes -r requirements.lock
+          # The complete integration environment, hash-pinned: the three
+          # frameworks (langchain-core, crewai, autogen-agentchat) and every
+          # transitive dependency, resolved together in one pass for this
+          # runner (Ubuntu, Python 3.12). They used to be installed one at a
+          # time, unpinned; each install resolved on its own and the result
+          # became incoherent (autogen-core needs protobuf 5.29.x, newer
+          # googleapis-common-protos needs >=6.33.5), so an import failed
+          # before any test ran. Why the versions are what they are:
+          # requirements-integration.in. To refresh:
+          # scripts/refresh-integration-lock.sh.
+          pip install --require-hashes -r requirements-integration.lock
           pip install -e . --no-deps
-          # Real third-party frameworks, not mocks — deliberately
-          # unpinned so the tests track what users actually install.
-          # Install each one separately (so one broken package doesn't
-          # mask the others' status in the log), then fail the job if
-          # any of them didn't install. This must NOT be best-effort:
-          # the adapter tests pytest.importorskip these packages, so a
-          # silently failed install would turn the whole integration
-          # suite into skips while CI stayed green.
-          failed=""
-          for pkg in langchain-core crewai autogen-agentchat; do
-            pip install "$pkg" || failed="$failed $pkg"
-          done
-          if [ -n "$failed" ]; then
-            echo "FAIL: framework install broke for:$failed"
-            echo "The adapter integration tests would silently skip without them."
-            exit 1
-          fi
-          # Belt and suspenders: installing is not the same as importing.
-          # An import-time crash in an unpinned framework release would
-          # also feed importorskip and skip the suite silently.
-          python -c "import langchain_core, crewai, autogen_agentchat" || {
-            echo "FAIL: a framework installed but does not import."
-            exit 1
-          }
+          # Coherent, not merely installed.
+          pip check
+          # Installing is not importing: an import-time crash would feed the
+          # adapter tests' importorskip and skip the suite silently.
+          python -c "import langchain_core, crewai, autogen_agentchat"
+          # Every integration test module must import (collection errors
+          # fail here; module-level skips fail the 0-skip ceiling below).
+          python -m pytest --collect-only -q -p no:cacheprovider tests/integration
       - name: Run integration tests
         env:
           PYTHONIOENCODING: utf-8
           # Result floors — assert the adapter tests actually executed.
-          # With all three frameworks importable the suite currently runs
-          # 15 tests with 0 skips (the AutoGen real-agent test runs on
-          # autogen-agentchat, the framework's modern package). The
-          # pass floor is ~70% of that, so adding or removing a couple
-          # of tests never false-alarms, but a framework that stops
-          # importing (mass importorskip) drops the count far below it.
-          # The skip ceiling of 0 budgets no known skips: any skip means
-          # adapter coverage silently vanished and must be a deliberate,
-          # reviewed change here.
+          # With the pinned environment the suite collects 15 tests: 14 pass
+          # and 1 is an expected failure (CrewAI agent construction, a
+          # recorded xfail on CrewAI schema drift). The pass floor is ~70% of
+          # that, so adding or removing a couple of tests never false-alarms,
+          # but a framework that stops importing (mass importorskip) drops
+          # the count far below it. The skip ceiling of 0 budgets no known
+          # skips: any skip means adapter coverage silently vanished and
+          # must be a deliberate, reviewed change here.
           CI_PYTEST_MIN_PASSED: 10
           CI_PYTEST_MAX_SKIPPED: 0
         timeout-minutes: 10
@@ -292,11 +296,12 @@ jobs:
     #
     # Triggered on:
     #   - tag pushes (v*) — pre-release verification
+    #   - manual workflow_dispatch runs (full matrix)
     #   - PRs that touch packaging files (pyproject.toml, MANIFEST.in,
     #     Dockerfile, scripts/release-smoke.sh) — early warning
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'pull_request'
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

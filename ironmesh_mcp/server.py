@@ -1381,16 +1381,58 @@ def _dispatch(mcp: IronMeshMCP, tool: str, args: dict) -> Any:
 # --------------------------------------------------------------------------
 
 
-def serve(daemon: BridgeDaemon, loop: asyncio.AbstractEventLoop,
-          stdin=None, stdout=None) -> None:
-    """Run the MCP server loop on stdio until EOF."""
+def serve(daemon: BridgeDaemon, loop: Optional[asyncio.AbstractEventLoop],
+          stdin=None, stdout=None, *,
+          loop_ready: Optional[threading.Event] = None,
+          loop_holder: Optional[dict] = None,
+          mesh_wait_seconds: float = 90.0,
+          init_timeout_seconds: Optional[float] = None) -> None:
+    """Run the MCP server loop on stdio until EOF.
+
+    Callers with a running daemon pass ``loop`` directly (tests do this).
+    ``main()`` instead passes ``loop=None`` plus ``loop_ready``/``loop_holder``
+    so stdio serving starts before mesh bring-up finishes: initialize,
+    tools/list and ping answer immediately; the first tools/call blocks up
+    to ``mesh_wait_seconds`` for the daemon, then errors gracefully instead
+    of stalling the host.
+    """
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
-    mcp = IronMeshMCP(daemon, loop)
+    mcp = IronMeshMCP(daemon, loop) if loop is not None else None
+
+    def _resolve_mcp() -> Optional[str]:
+        """Bind the daemon loop once ready; return an error string if not."""
+        nonlocal mcp
+        if mcp is not None:
+            return None
+        if loop_ready is not None and not loop_ready.wait(mesh_wait_seconds):
+            return ("mesh daemon is still starting; retry in a few seconds")
+        err = (loop_holder or {}).get("error")
+        if err is not None:
+            return f"mesh daemon failed to start: {err}"
+        lp = (loop_holder or {}).get("loop")
+        if lp is None:
+            return "mesh daemon not available"
+        mcp = IronMeshMCP(daemon, lp)
+        return None
+
+    # Orphan guard: a host that abandons its connect attempt may keep our
+    # stdin pipe open without ever sending a frame, so the EOF exit below
+    # never fires. If nothing arrives before the deadline, exit.
+    first_frame = threading.Event()
+    if init_timeout_seconds is not None and init_timeout_seconds > 0:
+        def _init_watchdog():
+            if not first_frame.wait(init_timeout_seconds):
+                log.error("no MCP traffic within %.0fs; exiting to avoid "
+                          "an orphaned process", init_timeout_seconds)
+                os._exit(3)
+        threading.Thread(target=_init_watchdog, name="mcp-init-watchdog",
+                         daemon=True).start()
 
     log.info("IronMesh MCP server ready (stdio transport)")
     while True:
         msg = _read_frame(stdin)
+        first_frame.set()
         if msg is None:
             break
 
@@ -1413,7 +1455,11 @@ def serve(daemon: BridgeDaemon, loop: asyncio.AbstractEventLoop,
             elif method == "tools/call":
                 tool = params.get("name", "")
                 args = params.get("arguments", {})
-                content = _dispatch(mcp, tool, args)
+                not_ready = _resolve_mcp()
+                if not_ready is not None or mcp is None:
+                    content = {"error": not_ready or "mesh daemon not available"}
+                else:
+                    content = _dispatch(mcp, tool, args)
                 # MCP expects content as a list of content blocks
                 result = {"content": [{
                     "type": "text",
@@ -1445,9 +1491,23 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr,
                         format="%(asctime)s [%(name)s] %(message)s")
 
+    # MCP hosts (Claude Desktop, OpenClaw, …) can only set env vars in
+    # their server config, not argv — so every CLI default here must be
+    # overridable via IRONMESH_* env. Explicit argv still wins.
+    def _env_int(var: str, fallback: int) -> int:
+        raw = os.environ.get(var)
+        if raw is None:
+            return fallback
+        try:
+            return int(raw)
+        except ValueError:
+            print(f"WARNING: {var}={raw!r} is not an integer; "
+                  f"using {fallback}", file=sys.stderr)
+            return fallback
+
     p = argparse.ArgumentParser()
-    p.add_argument("--name", default="mcp-agent")
-    p.add_argument("--port", type=int, default=8767)
+    p.add_argument("--name", default=os.environ.get("IRONMESH_NAME", "mcp-agent"))
+    p.add_argument("--port", type=int, default=_env_int("IRONMESH_PORT", 8767))
     p.add_argument("--bind", default="127.0.0.1")
     p.add_argument("--passphrase-env", default="IRONMESH_PASSPHRASE")
     p.add_argument("--passphrase-file", default=None)
@@ -1496,11 +1556,29 @@ def main() -> int:
     # v0.8.5: opt into the pending-trust gate via env so MCP hosts
     # (Claude Desktop, Claude Code) can flip the policy through their
     # config without changing the spawn command.
-    require_promo = os.environ.get(
-        "IRONMESH_REQUIRE_MSG_PROMOTION", ""
-    ).lower() in ("1", "true", "yes")
-    queue_cap = int(os.environ.get("IRONMESH_PENDING_QUEUE_CAP", "100"))
+    # Strict: a typo must not silently turn the gate off or loosen the cap.
+    from ironmesh.config import ConfigError, parse_env_flag, parse_env_limit
+    try:
+        require_promo = parse_env_flag("IRONMESH_REQUIRE_MSG_PROMOTION")
+        parse_env_flag("IRONMESH_ROTATE_KEYS")  # read again at daemon start
+        queue_cap = int(parse_env_limit("IRONMESH_PENDING_QUEUE_CAP", 100, int, 1))
+        # 0 disables the orphan watchdog; a negative value would make it
+        # fire immediately (Event.wait(-1) returns at once) and kill the
+        # server before the host could speak.
+        init_timeout = int(parse_env_limit("IRONMESH_MCP_INIT_TIMEOUT", 120, int, 0))
+    except ConfigError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
     trust_path_env = os.environ.get("IRONMESH_TRUST_PATH") or None
+
+    # Dedicated identity/storage for the MCP node. Without these, an MCP
+    # server spawned next to a real node silently reuses ~/.ironmesh and
+    # the two fight over one identity and one sqlite file.
+    daemon_paths: dict[str, Any] = {}
+    if os.environ.get("IRONMESH_KEYS_PATH"):
+        daemon_paths["keys_path"] = os.environ["IRONMESH_KEYS_PATH"]
+    if os.environ.get("IRONMESH_DB_PATH"):
+        daemon_paths["db_path"] = os.environ["IRONMESH_DB_PATH"]
 
     daemon = BridgeDaemon(
         name=args.name, port=args.port, bind_address=args.bind,
@@ -1510,13 +1588,34 @@ def main() -> int:
         require_message_promotion=require_promo,
         pending_trust_queue_cap=queue_cap,
         trust_path=trust_path_env,
+        **daemon_paths,
     )
-    loop = daemon.run(background=True)
-    threading.Thread(target=loop.run_forever, name="mcp-loop",
-                     daemon=True).start()
-    time.sleep(0.5)
 
-    # Manual peer bootstrap: dial each --peer hint after the daemon is
+    # Stdio-first startup. Mesh bring-up (key load, audit-chain verify,
+    # port bind, discovery) can take longer than an MCP host's connect
+    # timeout — hosts were giving up mid-start and leaking this process
+    # with the port bound. Serve stdio immediately and bring the mesh up
+    # in the background; tools/call waits for readiness, initialize and
+    # tools/list never do.
+    loop_ready = threading.Event()
+    loop_holder: dict = {}
+
+    def _bring_up_mesh():
+        try:
+            lp = daemon.run(background=True)
+        except Exception as e:
+            log.exception("mesh daemon failed to start")
+            loop_holder["error"] = e
+            loop_ready.set()
+            return
+        loop_holder["loop"] = lp
+        loop_ready.set()
+        lp.run_forever()
+
+    threading.Thread(target=_bring_up_mesh, name="mcp-loop",
+                     daemon=True).start()
+
+    # Manual peer bootstrap: dial each --peer hint once the daemon is
     # listening. mDNS auto-discovery still runs in parallel; --peer is
     # additive, useful when mDNS is blocked or a name slot is taken.
     if peer_hints:
@@ -1533,17 +1632,32 @@ def main() -> int:
                 except Exception as e:
                     log.warning("manual peer bootstrap: %s:%d failed: %s",
                                 host, port, e)
-        try:
-            asyncio.run_coroutine_threadsafe(
-                _dial_peer_hints(), loop
-            ).result(timeout=15)
-        except Exception as e:
-            log.warning("peer hint dial timed out or errored: %s", e)
 
+        def _dial_when_ready():
+            if not loop_ready.wait(timeout=120) or "loop" not in loop_holder:
+                log.warning("peer hint dial skipped: mesh daemon never started")
+                return
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    _dial_peer_hints(), loop_holder["loop"]
+                ).result(timeout=15)
+            except Exception as e:
+                log.warning("peer hint dial timed out or errored: %s", e)
+
+        threading.Thread(target=_dial_when_ready, name="mcp-peer-dial",
+                         daemon=True).start()
+
+    # Self-destruct if the host never speaks. A host that times out on
+    # its own connect deadline may neither kill us nor close our stdin
+    # (it holds the pipe open for its lifetime), which leaks a fully
+    # started node squatting the port. 0 disables (validated above).
     try:
-        serve(daemon, loop)
+        serve(daemon, None,
+              loop_ready=loop_ready, loop_holder=loop_holder,
+              init_timeout_seconds=init_timeout or None)
     except KeyboardInterrupt:
         pass
+    loop = loop_holder.get("loop")
     # v0.8.5.2: graceful shutdown on stdio EOF. Previously main()
     # only called loop.stop(), which doesn't cancel the many long-
     # running background tasks (heartbeat, cleanup, reconnect,
@@ -1558,15 +1672,16 @@ def main() -> int:
     # threads. Stdio-based MCP has no meaningful work after its
     # host disconnects; immediate exit is the right policy.
     import concurrent.futures
-    try:
-        fut = asyncio.run_coroutine_threadsafe(daemon.shutdown(), loop)
-        fut.result(timeout=3)
-    except (concurrent.futures.TimeoutError, TimeoutError, RuntimeError, Exception):
-        pass
-    try:
-        loop.call_soon_threadsafe(loop.stop)
-    except Exception:
-        pass
+    if loop is not None:
+        try:
+            fut = asyncio.run_coroutine_threadsafe(daemon.shutdown(), loop)
+            fut.result(timeout=3)
+        except (concurrent.futures.TimeoutError, TimeoutError, RuntimeError, Exception):
+            pass
+        try:
+            loop.call_soon_threadsafe(loop.stop)
+        except Exception:
+            pass
     # Force-exit: kills zombie non-daemon threads that would otherwise
     # keep the process alive.
     os._exit(0)

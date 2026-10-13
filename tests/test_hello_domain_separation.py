@@ -45,10 +45,33 @@ PASSPHRASE = "hello-domain-sep-test-passphrase"
 LEGACY_VERSION = "ironmesh/0.8"
 
 
+_HANDED_OUT: set = set()
+
+
 def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    """A port P such that P and P+1 are both free and neither overlaps a pair
+    already handed out here.
+
+    The daemon also listens on P+1 (metrics / GUI), started asynchronously
+    after ``run()`` returns. macOS hands out ephemeral ports sequentially, so
+    two plain bind-to-0 probes return P and P+1: the second agent was given
+    exactly the port the first agent's P+1 listener then bound, and its own
+    bind failed with EADDRINUSE.
+    """
+    for _ in range(50):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        if {port, port + 1} & _HANDED_OUT:
+            continue
+        try:
+            with socket.socket() as s2:
+                s2.bind(("127.0.0.1", port + 1))
+        except OSError:
+            continue
+        _HANDED_OUT.update({port, port + 1})
+        return port
+    raise RuntimeError("no free port pair found")
 
 
 def _mk_agent(name: str) -> Agent:

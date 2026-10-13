@@ -35,7 +35,9 @@ class HookManager:
 
     def __init__(self):
         self._hooks: Dict[str, List[Callable]] = {}
-        self._failure_counts: Dict[int, int] = {}  # id(callback) -> consecutive failures
+        # Keyed by (hook_point, callback_id) so the same callback on different
+        # hook points gets independent failure counts.
+        self._failure_counts: Dict[tuple, int] = {}
 
     def register(self, hook_point: str, callback: Callable) -> Callable:
         """Register a callback for a hook point.
@@ -50,7 +52,7 @@ class HookManager:
         if hook_point not in self._hooks:
             self._hooks[hook_point] = []
         self._hooks[hook_point].append(callback)
-        self._failure_counts[id(callback)] = 0
+        self._failure_counts[(hook_point, id(callback))] = 0
         logger.debug("Hook registered: %s -> %s", hook_point, callback.__name__)
 
         def unregister():
@@ -58,7 +60,7 @@ class HookManager:
                 self._hooks[hook_point].remove(callback)
             except ValueError:
                 pass  # Already removed by circuit breaker
-            self._failure_counts.pop(id(callback), None)
+            self._failure_counts.pop((hook_point, id(callback)), None)
 
         return unregister
 
@@ -82,12 +84,13 @@ class HookManager:
                     await cb(frozen)
                 else:
                     cb(frozen)
-                # Success — reset failure counter
-                self._failure_counts[id(cb)] = 0
+                # Success — reset failure counter for this hook point
+                self._failure_counts[(hook_point, id(cb))] = 0
             except Exception as e:
                 cb_id = id(cb)
-                self._failure_counts[cb_id] = self._failure_counts.get(cb_id, 0) + 1
-                count = self._failure_counts[cb_id]
+                key = (hook_point, cb_id)
+                self._failure_counts[key] = self._failure_counts.get(key, 0) + 1
+                count = self._failure_counts[key]
                 logger.error("Hook %s error in %s: %s (failure %d/%d)",
                            hook_point, cb.__name__, e, count, self.CIRCUIT_BREAKER_THRESHOLD)
                 # Circuit breaker — auto-unregister after threshold.
@@ -100,7 +103,7 @@ class HookManager:
                         self._hooks[hook_point].remove(cb)
                     except ValueError:
                         pass
-                    self._failure_counts.pop(cb_id, None)
+                    self._failure_counts.pop(key, None)
         return context
 
     def clear(self, hook_point: Optional[str] = None):

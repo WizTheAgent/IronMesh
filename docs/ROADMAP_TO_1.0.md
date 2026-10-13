@@ -9,6 +9,14 @@
 > for the v1.0 contract. The per-version ladder below is preserved for
 > historical context — read it as the *original plan*, not the
 > shipped-as-described version sequence.
+>
+> **Next release (2026-10):** the actual 0.9.6 release is **Interop &
+> Evidence** — tokenless PyPI publishing, A2A 1.0.1 interoperability, an MCP
+> compatibility matrix, Go/TypeScript clients at the `ironmesh/0.9` floor in
+> CI, pilot evidence and an external-audit scope. Its contract is
+> [`RELEASE_CONTRACT_v0.9.6.md`](RELEASE_CONTRACT_v0.9.6.md). The
+> "v0.9.6 — Observability v2" heading below is the original plan's label for
+> work that shipped in v0.9.2; it is unrelated to the 0.9.6 release.
 
 This document is the public commitment for what lands in each v0.9.x
 release between v0.9.1 (shipped 2026-04-24) and v1.0.0. The cadence

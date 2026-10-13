@@ -1,0 +1,21 @@
+# Inputs for requirements-integration.lock: the environment the CI
+# `integration` job installs (Ubuntu, Python 3.12).
+#
+# Pinned framework versions: the last set the integration job passed with
+# (CI run on 2026-08-20). Their transitive dependencies are resolved
+# together with IronMesh's own dev + rns extras, constrained to the versions
+# in requirements.lock, by scripts/refresh-integration-lock.sh.
+#
+# Why pinned: the job used to `pip install` these one at a time, unpinned.
+# Each install resolved on its own, so the final environment could be
+# incoherent. From September 2026 onward, autogen-core 0.7.5 (protobuf ~=5.29)
+# and newer googleapis-common-protos releases pulled in by CrewAI
+# (protobuf >=6.33.5) collided, and the import of a generated protobuf
+# module failed before any test ran.
+#
+# To move to newer frameworks, change the pins below, run
+# scripts/refresh-integration-lock.sh, and land the result in a PR whose
+# integration job passes (pip check clean, imports, tests/integration green).
+langchain-core==1.6.0
+crewai==1.15.17
+autogen-agentchat==0.7.5

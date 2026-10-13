@@ -279,10 +279,11 @@ def parse_args():
                                  "pending queue until an operator promotes them. "
                                  "Default off — preserves pre-v0.8.5 behavior. "
                                  "Recommended on for OpenClaw deployments.")
-    run_parser.add_argument("--pending-trust-queue-cap", type=int, default=100,
+    run_parser.add_argument("--pending-trust-queue-cap", type=_queue_cap_arg,
+                            default=100,
                             help="Per-peer cap on the pending-trust queue. "
                                  "Oldest message is evicted on overflow. "
-                                 "Default: 100.")
+                                 "Must be at least 1. Default: 100.")
     run_parser.add_argument("--trust-path", default=None,
                             help="Override the trust store JSON path. "
                                  "Defaults to ~/.ironmesh/known_peers.json. "
@@ -1220,11 +1221,33 @@ def _apply_profile(args):
     return warnings
 
 
+def _queue_cap_arg(value: str) -> int:
+    """argparse type for the pending-trust cap: zero or a negative value
+    would disable the cap entirely (an unbounded per-peer queue)."""
+    try:
+        cap = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not an integer: {value!r}") from None
+    if cap < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return cap
+
+
 def cmd_run(args):
     """Start the bridge daemon."""
     name = getattr(args, "name", None)
     if not name:
         print("ERROR: --name is required. Usage: ironmesh run --name alice")
+        return 1
+
+    # Security-relevant env settings are validated before anything else
+    # runs: a typo must refuse to start, never silently mean "off".
+    from ironmesh.config import ConfigError, parse_env_flag
+    try:
+        env_promotion = parse_env_flag("IRONMESH_REQUIRE_MSG_PROMOTION")
+        parse_env_flag("IRONMESH_ROTATE_KEYS")  # read again at daemon start
+    except ConfigError as e:
+        print(f"ERROR: {e}")
         return 1
 
     profile_warnings = _apply_profile(args)
@@ -1361,8 +1384,7 @@ def cmd_run(args):
 
     # Pending-trust message gate deprecation notice (default-on targeted for v0.9.6)
     require_msg_promotion = (
-        getattr(args, "require_message_promotion", False)
-        or os.environ.get("IRONMESH_REQUIRE_MSG_PROMOTION", "").lower() in ("1", "true", "yes")
+        getattr(args, "require_message_promotion", False) or env_promotion
     )
     if not require_msg_promotion:
         log.warning(
@@ -2829,14 +2851,32 @@ def cmd_doctor(args):
 
     # 5. Gate flag + queue cap from env (if a daemon were started now).
     print(f"{step()} Gate environment:")
-    gate_env = os.environ.get("IRONMESH_REQUIRE_MSG_PROMOTION", "").lower()
+    from ironmesh.config import ConfigError, parse_env_flag, parse_env_limit
+    gate_raw = os.environ.get("IRONMESH_REQUIRE_MSG_PROMOTION", "")
     cap_env = os.environ.get("IRONMESH_PENDING_QUEUE_CAP")
     trust_env = os.environ.get("IRONMESH_TRUST_PATH")
+    env_errors = []
+    try:
+        gate_state = "on" if parse_env_flag("IRONMESH_REQUIRE_MSG_PROMOTION") else "off"
+    except ConfigError as e:
+        gate_state = "INVALID"
+        env_errors.append(f"{e}; ironmesh run and ironmesh-mcp refuse to start")
+    try:
+        parse_env_limit("IRONMESH_PENDING_QUEUE_CAP", 100, int, 1)
+    except ConfigError as e:
+        # `ironmesh run` takes --pending-trust-queue-cap instead of this var.
+        env_errors.append(f"{e}; ironmesh-mcp refuses to start "
+                          "(ironmesh run does not read it)")
     print(f"      IRONMESH_REQUIRE_MSG_PROMOTION = "
-          f"{'on' if gate_env in ('1','true','yes') else 'off'}{' (' + gate_env + ')' if gate_env else ''}")
+          f"{gate_state}{' (' + gate_raw + ')' if gate_raw else ''}")
     print(f"      IRONMESH_PENDING_QUEUE_CAP     = {cap_env or '100 (default)'}")
     print(f"      IRONMESH_TRUST_PATH            = {trust_env or '(default)'}")
-    print("      OK — env reported (informational; CLI flags override env)")
+    if env_errors:
+        for msg in env_errors:
+            print(f"      FAIL — {msg}")
+        failures += 1
+    else:
+        print("      OK — env reported (informational; CLI flags override env)")
 
     # 6. Port availability.
     print(f"{step()} Port {args.port} on {args.bind}:")

@@ -1,0 +1,13 @@
+{
+  "version": 3,
+  "agent_name": "alice",
+  "ed25519_public": "1wWeUlMqBHSfFLI09HGixGxq22+YXE9HM3nV+ndUfWo=",
+  "format": "master-seed-v1",
+  "hkdf_salt": "e6aEOL8gYvaTJLzErSbwBg==",
+  "x25519_public": "fhyC5lA+5WnwwrDpxo8+wgtNE3+W15MBObz/HpcGNCk=",
+  "x25519_binding_signature": "8PH+mXIo4nycOMFDNzQvET3qvbw5xfY4gYtMWgiBZvC3Uet3jr0sRunK1DKPpUdOTHzbHWvdzY065ufVwQu5Ag==",
+  "ed25519_secret_encrypted": "XV300b5JeN42WS5GG32gJCepmry1GZg3X3wiAYAuyenvQYErxraI7ZH4pBxbaUmx4IHmHGKvt7C5r4w6VXo3j76dRHYvHYD8",
+  "salt": "SK9rQblWgSkPS1tImYnILA==",
+  "encrypted": true,
+  "x25519_seed_encrypted": "RhQnq2nZm2c7tnyEXnfvnJ+wU5ucRj9cw4KDzsA5dSj9ZwBwBDPXQZ7iSGBY5M4DKzH/dwwoDlAjdyfvi8hp+YHiihHYrPuZ"
+}
