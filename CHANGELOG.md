@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tools/call` waits up to 90 s and then returns an error. A host that never
   speaks no longer leaves the process running with its port bound: the server
   exits after `IRONMESH_MCP_INIT_TIMEOUT` seconds (default 120, `0` disables).
+- **`IronMeshConfig.from_env()` no longer raises on a malformed numeric
+  override.** An unparseable `IRONMESH_PORT`, `IRONMESH_RNS_RATCHET_INTERVAL`,
+  `IRONMESH_RNS_RETAINED_RATCHETS` or `IRONMESH_PENDING_QUEUE_CAP` now logs a
+  warning and keeps that field's default; the other overrides still apply.
+- **Hook circuit breaker counts failures per hook point.** A callback registered
+  on several hook points shared one failure counter, so failures on one point
+  could trip the breaker on another, and unregistering from one point reset the
+  count for the rest. Counts are now kept per hook point.
 
 ## [0.9.5] — 2026-08-06 — protocol ironmesh/0.9: HELLO domain separation, RNS link binding, E2E source authentication, invites + onboarding
 

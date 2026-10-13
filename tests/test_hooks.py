@@ -77,6 +77,65 @@ class TestCircuitBreaker:
             asyncio.run(m.fire(HookPoint.PRE_SEND, {}))
         assert flaky in m._hooks.get(HookPoint.PRE_SEND, [])
 
+    def test_same_callback_multiple_hook_points_independent_counts(self):
+        """One callback on multiple hook points gets independent failure counts."""
+        m = HookManager()
+
+        def bad(ctx):
+            raise RuntimeError("boom")
+
+        unreg_a = m.register("A", bad)
+        unreg_b = m.register("B", bad)
+
+        # Two failures on B
+        for _ in range(2):
+            asyncio.run(m.fire("B", {}))
+        # Unregister from A (should not affect B's count)
+        unreg_a()
+        # Third failure on B should trip breaker for B only
+        asyncio.run(m.fire("B", {}))
+        assert bad not in m._hooks.get("B", []), "B should be auto-unregistered after 3 consecutive failures"
+
+    def test_failures_on_one_point_do_not_trip_breaker_for_another(self):
+        """Failures on hook point A must not count toward the breaker for B."""
+        m = HookManager()
+
+        def bad(ctx):
+            raise RuntimeError("boom")
+
+        m.register("A", bad)
+        m.register("B", bad)
+
+        # Two failures on A
+        for _ in range(2):
+            asyncio.run(m.fire("A", {}))
+        # One failure on B — should NOT trip breaker (only 1 failure on B)
+        asyncio.run(m.fire("B", {}))
+        assert bad in m._hooks.get("B", []), "B should still be registered after only 1 failure on B"
+
+    def test_counters_are_tracked_and_reset_per_hook_point(self):
+        """Each hook point keeps its own consecutive-failure count, and a
+        success resets only the count of the point that succeeded."""
+        m = HookManager()
+        fail = {"A": True, "B": True}
+
+        def cb(ctx):
+            if fail[ctx["point"]]:
+                raise RuntimeError("boom")
+
+        m.register("A", cb)
+        m.register("B", cb)
+        for _ in range(2):
+            asyncio.run(m.fire("A", {"point": "A"}))
+        asyncio.run(m.fire("B", {"point": "B"}))
+        assert m._failure_counts[("A", id(cb))] == 2
+        assert m._failure_counts[("B", id(cb))] == 1
+
+        fail["B"] = False
+        asyncio.run(m.fire("B", {"point": "B"}))
+        assert m._failure_counts[("A", id(cb))] == 2
+        assert m._failure_counts[("B", id(cb))] == 0
+
 
 # ---------------------------------------------------------------------------
 # Async callbacks
