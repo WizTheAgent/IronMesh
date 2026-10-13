@@ -23,7 +23,7 @@ Worked in this order; deliverable 7 runs alongside all of them.
 | 2 | **A2A 1.0.1 interoperability** | The `ironmesh-a2a` gateway (A2A 0.3.0 today) passes the official A2A 1.0.1 conformance tests with the results published, and a cross-host exchange — an independent A2A client on one host, an IronMesh node on another — is recorded as evidence. | Not started |
 | 3 | **MCP compatibility matrix** | `ironmesh-mcp` is tested across MCP protocol revisions `2024-11-05` and `2026-07-28`, each over stdio and over a networked transport, and the resulting matrix is published with every cell backed by a test or a recorded session. Today it speaks `2024-11-05` over stdio only. | Not started |
 | 4 | **Go and TypeScript clients at the `ironmesh/0.9` floor, in CI** | Both clients advertise and implement `ironmesh/0.9`, build cleanly, run their own tests in the CI matrix, and complete a handshake against the current Python daemon in CI. Until then they stay reference implementations (see `clients/go/STATUS.md`, `clients/ts/STATUS.md`). | Not started |
-| 5 | **Pilot evidence packets** | Each pilot deployment is written up: what ran, on which hardware and transports, for how long, and what failed. | Not started |
+| 5 | **Pilot evidence packets** | At least three pilot deployments are documented (the internal milestone for this release is 3–5 pilots), each written up with what ran, on which hardware and transports, for how long, and what failed. This is separate from, and does not count towards, the 1.0 gate below. | Not started |
 | 6 | **Independent audit: scope and funding** | A written scope for an independent, paid third-party audit of the protocol and implementation, and a funding plan for it. 0.9.6 does not claim an audit. | Not started |
 | 7 | **Claims backed by evidence** | Every capability claim in `README.md`, `WHATS_NEW.md` and on the website points to a test, a CI job or a dated recorded run; claims without one are removed or dated. | In progress |
 
@@ -36,8 +36,9 @@ and recorded screenshots do not count as release-readiness evidence.
 ## Before 1.0 (not 0.9.6)
 
 1.0 requires an **independent, paid third-party audit** with its report
-published, and **10–20 deployments with evidence** of how they ran. 0.9.6
-prepares for both (deliverables 5 and 6) but does not claim either.
+published, and **10–20 deployments with evidence** of how they ran. These are
+separate gates from the 3–5 documented pilots of deliverable 5. 0.9.6 prepares
+for both (deliverables 5 and 6) but does not claim either.
 
 ## Not in 0.9.6
 
@@ -56,8 +57,11 @@ prepares for both (deliverables 5 and 6) but does not claim either.
 - `ironmesh-mcp` reads its identity, port and storage paths from the
   environment, answers `initialize` before the mesh is up, and exits instead of
   lingering when its host never speaks.
-- `IronMeshConfig.from_env()` warns and keeps defaults on malformed numeric
-  overrides instead of raising.
+- An unparseable `IRONMESH_PORT` in `IronMeshConfig.from_env()` is logged as a
+  warning and the default port is used instead of raising. This fallback is
+  limited to the port and is not harmless (the node may listen on an
+  unintended endpoint or collide with another node); security-relevant
+  numeric limits reject malformed values instead (see below).
 - The hook circuit breaker counts failures per hook point.
 - The cross-version tests against real `0.9.4.2` on-disk state run again (their
   fixture had never been committed, so they were skipping everywhere), and CI

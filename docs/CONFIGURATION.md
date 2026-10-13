@@ -178,7 +178,7 @@ These are read by the CLI / daemon / gateways:
 | `IRONMESH_KEYS_PASSPHRASE` | Passphrase used to decrypt the identity key file when it differs from the mesh passphrase. Precedence: `--keys-passphrase` > `--keys-passphrase-file` > this variable > mesh passphrase (tried automatically) > interactive prompt. |
 | `IRONMESH_A2A_TOKEN` | Bearer token enforced by the `ironmesh-a2a` HTTP gateway. |
 | `IRONMESH_ACP_TIMEOUT` | Per-call timeout (seconds) for the `ironmesh-acp` server. |
-| `IRONMESH_MCP_INIT_TIMEOUT` | Seconds the `ironmesh-mcp` server waits for its host's first frame before exiting (default `120`, `0` disables). |
+| `IRONMESH_MCP_INIT_TIMEOUT` | Seconds the `ironmesh-mcp` server waits for its host's first frame before exiting (default `120`, `0` disables). Must be a whole number of at least `0`; a negative or non-numeric value refuses to start. |
 
 A second family (`IRONMESH_NAME`, `IRONMESH_PORT`, `IRONMESH_KEYS_PATH`,
 `IRONMESH_DB_PATH`, `IRONMESH_LOG_LEVEL`, `IRONMESH_LOG_FILE`,
@@ -201,9 +201,10 @@ existing node.
 **Strict values.** Boolean settings (`IRONMESH_REQUIRE_MSG_PROMOTION`,
 `IRONMESH_ROTATE_KEYS`, `IRONMESH_RNS_ENABLED`, `IRONMESH_RNS_RATCHETS`) and
 security-relevant limits (`IRONMESH_PENDING_QUEUE_CAP`,
-`IRONMESH_RNS_RATCHET_INTERVAL`, `IRONMESH_RNS_RETAINED_RATCHETS`) are parsed
-strictly: an unrecognised word, a non-number, a non-finite number or a value
-below the minimum is a configuration error, and the node refuses to start
+`IRONMESH_RNS_RATCHET_INTERVAL`, `IRONMESH_RNS_RETAINED_RATCHETS`), plus
+`IRONMESH_MCP_INIT_TIMEOUT` (minimum `0`), are parsed strictly: an
+unrecognised word, a non-number, a non-finite number or a value below the
+minimum is a configuration error, and the node refuses to start
 rather than guess. A typo such as `IRONMESH_REQUIRE_MSG_PROMOTION=ture` used to
 leave the gate silently off.
 

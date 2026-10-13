@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tools/call` waits up to 90 s and then returns an error. A host that never
   speaks no longer leaves the process running with its port bound: the server
   exits after `IRONMESH_MCP_INIT_TIMEOUT` seconds (default 120, `0` disables).
+  The value must be a whole number of at least 0: a negative value would have
+  made the watchdog fire at once and kill the server on startup, so it refuses
+  to start instead.
 - **`IronMeshConfig.from_env()` no longer crashes on a malformed
   `IRONMESH_PORT`.** It logs a warning, keeps the default port and still
   applies the other overrides. (Security-relevant numeric settings are strict

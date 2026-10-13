@@ -92,7 +92,9 @@ The server answers `initialize` and `tools/list` immediately and brings the
 mesh up in the background; a `tools/call` made before the mesh is ready waits
 up to 90 s and then returns an error instead of stalling the host. If the host
 never sends a single frame, the server exits after `IRONMESH_MCP_INIT_TIMEOUT`
-seconds (default 120, `0` disables) rather than lingering with the port bound.
+seconds (default 120, `0` disables; a negative or non-numeric value is a
+configuration error and the server refuses to start) rather than lingering
+with the port bound.
 
 If your IronMesh installation is in a venv or pipx, replace `"python"` with
 the absolute path to that interpreter (e.g. `~/.local/pipx/venvs/ironmesh/bin/python`).
