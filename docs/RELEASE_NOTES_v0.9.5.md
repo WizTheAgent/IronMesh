@@ -427,6 +427,28 @@ that breaks v0.8.x / v0.9.x interop was found.
   clean. release-qc `FAIL: 0`; doc-sync-check PASS.
 - Wheel + sdist build clean; public modules import; CLI entry point
   operational.
+- **Correction (2026-10):** the 19 cross-version tests that run against
+  real `0.9.4.2` on-disk state (`tests/test_existing_state_v0942.py`) passed
+  in the release worktree, where the fixture existed on disk, but the
+  fixture's key, database and audit-log files were never committed. In a
+  fresh checkout and in CI those 19 tests skip, so the published run is
+  1381 passed / 28 skipped / 1 xpassed. The fixture is committed on the
+  0.9.6 branch, where the tests run again.
+
+## Release events
+
+The release happened in steps on different days. All times UTC.
+
+| Event | When |
+|---|---|
+| Release notes and changelog entry finalized | 2026-08-06 |
+| Tag `v0.9.5` created | 2026-08-18 19:01 |
+| Docker images `0.9.5` and `latest` pushed | 2026-08-20 03:22 |
+| PyPI wheel and sdist published | 2026-08-20 03:35 |
+| GitHub Release published | 2026-08-20 03:36 |
+| Website updated to 0.9.5 | 2026-08-19 (date stamped on the site; no deploy timestamp is published) |
+
+The CHANGELOG heading and `CITATION.cff` use the PyPI publication date.
 
 ## Upgrade
 

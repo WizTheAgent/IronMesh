@@ -30,7 +30,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could trip the breaker on another, and unregistering from one point reset the
   count for the rest. Counts are now kept per hook point.
 
-## [0.9.5] — 2026-08-06 — protocol ironmesh/0.9: HELLO domain separation, RNS link binding, E2E source authentication, invites + onboarding
+### Tests
+
+- **Cross-version tests against real 0.9.4.2 state now run.** The golden
+  fixture's key, database and audit-log files matched the repository's
+  `keys.json` / `*.db` / `*.log` ignore rules and were never committed, so the
+  19 tests in `tests/test_existing_state_v0942.py` skipped in every fresh
+  checkout and in CI. The fixture is regenerated from the published 0.9.4.2
+  wheel and committed.
+- **Headless `doctor` tests run the code under test.** Their subprocess could
+  import a different installed `ironmesh` (for example an older release in
+  site-packages), whose passphrase prompt then hung the test until its 120 s
+  timeout. The child now refuses to run unless it imported the same package.
+
+### Documentation
+
+- `docs/RELEASE_CONTRACT_v0.9.6.md` defines the 0.9.6 release (Interop &
+  Evidence) and what is deferred to 0.10.0.
+- The README protocol comparison is now organised by architectural layer
+  instead of a single scored grid, and the roadmap checklist reflects what has
+  shipped through 0.9.5.
+- Unbacked validation claims are dated or removed: the E2E stress driver's last
+  recorded run (2026-04-24, v0.9.1 line) and the April 2026 field tests are
+  stated as such, and the Go/TypeScript client status points at 0.9.6.
+- Release dates: `CITATION.cff` and the 0.9.5 heading now use the PyPI
+  publication date (2026-08-20); the 0.9.5 release notes list tag creation,
+  image and package publication, and the website update separately.
+
+## [0.9.5] — 2026-08-20 — protocol ironmesh/0.9: HELLO domain separation, RNS link binding, E2E source authentication, invites + onboarding
 
 ### Added
 

@@ -9,8 +9,8 @@
 
 **Website:** [ironmesh.org](https://ironmesh.org) &nbsp;•&nbsp; **Contact:** [info@ironmesh.org](mailto:info@ironmesh.org) &nbsp;•&nbsp; **Security:** [info@ironmesh.org](mailto:info@ironmesh.org) (see [SECURITY.md](SECURITY.md))
 
-> **v0.9.5 — security-hardening + onboarding release on the v0.9.4 pre-audit-hardening + dual-use-migration line.** 1420 tests collected, full suite green on Ubuntu + Windows + macOS across Python 3.10 – 3.13, plus live cross-host validation on the new wire surfaces.
-> Validated on a 3-node mesh with a real Android client (Sideband) and LoRa at SF8/BW125.
+> **v0.9.5 — security-hardening + onboarding release on the v0.9.4 pre-audit-hardening + dual-use-migration line.** 1420 tests collected, full suite green on Ubuntu + Windows + macOS across Python 3.10 – 3.13. The new `ironmesh/0.9` wire surfaces are covered by that suite; a live multi-host run against 0.9.5 has not been recorded yet (it is part of the [0.9.6 evidence work](docs/RELEASE_CONTRACT_v0.9.6.md)).
+> Field-tested in April 2026 on earlier releases: a 3-node mesh across three machines over Reticulum on the LAN (v0.9.1, 150/150 cross-host deliveries), and a Reticulum round trip over LoRa (SF8/BW125, 9/9 probes) to an Android phone running Sideband — see [`docs/LORA_VALIDATION.md`](docs/LORA_VALIDATION.md). Neither has been repeated on the `ironmesh/0.9` protocol line.
 > Wire-format `ironmesh/0.8` added opt-in feature flags (handshake-skip, group-broadcast) without disturbing any existing path; the `ironmesh/0.9` protocol line adds domain-separated HELLO signatures, RNS link binding, and receive-side end-to-end source authentication, version-gated so older peers keep interoperating. The headline doc — [`docs/STABILITY_PROMISE.md`](docs/STABILITY_PROMISE.md) — is the v1.0 contract for everything we commit to keeping stable.
 > Full changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -121,22 +121,34 @@ robotics coordination, air-gapped lab, off-grid LoRa — in
 | Isn't **Tailscale / WireGuard** enough? | Those give you an encrypted tunnel. IronMesh adds identity pinning, capability discovery, offline queueing, and a mesh-aware routing table on top — specific to how agents talk. |
 | Why not **Reticulum** directly? | Reticulum is a great low-level mesh; IronMesh uses it as one of its transports. IronMesh adds agent-level features (per-agent identity, capability discovery, authenticated handshake, typed messages). |
 
-## Feature comparison with internet-native agent protocols
+## How IronMesh relates to other agent protocols
 
-These assume the internet. IronMesh doesn't.
+Agent protocols sit at different layers, so a single feature grid that
+scores them against each other compares things that do different jobs.
+Compared by layer:
 
-| Feature | IronMesh | Google A2A | Anthropic MCP | ACP | ANP |
-|---------|-----------|------------|---------------|-----|-----|
-| Works offline / no internet | **Yes** | No (HTTPS) | N/A | Yes | No |
-| True peer-to-peer | **Yes** | No (client-server) | No (tool calls) | No (IPC) | Yes |
-| Zero-config LAN discovery | **Yes** (mDNS) | No | No | No | No (DID) |
-| E2E encryption | **Yes** (NaCl) | TLS only | N/A | No | Yes |
-| Forward secrecy | **Yes** | Depends | N/A | No | No |
-| LAN native | **Yes** | No | No | Yes | No |
-| Survives internet outage | **Yes** | No | N/A | Yes | No |
-| Self-hosted, no vendor lock-in | **Yes** | No | No | Partial | Partial |
-| Mesh routing | **Yes (v0.4)** | No | No | No | Yes |
-| Capability discovery | **Yes (v0.4)** | No | No | No | No |
+| Layer | Examples | What it is for | Relationship to IronMesh |
+|---|---|---|---|
+| Agent-to-agent application protocols | A2A, ACP | Task and message semantics between agents, usually carried over HTTP | Run on top of IronMesh: the `ironmesh-a2a` gateway (A2A 0.3.0 today; A2A 1.0.1 is a [0.9.6 deliverable](docs/RELEASE_CONTRACT_v0.9.6.md)) and the `ironmesh-acp` gateway expose mesh peers to them |
+| Tool and context protocols | MCP | Connecting a model host to tools and data | `ironmesh-mcp` exposes mesh operations as 25 MCP tools (protocol revision `2024-11-05`); a tested host matrix is a 0.9.6 deliverable |
+| **Agent networking** | **IronMesh** | Identity, authenticated handshake, encryption, multi-hop routing, offline queue, discovery between agents | This project |
+| Encrypted network overlays | Tailscale, WireGuard | Encrypted IP connectivity between machines | IronMesh can run over them; they do not provide agent identity, capability discovery or queueing |
+| Transports | WebSocket on a LAN, Reticulum / LoRa | Moving bytes between nodes | IronMesh uses both |
+
+What IronMesh provides at its own layer:
+
+- **No internet dependency.** Nodes discover each other on the LAN over mDNS
+  (default-deny: a discovered peer is auto-connected only if it is on the
+  `--allowed-peers` list or `--open-discovery` is switched on)
+  and can also run over Reticulum, including LoRa radios.
+- **Peer-to-peer.** No broker, coordinator or cloud account; messages to
+  offline peers wait in an encrypted local queue.
+- **Encryption.** Each session uses ephemeral X25519 keys, so a later leak of
+  a node's identity key does not expose past session traffic. The additional
+  end-to-end layer (NaCl `SealedBox`) protects message bodies from relays but
+  is **not** forward-secret against compromise of the destination's key; see
+  [`docs/SECURITY.md`](docs/SECURITY.md).
+- **Multi-hop routing and capability discovery** across the mesh.
 
 ## Quick Start
 
@@ -363,18 +375,21 @@ export IRONMESH_PASSPHRASE='your-strong-secret-phrase-12-plus'
 > `ironmesh/0.6`, which is **below the core protocol floor of `ironmesh/0.9`**,
 > so a default-floor or `--e2e-strict-confidentiality` mesh **refuses them at
 > handshake** until they are bumped. The Go client is currently **outside the CI
-> matrix and does not build cleanly locally**. The version bump + CI-matrix
-> inclusion is scheduled for 0.9.6 / 0.10.0. See `clients/go/STATUS.md` and
-> `clients/ts/STATUS.md`.
+> matrix and does not build cleanly locally**. Bringing both clients to the
+> `ironmesh/0.9` floor and into CI is a
+> [0.9.6 deliverable](docs/RELEASE_CONTRACT_v0.9.6.md). See
+> `clients/go/STATUS.md` and `clients/ts/STATUS.md`.
 
 See [`docs/PROTOCOL_SPEC.md`](docs/PROTOCOL_SPEC.md) for the formal wire specification.
 
 ### TypeScript client
 
 A TypeScript client lives at [`clients/ts/`](clients/ts/) — published
-to npm as `@wiztheagent/ironmesh-client` (current `0.2.0`). The full
-wire protocol — 3-stage handshake, binary frame v4, SecretBox + Ed25519
-— is implemented and end-to-end tested against a live Python daemon.
+to npm as `@wiztheagent/ironmesh-client` (current `0.2.0`). It implements
+the 3-stage handshake, binary frame v4 and SecretBox + Ed25519, and was
+end-to-end tested against live Python daemons of earlier releases. It
+advertises `ironmesh/0.6`, so a current daemon at the default
+`ironmesh/0.9` floor refuses it (see the reference-status note above).
 The OpenClaw channel plugin
 ([`@wiztheagent/openclaw-ironmesh`](https://www.npmjs.com/package/@wiztheagent/openclaw-ironmesh))
 is built on top of it. Status and
@@ -673,18 +688,25 @@ Two paths to reach a phone:
 - [x] **Session key rotation + LoRa QoS** (v0.5.2)
 - [x] **Encrypted backup, signed revocation, fuzzing** (v0.6)
 - [x] **Docker, installer, LXMF gateway, mobile dashboard** (v0.7)
-- [ ] NAT traversal for cross-subnet discovery
-- [ ] Rust port for embedded boards (Heltec V3 direct flash)
-- [ ] v1.0 stable milestone after 10-20 real-world deployments
-- [ ] Per-message forward secrecy (ratcheting)
-- [ ] Plugin sandbox / isolation
-- [ ] File sync / shared state between agents
 - [x] Binary wire protocol with signed frames
 - [x] Web UI for monitoring and management (token-authenticated)
 - [x] Tamper-evident audit logging
 - [x] Encrypted storage at rest (SQLite + key files)
 - [x] mDNS fingerprint pinning + default-deny
 - [x] Auth failure IP blocking
+- [x] **Agent SDK, framework adapters, federation, Go reference client** (v0.8.0)
+- [x] **Pending-trust message gate + OpenClaw channel** (v0.8.5)
+- [x] **OpenClaw, ACP and A2A gateways** (v0.9.0)
+- [x] **Feature-flagged wire protocol, group broadcast, capability-aware routing, OpenTelemetry, threat model** (v0.9.2)
+- [x] **`ironmesh/0.9` protocol line: domain-separated HELLO, RNS link binding, end-to-end source authentication; invites and onboarding** (v0.9.5)
+- [ ] **v0.9.6 — Interop & Evidence:** tokenless PyPI publishing, A2A 1.0.1, MCP compatibility matrix, Go/TypeScript clients at the `ironmesh/0.9` floor in CI, pilot evidence, audit scope — see [`docs/RELEASE_CONTRACT_v0.9.6.md`](docs/RELEASE_CONTRACT_v0.9.6.md)
+- [ ] NAT traversal — the relay server ships; the daemon-side attach (`--nat-relay`) is not wired up yet ([`docs/NAT_TRAVERSAL.md`](docs/NAT_TRAVERSAL.md))
+- [ ] Mesh-passphrase stretching (Argon2id) and networked revocation (v0.10.0)
+- [ ] Per-message forward secrecy (ratcheting)
+- [ ] Rust port for embedded boards (Heltec V3 direct flash)
+- [ ] Plugin sandbox / isolation
+- [ ] File sync / shared state between agents
+- [ ] v1.0 stable milestone after 10-20 real-world deployments
 
 ## Philosophy
 

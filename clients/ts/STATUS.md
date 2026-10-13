@@ -31,7 +31,8 @@ The TypeScript client is not yet part of the CI matrix.
 ## Roadmap
 
 The version bump to the current protocol floor and inclusion in the CI
-matrix are **scheduled for 0.9.6 / 0.10.0**.
+matrix are a **0.9.6 deliverable** — see
+[`docs/RELEASE_CONTRACT_v0.9.6.md`](../../docs/RELEASE_CONTRACT_v0.9.6.md).
 
 ## License
 

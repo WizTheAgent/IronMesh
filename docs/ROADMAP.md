@@ -8,6 +8,13 @@ that the current version doesn't handle well.
 Ordering within each bucket is rough — "soon" means "weeks", "later"
 means "quarters", "someday" means "we want to but haven't committed."
 
+> **Out of date (noted 2026-10).** The "Shipped" list below stops at v0.8.2,
+> and several "Next up" items have since shipped (`ironmesh doctor`, the
+> `ironmesh setup` wizard, mDNS discovery) — the CHANGELOG is authoritative.
+> The committed next step is the 0.9.6 contract,
+> [`RELEASE_CONTRACT_v0.9.6.md`](RELEASE_CONTRACT_v0.9.6.md); the path to
+> 1.0 is in [`ROADMAP_TO_1.0.md`](ROADMAP_TO_1.0.md).
+
 ---
 
 ## Strategic question — who are the next 100 users?
