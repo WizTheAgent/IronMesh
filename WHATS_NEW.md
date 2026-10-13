@@ -57,8 +57,8 @@ Roughly in priority order. See the master plan for the full sequence.
 
 ### v1.0 hard gates
 
-- External audit report published and linked from README
-- 10–20 real deployments confirmed
+- Independent, paid third-party audit report published and linked from README
+- 10–20 deployments with published evidence
 - One upstream framework integration merged (CrewAI is the warmest candidate)
 - Windows / Linux / macOS first-class with documented install paths
 - TypeScript client out of alpha

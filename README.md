@@ -130,7 +130,7 @@ Compared by layer:
 | Layer | Examples | What it is for | Relationship to IronMesh |
 |---|---|---|---|
 | Agent-to-agent application protocols | A2A, ACP | Task and message semantics between agents, usually carried over HTTP | Run on top of IronMesh: the `ironmesh-a2a` gateway (A2A 0.3.0 today; A2A 1.0.1 is a [0.9.6 deliverable](docs/RELEASE_CONTRACT_v0.9.6.md)) and the `ironmesh-acp` gateway expose mesh peers to them |
-| Tool and context protocols | MCP | Connecting a model host to tools and data | `ironmesh-mcp` exposes mesh operations as 25 MCP tools (protocol revision `2024-11-05`); a tested host matrix is a 0.9.6 deliverable |
+| Tool and context protocols | MCP | Connecting a model host to tools and data | `ironmesh-mcp` exposes mesh operations as 25 MCP tools (protocol revision `2024-11-05`, stdio); a tested matrix across revisions `2024-11-05` and `2026-07-28` over stdio and networked transports is a 0.9.6 deliverable |
 | **Agent networking** | **IronMesh** | Identity, authenticated handshake, encryption, multi-hop routing, offline queue, discovery between agents | This project |
 | Encrypted network overlays | Tailscale, WireGuard | Encrypted IP connectivity between machines | IronMesh can run over them; they do not provide agent identity, capability discovery or queueing |
 | Transports | WebSocket on a LAN, Reticulum / LoRa | Moving bytes between nodes | IronMesh uses both |

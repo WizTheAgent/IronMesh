@@ -20,16 +20,22 @@ Worked in this order; deliverable 7 runs alongside all of them.
 | # | Deliverable | Done when | Status |
 |---|---|---|---|
 | 1 | **Tokenless PyPI publishing** | `release.yml` publishes from a dedicated job bound to the `pypi` environment through PyPI Trusted Publishing (OIDC, no stored API token), and the same flow has completed end to end against TestPyPI before the production release. | Not started |
-| 2 | **A2A 1.0.1 interoperability** | The `ironmesh-a2a` gateway (A2A 0.3.0 today) conforms to A2A 1.0.1, conformance results are published, and an exchange between an independent A2A client on one host and an IronMesh node on another is recorded. | Not started |
-| 3 | **MCP compatibility matrix** | A published matrix of the MCP hosts and protocol revisions `ironmesh-mcp` has been tested with (it speaks `2024-11-05` today), every cell backed by a test or a recorded session. | Not started |
-| 4 | **Go and TypeScript clients at the `ironmesh/0.9` floor, in CI** | Both clients advertise and implement `ironmesh/0.9`, build and run their own tests in the CI matrix, and complete a handshake against the current Python daemon in CI. Until then they stay reference implementations (see `clients/go/STATUS.md`, `clients/ts/STATUS.md`). | Not started |
+| 2 | **A2A 1.0.1 interoperability** | The `ironmesh-a2a` gateway (A2A 0.3.0 today) passes the official A2A 1.0.1 conformance tests with the results published, and a cross-host exchange — an independent A2A client on one host, an IronMesh node on another — is recorded as evidence. | Not started |
+| 3 | **MCP compatibility matrix** | `ironmesh-mcp` is tested across MCP protocol revisions `2024-11-05` and `2026-07-28`, each over stdio and over a networked transport, and the resulting matrix is published with every cell backed by a test or a recorded session. Today it speaks `2024-11-05` over stdio only. | Not started |
+| 4 | **Go and TypeScript clients at the `ironmesh/0.9` floor, in CI** | Both clients advertise and implement `ironmesh/0.9`, build cleanly, run their own tests in the CI matrix, and complete a handshake against the current Python daemon in CI. Until then they stay reference implementations (see `clients/go/STATUS.md`, `clients/ts/STATUS.md`). | Not started |
 | 5 | **Pilot evidence packets** | Each pilot deployment is written up: what ran, on which hardware and transports, for how long, and what failed. | Not started |
-| 6 | **External audit scope and funding** | A written scope for an external review of the protocol and implementation, and a funding plan for it. 0.9.6 does not claim an audit. | Not started |
+| 6 | **Independent audit: scope and funding** | A written scope for an independent, paid third-party audit of the protocol and implementation, and a funding plan for it. 0.9.6 does not claim an audit. | Not started |
 | 7 | **Claims backed by evidence** | Every capability claim in `README.md`, `WHATS_NEW.md` and on the website points to a test, a CI job or a dated recorded run; claims without one are removed or dated. | In progress |
+
+## Before 1.0 (not 0.9.6)
+
+1.0 requires an **independent, paid third-party audit** with its report
+published, and **10–20 deployments with evidence** of how they ran. 0.9.6
+prepares for both (deliverables 5 and 6) but does not claim either.
 
 ## Not in 0.9.6
 
-- **Argon2id stretching of the mesh passphrase** — 0.10.0.
+- **Argon2id mesh-passphrase derivation** (replacing the unstretched HMAC key) — 0.10.0.
 - **Networked revocation** (revocations that propagate across the mesh as a
   guarantee rather than a best-effort broadcast) — 0.10.0.
 - **Clearing the mypy backlog** — not a release gate. The gate is that the
@@ -48,6 +54,12 @@ Worked in this order; deliverable 7 runs alongside all of them.
   overrides instead of raising.
 - The hook circuit breaker counts failures per hook point.
 - The cross-version tests against real `0.9.4.2` on-disk state run again (their
-  fixture had never been committed, so they were skipping everywhere).
+  fixture had never been committed, so they were skipping everywhere), and CI
+  and the release gate now fail if that fixture is missing.
+- A mistyped security setting (for example
+  `IRONMESH_REQUIRE_MSG_PROMOTION=ture`) refuses to start instead of silently
+  meaning "off"; security limits reject values that would loosen them.
+- The development lockfile clears two published advisories (`cryptography`,
+  `pytest`).
 
 See the `[Unreleased]` section of `CHANGELOG.md` for the details.
