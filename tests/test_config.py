@@ -88,6 +88,33 @@ class TestFromEnv:
         assert cfg.agent_name == "only-name"
         assert cfg.port == 8765
 
+    def test_malformed_numeric_env_does_not_crash(self, monkeypatch, caplog):
+        """A numeric env override that cannot be converted must not crash
+        from_env() — log a warning, keep the default for that field, and
+        still apply every other env var."""
+        import logging
+        monkeypatch.setenv("IRONMESH_NAME", "survivor")
+        monkeypatch.setenv("IRONMESH_PORT", "abc")
+        monkeypatch.setenv("IRONMESH_LOG_LEVEL", "WARN")
+        cfg = IronMeshConfig.from_env()
+        assert cfg.agent_name == "survivor"
+        assert cfg.port == 8765
+        assert cfg.log_level == "WARN"
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING
+                    and "IRONMESH_PORT" in r.getMessage()]
+        assert len(warnings) == 1
+
+    def test_malformed_numeric_env_other_vars_still_applied(self, monkeypatch):
+        """When one numeric env var is bad, other env vars in the same call
+        are still applied."""
+        monkeypatch.setenv("IRONMESH_NAME", "still-applied")
+        monkeypatch.setenv("IRONMESH_PORT", "abc")
+        monkeypatch.setenv("IRONMESH_LOG_LEVEL", "ERROR")
+        cfg = IronMeshConfig.from_env()
+        assert cfg.agent_name == "still-applied"
+        assert cfg.log_level == "ERROR"
+        assert cfg.port == 8765
+
 
 # ---------------------------------------------------------------------------
 # save

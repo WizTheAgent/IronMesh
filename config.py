@@ -216,7 +216,14 @@ class IronMeshConfig:
             if val is not None:
                 if isinstance(target, tuple):
                     attr, conv = target
-                    setattr(config, attr, conv(val))
+                    try:
+                        setattr(config, attr, conv(val))
+                    except (ValueError, TypeError) as e:
+                        import logging
+                        logging.getLogger("ironmesh.config").warning(
+                            "Env var %s has invalid value %r (%s); keeping default for %s",
+                            env_var, val, e, attr,
+                        )
                 else:
                     setattr(config, target, val)
         return config
