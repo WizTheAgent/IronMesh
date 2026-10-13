@@ -2,7 +2,7 @@
 
 **Purpose**: Local-first, offline-capable, encrypted agent-to-agent communication. No cloud. No internet. No compromises.
 
-**Origin**: Built because no existing A2A protocol works without the internet. Google A2A needs HTTPS. MCP is tool calls, not P2P. ACP can't cross machines. ANP needs DIDs and internet. IronMesh is the protocol that works when you pull the plug on your router.
+**Origin**: Agent protocols such as A2A, ACP and MCP define what agents and tools say to each other and usually assume an HTTP connection underneath. IronMesh is the layer below them: it gives agents identity, encryption, routing and an offline queue over a LAN or Reticulum/LoRa, so it keeps working when you pull the plug on your router, and it carries A2A, ACP and MCP through its gateways. See "How IronMesh relates to other agent protocols" in the README.
 
 **Reference operators**: Linux node (Raspberry Pi 5) + Windows node (desktop PC)
 **Wire protocol**: ironmesh/0.9 (frame envelope unchanged since v4; the 0.9 line adds domain-separated HELLO signatures + RNS link binding, version-gated for older peers)

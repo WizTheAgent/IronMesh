@@ -118,6 +118,15 @@ DENY=(
   'Relays cannot read forwarded bodies'               # ditto — only true under --e2e-strict-confidentiality
   'past sealed messages remain unrecoverable'         # SealedBox is sender-anonymity, NOT forward-secret vs destination-key compromise
   'Forward-secret per-message ephemeral keys'         # ditto — the ephemeral is the sender's; dest decrypts with its long-term key
+  'live cross-host validation'                        # no recorded multi-host run on 0.9.5 (2026-10 claims correction)
+  'last run green during the v0.9.5'                  # E2E driver's last recorded green run is 2026-04-24, v0.9.1 line
+  'Validated on a 3-node mesh'                        # April 2026 field tests predate ironmesh/0.9; state them dated
+  'full suite green'                                  # 19 cross-version tests skipped in CI at 0.9.5 (fixture never committed)
+  'pre-audit-hardening'                               # reads as if an audit happened; no independent audit yet
+  'Google A2A'                                        # scored cross-layer grid; compare by layer instead
+  'scheduled for 0.9.6 / 0.10.0'                      # Go/TS to ironmesh/0.9 in CI is a 0.9.6 deliverable
+  'end-to-end tested against a live Python daemon'    # TS client advertises ironmesh/0.6; refused by default-floor daemons
+  'Go (full wire protocol'                            # Go client is reference-status, outside CI, below the 0.9 floor
 )
 scope_files="$(git ls-files '*.md' 2>/dev/null | grep -vE 'CHANGELOG\.md|docs/RELEASE_NOTES_v|REVIEW_EVIDENCE')"
 deny_hits=0
