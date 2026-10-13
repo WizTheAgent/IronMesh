@@ -58,7 +58,7 @@ For preppers, homelab operators, privacy advocates, tinkerers, and anyone who th
 
 ### Cryptography
 - **End-to-end encryption.** NaCl / libsodium (XSalsa20-Poly1305 + X25519 ECDH). Plaintext messages are rejected after handshake.
-- **Forward secrecy.** Per-session ephemeral keys, destroyed once the handshake completes. Compromising today's keys can't decrypt yesterday's traffic.
+- **Forward secrecy (session layer).** Per-session ephemeral keys, discarded once the handshake completes (wiping is best-effort: Python cannot guarantee it for immutable key bytes). Compromising a node's identity key later can't decrypt past session traffic; the end-to-end SealedBox layer is not forward-secret against destination-key compromise.
 - **Mutual authentication.** Both client and server prove knowledge of the passphrase. No trusting a server that can't authenticate itself.
 - **Mandatory Ed25519 signatures.** Every message is signed and verified. Unsigned messages are dropped.
 - **Channel binding.** The authentication nonce is embedded in the ECDH handshake signature, cryptographically tying the two stages together.

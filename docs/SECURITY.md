@@ -20,7 +20,7 @@ IronMesh is designed for **networks you control** — home LANs, lab networks, o
 | **Unauthorized devices** | Mutual passphrase authentication — both client AND server prove knowledge of the shared secret |
 | **Identity spoofing** | TOFU (Trust-On-First-Use) key pinning — connection **immediately terminated** if a peer's identity key changes (not just logged) |
 | **Message forgery** | Mandatory Ed25519 signatures on every message — unsigned or bad-signature messages are rejected |
-| **Session key compromise** | Forward secrecy — ephemeral X25519 keys per session, private keys destroyed after handshake |
+| **Session key compromise** | Forward secrecy — ephemeral X25519 keys per session, private keys discarded after the handshake (best-effort wipe; Python cannot guarantee wiping immutable key bytes) |
 | **Handshake downgrade** | Channel binding — authentication nonce embedded in ECDH handshake signature, cryptographically binding the two stages |
 | **Key file theft** | Mandatory Argon2id passphrase encryption for key files at rest. Plaintext keys auto-migrate to encrypted on startup. |
 | **Identity spoofing via self-reported IDs** | Peer ID derived from cryptographic fingerprint of identity key (128-bit), not self-reported |
