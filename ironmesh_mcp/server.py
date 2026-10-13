@@ -1456,8 +1456,8 @@ def serve(daemon: BridgeDaemon, loop: Optional[asyncio.AbstractEventLoop],
                 tool = params.get("name", "")
                 args = params.get("arguments", {})
                 not_ready = _resolve_mcp()
-                if not_ready is not None:
-                    content = {"error": not_ready}
+                if not_ready is not None or mcp is None:
+                    content = {"error": not_ready or "mesh daemon not available"}
                 else:
                     content = _dispatch(mcp, tool, args)
                 # MCP expects content as a list of content blocks
@@ -1565,7 +1565,7 @@ def main() -> int:
     # Dedicated identity/storage for the MCP node. Without these, an MCP
     # server spawned next to a real node silently reuses ~/.ironmesh and
     # the two fight over one identity and one sqlite file.
-    daemon_paths = {}
+    daemon_paths: dict[str, Any] = {}
     if os.environ.get("IRONMESH_KEYS_PATH"):
         daemon_paths["keys_path"] = os.environ["IRONMESH_KEYS_PATH"]
     if os.environ.get("IRONMESH_DB_PATH"):
