@@ -178,6 +178,7 @@ These are read by the CLI / daemon / gateways:
 | `IRONMESH_KEYS_PASSPHRASE` | Passphrase used to decrypt the identity key file when it differs from the mesh passphrase. Precedence: `--keys-passphrase` > `--keys-passphrase-file` > this variable > mesh passphrase (tried automatically) > interactive prompt. |
 | `IRONMESH_A2A_TOKEN` | Bearer token enforced by the `ironmesh-a2a` HTTP gateway. |
 | `IRONMESH_ACP_TIMEOUT` | Per-call timeout (seconds) for the `ironmesh-acp` server. |
+| `IRONMESH_MCP_INIT_TIMEOUT` | Seconds the `ironmesh-mcp` server waits for its host's first frame before exiting (default `120`, `0` disables). |
 
 A second family (`IRONMESH_NAME`, `IRONMESH_PORT`, `IRONMESH_KEYS_PATH`,
 `IRONMESH_DB_PATH`, `IRONMESH_LOG_LEVEL`, `IRONMESH_LOG_FILE`,
@@ -189,6 +190,13 @@ that embed IronMesh, but **is not read by `ironmesh run`** — pass the
 corresponding CLI flags instead. In particular, `ironmesh run` always
 requires `--name` on the command line; setting `IRONMESH_NAME` alone
 is not enough.
+
+The `ironmesh-mcp` server is the exception: MCP hosts can only set
+environment variables, so it reads `IRONMESH_NAME`, `IRONMESH_PORT`,
+`IRONMESH_KEYS_PATH` and `IRONMESH_DB_PATH`. Explicit `--name` / `--port`
+arguments win over the environment. See
+[OPENCLAW_MCP_SETUP.md](OPENCLAW_MCP_SETUP.md) for running it next to an
+existing node.
 
 ## Files written / read
 

@@ -68,6 +68,32 @@ For non-mDNS environments, add `--peer host:port` arguments:
 
 Repeat `--peer` per host, or comma-separate inside one flag.
 
+**Running next to an existing node.** By default the MCP server uses
+`~/.ironmesh` and port 8767. If a regular `ironmesh run` node already lives
+on the same host, give the MCP server its own identity and port through the
+`env` block (MCP hosts cannot pass flags any other way):
+
+```json
+"env": {
+  "IRONMESH_PASSPHRASE": "${IRONMESH_PASSPHRASE}",
+  "IRONMESH_NAME": "openclaw-mcp",
+  "IRONMESH_PORT": "8768",
+  "IRONMESH_KEYS_PATH": "~/.ironmesh-mcp/keys.json"
+}
+```
+
+Setting `IRONMESH_KEYS_PATH` alone moves the database, routes, capabilities,
+trust store and audit log next to that key file. `IRONMESH_DB_PATH` overrides
+the database location separately. Explicit `--name` / `--port` arguments
+always win over the environment. A non-integer `IRONMESH_PORT` is reported on
+stderr and the default port is used.
+
+The server answers `initialize` and `tools/list` immediately and brings the
+mesh up in the background; a `tools/call` made before the mesh is ready waits
+up to 90 s and then returns an error instead of stalling the host. If the host
+never sends a single frame, the server exits after `IRONMESH_MCP_INIT_TIMEOUT`
+seconds (default 120, `0` disables) rather than lingering with the port bound.
+
 If your IronMesh installation is in a venv or pipx, replace `"python"` with
 the absolute path to that interpreter (e.g. `~/.local/pipx/venvs/ironmesh/bin/python`).
 

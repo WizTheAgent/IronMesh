@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ironmesh-mcp` honours its environment.** MCP hosts can only pass env
+  vars, but the server ignored `IRONMESH_NAME`, `IRONMESH_PORT`,
+  `IRONMESH_KEYS_PATH` and `IRONMESH_DB_PATH`, so an MCP server started next to
+  a regular node shared that node's `~/.ironmesh` identity, database and audit
+  log and bound the default port. They are now read, with explicit arguments
+  still taking precedence; a malformed `IRONMESH_PORT` warns and falls back to
+  the default.
+- **`ironmesh-mcp` no longer stalls or leaks on slow startup.** `initialize`
+  and `tools/list` are answered before the mesh finishes starting; an early
+  `tools/call` waits up to 90 s and then returns an error. A host that never
+  speaks no longer leaves the process running with its port bound: the server
+  exits after `IRONMESH_MCP_INIT_TIMEOUT` seconds (default 120, `0` disables).
+
 ## [0.9.5] — 2026-08-06 — protocol ironmesh/0.9: HELLO domain separation, RNS link binding, E2E source authentication, invites + onboarding
 
 ### Added
