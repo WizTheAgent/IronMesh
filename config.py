@@ -1,11 +1,71 @@
 """IronMesh configuration — centralized defaults and config loading."""
 
 import json
+import math
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 
 DEFAULT_CONFIG_PATH = "~/.ironmesh/config.json"
+
+
+class ConfigError(ValueError):
+    """An explicitly supplied setting is invalid.
+
+    Raised instead of falling back to a default when guessing could weaken
+    a security control (a gate, a key-rotation setting or a resource limit).
+    Startup paths turn it into a clear error and refuse to start.
+    """
+
+
+_TRUE_WORDS = ("1", "true", "yes", "on")
+_FALSE_WORDS = ("0", "false", "no", "off")
+
+
+def parse_env_flag(name: str, default: bool = False) -> bool:
+    """Read a boolean environment variable strictly.
+
+    Unset or empty means ``default``. A recognised word turns the setting on
+    or off. Anything else raises :class:`ConfigError`, so a typo such as
+    ``IRONMESH_REQUIRE_MSG_PROMOTION=ture`` cannot silently disable a control.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in _TRUE_WORDS:
+        return True
+    if value in _FALSE_WORDS:
+        return False
+    raise ConfigError(
+        f"{name}={raw!r} is not a recognised boolean; use one of "
+        f"{', '.join(_TRUE_WORDS)} to enable or {', '.join(_FALSE_WORDS)} "
+        f"to disable"
+    )
+
+
+def parse_env_limit(name: str, default: Union[int, float], kind: type,
+                    minimum: Union[int, float]) -> Union[int, float]:
+    """Read a security-relevant numeric limit from the environment strictly.
+
+    Unset or empty means ``default``. A value that does not parse as ``kind``,
+    is not finite, or is below ``minimum`` raises :class:`ConfigError` rather
+    than falling back, because the fallback could be weaker than what the
+    operator meant to set.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value: Union[int, float] = kind(raw.strip())
+    except ValueError:
+        raise ConfigError(
+            f"{name}={raw!r} is not a valid {kind.__name__}") from None
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ConfigError(f"{name}={raw!r} must be a finite number")
+    if value < minimum:
+        raise ConfigError(f"{name}={raw!r} must be at least {minimum}")
+    return value
 
 
 @dataclass
@@ -189,7 +249,13 @@ class IronMeshConfig:
 
     @classmethod
     def from_env(cls) -> "IronMeshConfig":
-        """Load config from environment variables."""
+        """Load config from environment variables.
+
+        Booleans and security-relevant limits are strict: an unrecognised or
+        out-of-range value raises :class:`ConfigError`. ``IRONMESH_PORT`` alone
+        keeps the lenient policy (warn, keep the default, apply the rest);
+        a bad port cannot weaken a control, and an unusable one fails at bind.
+        """
         config = cls()
         env_map = {
             "IRONMESH_NAME": "agent_name",
@@ -202,14 +268,7 @@ class IronMeshConfig:
             "IRONMESH_TLS_CERT": "tls_cert",
             "IRONMESH_TLS_KEY": "tls_key",
             "IRONMESH_PASSPHRASE_FILE": "passphrase_file",
-            "IRONMESH_RNS_ENABLED": ("rns_enabled", lambda v: v.lower() in ("1", "true", "yes")),
             "IRONMESH_RNS_CONFIGDIR": "rns_configdir",
-            "IRONMESH_RNS_RATCHETS": ("rns_ratchets_enabled", lambda v: v.lower() in ("1", "true", "yes")),
-            "IRONMESH_RNS_RATCHET_INTERVAL": ("rns_ratchet_interval", float),
-            "IRONMESH_RNS_RETAINED_RATCHETS": ("rns_retained_ratchets", int),
-            "IRONMESH_REQUIRE_MSG_PROMOTION": ("require_message_promotion",
-                                                lambda v: v.lower() in ("1", "true", "yes")),
-            "IRONMESH_PENDING_QUEUE_CAP": ("pending_trust_queue_cap", int),
         }
         for env_var, target in env_map.items():
             val = os.environ.get(env_var)
@@ -226,6 +285,19 @@ class IronMeshConfig:
                         )
                 else:
                     setattr(config, target, val)
+        for env_var, attr in (
+            ("IRONMESH_RNS_ENABLED", "rns_enabled"),
+            ("IRONMESH_RNS_RATCHETS", "rns_ratchets_enabled"),
+            ("IRONMESH_REQUIRE_MSG_PROMOTION", "require_message_promotion"),
+        ):
+            setattr(config, attr, parse_env_flag(env_var, getattr(config, attr)))
+        for env_var, attr, kind, minimum in (
+            ("IRONMESH_RNS_RATCHET_INTERVAL", "rns_ratchet_interval", float, 1.0),
+            ("IRONMESH_RNS_RETAINED_RATCHETS", "rns_retained_ratchets", int, 1),
+            ("IRONMESH_PENDING_QUEUE_CAP", "pending_trust_queue_cap", int, 1),
+        ):
+            setattr(config, attr,
+                    parse_env_limit(env_var, getattr(config, attr), kind, minimum))
         return config
 
     def save(self, path: str = DEFAULT_CONFIG_PATH):

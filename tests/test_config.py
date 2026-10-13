@@ -8,7 +8,7 @@ from dataclasses import fields
 
 import pytest
 
-from ironmesh.config import IronMeshConfig
+from ironmesh.config import ConfigError, IronMeshConfig
 
 
 # ---------------------------------------------------------------------------
@@ -118,34 +118,91 @@ class TestFromEnv:
         assert cfg.log_level == "ERROR"
         assert cfg.port == 8765
 
-    # Policy for from_env(): an unparseable numeric override never aborts
-    # startup — it warns, keeps that field's default and applies the rest.
-    # Values that parse but are unusable (e.g. a port the OS rejects) are
-    # left to the component that uses them.
-    @pytest.mark.parametrize("env_var,attr,bad,good,expected", [
-        ("IRONMESH_PORT", "port", "abc", "9001", 9001),
-        ("IRONMESH_RNS_RATCHET_INTERVAL", "rns_ratchet_interval",
-         "half-hour", "1800.5", 1800.5),
-        ("IRONMESH_RNS_RETAINED_RATCHETS", "rns_retained_ratchets",
-         "4.5", "7", 7),
-        ("IRONMESH_PENDING_QUEUE_CAP", "pending_trust_queue_cap",
-         "", "250", 250),
-    ])
-    def test_every_numeric_override_parses_or_falls_back(
-            self, monkeypatch, caplog, env_var, attr, bad, good, expected):
+    # Policy for from_env():
+    # - IRONMESH_PORT is lenient: an unparseable value warns, keeps the default
+    #   and the other overrides still apply (a bad port cannot weaken a
+    #   control; an unusable one fails at bind).
+    # - Booleans and security-relevant limits are strict: an unrecognised,
+    #   non-finite or below-minimum value raises ConfigError, because any
+    #   fallback could be weaker than what the operator meant.
+    def test_port_override_parses_or_falls_back(self, monkeypatch, caplog):
         import logging
-        default = getattr(IronMeshConfig(), attr)
+        monkeypatch.setenv("IRONMESH_PORT", "9001")
+        assert IronMeshConfig.from_env().port == 9001
 
-        monkeypatch.setenv(env_var, good)
-        assert getattr(IronMeshConfig.from_env(), attr) == expected
-
-        monkeypatch.setenv(env_var, bad)
+        monkeypatch.setenv("IRONMESH_PORT", "abc")
         monkeypatch.setenv("IRONMESH_NAME", "kept")
         with caplog.at_level(logging.WARNING, logger="ironmesh.config"):
             cfg = IronMeshConfig.from_env()
-        assert getattr(cfg, attr) == default
+        assert cfg.port == IronMeshConfig().port
         assert cfg.agent_name == "kept"
-        assert any(env_var in r.getMessage() for r in caplog.records)
+        assert any("IRONMESH_PORT" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize("env_var,attr,good,expected,bad_values", [
+        ("IRONMESH_RNS_RATCHET_INTERVAL", "rns_ratchet_interval", "900.5",
+         900.5, ["half-hour", "nan", "inf", "0", "-60"]),
+        ("IRONMESH_RNS_RETAINED_RATCHETS", "rns_retained_ratchets", "7", 7,
+         ["4.5", "seven", "0", "-1"]),
+        ("IRONMESH_PENDING_QUEUE_CAP", "pending_trust_queue_cap", "250", 250,
+         ["1O", "100k", "0", "-1"]),
+    ])
+    def test_security_limits_reject_instead_of_falling_back(
+            self, monkeypatch, env_var, attr, good, expected, bad_values):
+        monkeypatch.setenv(env_var, good)
+        assert getattr(IronMeshConfig.from_env(), attr) == expected
+        for bad in bad_values:
+            monkeypatch.setenv(env_var, bad)
+            with pytest.raises(ConfigError, match=env_var):
+                IronMeshConfig.from_env()
+
+    def test_unset_or_empty_limits_keep_defaults(self, monkeypatch):
+        defaults = IronMeshConfig()
+        for var in ("IRONMESH_RNS_RATCHET_INTERVAL",
+                    "IRONMESH_RNS_RETAINED_RATCHETS",
+                    "IRONMESH_PENDING_QUEUE_CAP"):
+            monkeypatch.setenv(var, "  ")
+        cfg = IronMeshConfig.from_env()
+        assert cfg.rns_ratchet_interval == defaults.rns_ratchet_interval
+        assert cfg.rns_retained_ratchets == defaults.rns_retained_ratchets
+        assert cfg.pending_trust_queue_cap == defaults.pending_trust_queue_cap
+
+
+_BOOL_SETTINGS = [
+    ("IRONMESH_REQUIRE_MSG_PROMOTION", "require_message_promotion"),
+    ("IRONMESH_RNS_RATCHETS", "rns_ratchets_enabled"),
+    ("IRONMESH_RNS_ENABLED", "rns_enabled"),
+]
+
+
+class TestStrictBooleans:
+    @pytest.mark.parametrize("env_var,attr", _BOOL_SETTINGS)
+    @pytest.mark.parametrize("raw,expected", [
+        ("1", True), ("true", True), ("YES", True), (" On ", True),
+        ("0", False), ("false", False), ("No", False), ("off", False),
+    ])
+    def test_recognised_values(self, monkeypatch, env_var, attr, raw, expected):
+        monkeypatch.setenv(env_var, raw)
+        assert getattr(IronMeshConfig.from_env(), attr) is expected
+
+    @pytest.mark.parametrize("env_var,attr", _BOOL_SETTINGS)
+    @pytest.mark.parametrize("typo", ["ture", "flase", "yes please", "2", "enable"])
+    def test_typo_is_a_configuration_error(self, monkeypatch, env_var, attr, typo):
+        monkeypatch.setenv(env_var, typo)
+        with pytest.raises(ConfigError, match=env_var):
+            IronMeshConfig.from_env()
+
+    @pytest.mark.parametrize("env_var,attr", _BOOL_SETTINGS)
+    def test_unset_or_empty_keeps_default(self, monkeypatch, env_var, attr):
+        monkeypatch.setenv(env_var, "")
+        assert getattr(IronMeshConfig.from_env(), attr) == getattr(IronMeshConfig(), attr)
+
+    def test_typo_cannot_disable_ratchets(self, monkeypatch):
+        # Ratchets default ON; under the old parser any unrecognised value
+        # (e.g. a misspelt "true") silently turned them off.
+        assert IronMeshConfig().rns_ratchets_enabled is True
+        monkeypatch.setenv("IRONMESH_RNS_RATCHETS", "treu")
+        with pytest.raises(ConfigError):
+            IronMeshConfig.from_env()
 
 
 # ---------------------------------------------------------------------------

@@ -58,6 +58,7 @@ from ironmesh.audit import (
     AuditLog,
 )
 from ironmesh.capabilities import CapabilityRegistry
+from ironmesh.config import parse_env_flag
 from ironmesh.dashboard import GuiMixin
 from ironmesh.dashboard_html import GUI_HTML  # noqa: F401  (re-exported; served by GuiMixin)
 from ironmesh.handshake import (
@@ -903,7 +904,7 @@ class BridgeDaemon(MetricsMixin, RateLimitMixin, TrustOpsMixin, HandshakeMixin,
         )
 
         # Key rotation via env var
-        if os.environ.get("IRONMESH_ROTATE_KEYS") == "1":
+        if parse_env_flag("IRONMESH_ROTATE_KEYS"):
             logger.info("Key rotation triggered")
             self._keypair = await rotate_keys(
                 self.keys_path, self.keys_passphrase,

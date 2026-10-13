@@ -1556,10 +1556,15 @@ def main() -> int:
     # v0.8.5: opt into the pending-trust gate via env so MCP hosts
     # (Claude Desktop, Claude Code) can flip the policy through their
     # config without changing the spawn command.
-    require_promo = os.environ.get(
-        "IRONMESH_REQUIRE_MSG_PROMOTION", ""
-    ).lower() in ("1", "true", "yes")
-    queue_cap = int(os.environ.get("IRONMESH_PENDING_QUEUE_CAP", "100"))
+    # Strict: a typo must not silently turn the gate off or loosen the cap.
+    from ironmesh.config import ConfigError, parse_env_flag, parse_env_limit
+    try:
+        require_promo = parse_env_flag("IRONMESH_REQUIRE_MSG_PROMOTION")
+        parse_env_flag("IRONMESH_ROTATE_KEYS")  # read again at daemon start
+        queue_cap = int(parse_env_limit("IRONMESH_PENDING_QUEUE_CAP", 100, int, 1))
+    except ConfigError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
     trust_path_env = os.environ.get("IRONMESH_TRUST_PATH") or None
 
     # Dedicated identity/storage for the MCP node. Without these, an MCP

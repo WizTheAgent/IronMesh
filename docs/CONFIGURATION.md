@@ -166,10 +166,10 @@ These are read by the CLI / daemon / gateways:
 
 | Variable | Effect |
 |---|---|
-| `IRONMESH_REQUIRE_MSG_PROMOTION` | `1\|true\|yes` enables the pending-trust gate (same as `--require-message-promotion`). |
-| `IRONMESH_PENDING_QUEUE_CAP` | Override the per-peer pending-trust queue cap (default `100`). |
+| `IRONMESH_REQUIRE_MSG_PROMOTION` | `1\|true\|yes\|on` enables the pending-trust gate (same as `--require-message-promotion`); `0\|false\|no\|off` or unset leaves it off. Any other value is a configuration error and the node refuses to start. |
+| `IRONMESH_PENDING_QUEUE_CAP` | Per-peer pending-trust queue cap for `ironmesh-mcp` and `IronMeshConfig.from_env()` (default `100`, minimum `1`; anything else refuses to start). `ironmesh run` takes `--pending-trust-queue-cap` instead. |
 | `IRONMESH_TRUST_PATH` | Override `~/.ironmesh/known_peers.json`. |
-| `IRONMESH_ROTATE_KEYS=1` | Rotate keys before start (same as `--rotate-keys`). |
+| `IRONMESH_ROTATE_KEYS=1` | Rotate keys before start (same as `--rotate-keys`). Accepts the same boolean words as above; any other value refuses to start. |
 | `IRONMESH_PASSPHRASE_NEW` | Used by `ironmesh keys keychain-store --passphrase-from-env` to read the new passphrase non-interactively. |
 | `IRONMESH_SETUP_PASSPHRASE` | Used by `ironmesh setup --non-interactive --passphrase-from-env`. |
 | `IRONMESH_RNS_ADMIN_IDENTITIES` | Comma-separated allow-list of RNS Identity hashes for admin RPC paths. |
@@ -197,6 +197,16 @@ environment variables, so it reads `IRONMESH_NAME`, `IRONMESH_PORT`,
 arguments win over the environment. See
 [OPENCLAW_MCP_SETUP.md](OPENCLAW_MCP_SETUP.md) for running it next to an
 existing node.
+
+**Strict values.** Boolean settings (`IRONMESH_REQUIRE_MSG_PROMOTION`,
+`IRONMESH_ROTATE_KEYS`, `IRONMESH_RNS_ENABLED`, `IRONMESH_RNS_RATCHETS`) and
+security-relevant limits (`IRONMESH_PENDING_QUEUE_CAP`,
+`IRONMESH_RNS_RATCHET_INTERVAL`, `IRONMESH_RNS_RETAINED_RATCHETS`) are parsed
+strictly: an unrecognised word, a non-number, a non-finite number or a value
+below the minimum is a configuration error, and the node refuses to start
+rather than guess. A typo such as `IRONMESH_REQUIRE_MSG_PROMOTION=ture` used to
+leave the gate silently off. `IRONMESH_PORT` stays lenient (warning, default
+port) because a wrong port cannot weaken a control.
 
 ## Files written / read
 
